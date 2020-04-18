@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Maksim Zheravin
+ * Copyright 2019-2020 Maksim Zheravin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,6 @@
 package exchange.core2.collections.art;
 
 import exchange.core2.collections.objpool.ObjectsPool;
-import lombok.Getter;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -31,21 +28,22 @@ import java.util.Map;
  * array of the same length for pointers. The keys and pointers
  * are stored at corresponding positions and the keys are sorted.
  */
-@Slf4j
-@RequiredArgsConstructor
 public final class ArtNode4<V> implements IArtNode<V> {
 
     // keys are ordered
     final short[] keys = new short[4];
     final Object[] nodes = new Object[4];
 
-    @Getter
-    final ObjectsPool objectsPool;
+    private final ObjectsPool objectsPool;
 
     long nodeKey;
     int nodeLevel;
 
     byte numChildren;
+
+    public ArtNode4(ObjectsPool objectsPool) {
+        this.objectsPool = objectsPool;
+    }
 
     // terminal node has always nodeLevel=0
     void initFirstKey(final long key, final V value) {
@@ -484,6 +482,11 @@ public final class ArtNode4<V> implements IArtNode<V> {
             }
         }
         return list;
+    }
+
+    @Override
+    public ObjectsPool getObjectsPool() {
+        return objectsPool;
     }
 
 }

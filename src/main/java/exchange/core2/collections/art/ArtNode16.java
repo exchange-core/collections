@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Maksim Zheravin
+ * Copyright 2019-2020 Maksim Zheravin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,6 @@
 package exchange.core2.collections.art;
 
 import exchange.core2.collections.objpool.ObjectsPool;
-import lombok.Getter;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -33,8 +30,6 @@ import java.util.Map;
  * efficiently with binary search or, on modern hardware, with
  * parallel comparisons using SIMD instructions.
  */
-@Slf4j
-@RequiredArgsConstructor
 public final class ArtNode16<V> implements IArtNode<V> {
 
     private static final int NODE4_SWITCH_THRESHOLD = 3;
@@ -48,8 +43,11 @@ public final class ArtNode16<V> implements IArtNode<V> {
 
     byte numChildren;
 
-    @Getter
-    final ObjectsPool objectsPool;
+    private final ObjectsPool objectsPool;
+
+    public ArtNode16(ObjectsPool objectsPool) {
+        this.objectsPool = objectsPool;
+    }
 
     void initFromNode4(ArtNode4<V> node4, short subKey, Object newElement) {
 
@@ -454,6 +452,11 @@ public final class ArtNode16<V> implements IArtNode<V> {
         }
         numChildren--;
         nodes[numChildren] = null;
+    }
+
+    @Override
+    public ObjectsPool getObjectsPool() {
+        return objectsPool;
     }
 
     @Override

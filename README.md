@@ -16,7 +16,7 @@ Exchange Collections is an **open source high performance Java collections** pro
 <dependency>
     <groupId>exchange.core2</groupId>
     <artifactId>collections</artifactId>
-    <version>0.5.0</version>
+    <version>0.5.1</version>
 </dependency>
 ```
 

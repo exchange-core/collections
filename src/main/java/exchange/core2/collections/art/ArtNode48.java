@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Maksim Zheravin
+ * Copyright 2019-2020 Maksim Zheravin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,6 @@
 package exchange.core2.collections.art;
 
 import exchange.core2.collections.objpool.ObjectsPool;
-import lombok.Getter;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;
 
@@ -33,8 +30,6 @@ import java.util.*;
  * comparison to 256 pointers of 8 bytes, because the indexes
  * only require 6 bits (we use 1 byte for simplicity).
  */
-@Slf4j
-@RequiredArgsConstructor
 public final class ArtNode48<V> implements IArtNode<V> {
 
     private static final int NODE16_SWITCH_THRESHOLD = 12;
@@ -42,15 +37,18 @@ public final class ArtNode48<V> implements IArtNode<V> {
     // just keep indexes
     final byte[] indexes = new byte[256];
     final Object[] nodes = new Object[48];
-    long freeBitMask;
+    private long freeBitMask;
 
     long nodeKey;
     int nodeLevel;
 
     byte numChildren;
 
-    @Getter
-    final ObjectsPool objectsPool;
+    private final ObjectsPool objectsPool;
+
+    public ArtNode48(ObjectsPool objectsPool) {
+        this.objectsPool = objectsPool;
+    }
 
     void initFromNode16(ArtNode16<V> node16, short subKey, Object newElement) {
 
@@ -459,6 +457,11 @@ public final class ArtNode48<V> implements IArtNode<V> {
     }
 
     @Override
+    public ObjectsPool getObjectsPool() {
+        return objectsPool;
+    }
+
+    @Override
     public String toString() {
         return "ArtNode48{" +
                 "nodeKey=" + nodeKey +
@@ -466,7 +469,6 @@ public final class ArtNode48<V> implements IArtNode<V> {
                 ", numChildren=" + numChildren +
                 '}';
     }
-
 
     private short[] createKeysArray() {
         short[] keys = new short[numChildren];

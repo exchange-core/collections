@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Maksim Zheravin
+ * Copyright 2019-2020 Maksim Zheravin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,6 @@
 package exchange.core2.collections.art;
 
 import exchange.core2.collections.objpool.ObjectsPool;
-import lombok.AllArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 
 import java.util.Collections;
 import java.util.List;
@@ -47,7 +45,6 @@ import java.util.function.Supplier;
  * - REMOVE price during matching - !! can use RANGE removal operation - rare, but latency critical
  * - GET or PUT if not exists - inserting back own orders, very rare
  */
-@Slf4j
 public final class LongAdaptiveRadixTreeMap<V> {
 
     private static final int INITIAL_LEVEL = 56;
@@ -167,7 +164,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
         }
     }
 
-    List<Map.Entry<Long, V>> entriesList() {
+    public List<Map.Entry<Long, V>> entriesList() {
         if (root != null) {
             return root.entries();
         } else {
@@ -279,12 +276,16 @@ public final class LongAdaptiveRadixTreeMap<V> {
     }
 
 
-    @AllArgsConstructor
     public static final class Entry<V> implements Map.Entry<Long, V> {
 
         final long key;
 
         V value;
+
+        public Entry(long key, V value) {
+            this.key = key;
+            this.value = value;
+        }
 
         @Override
         public Long getKey() {

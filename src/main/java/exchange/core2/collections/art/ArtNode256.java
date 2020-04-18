@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Maksim Zheravin
+ * Copyright 2019-2020 Maksim Zheravin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,6 @@
 package exchange.core2.collections.art;
 
 import exchange.core2.collections.objpool.ObjectsPool;
-import lombok.Getter;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -35,8 +32,6 @@ import java.util.Map;
  * null, this representation is also very space efficient because
  * only pointers need to be stored.
  */
-@Slf4j
-@RequiredArgsConstructor
 public final class ArtNode256<V> implements IArtNode<V> {
 
     private static final int NODE48_SWITCH_THRESHOLD = 37;
@@ -48,8 +43,11 @@ public final class ArtNode256<V> implements IArtNode<V> {
     int nodeLevel;
     short numChildren;
 
-    @Getter
-    final ObjectsPool objectsPool;
+    private final ObjectsPool objectsPool;
+
+    public ArtNode256(ObjectsPool objectsPool) {
+        this.objectsPool = objectsPool;
+    }
 
     void initFromNode48(ArtNode48<V> artNode48, short subKey, Object newElement) {
 
@@ -370,6 +368,11 @@ public final class ArtNode256<V> implements IArtNode<V> {
     public String printDiagram(String prefix, int level) {
         final short[] keys = createKeysArray();
         return LongAdaptiveRadixTreeMap.printDiagram(prefix, level, nodeLevel, nodeKey, numChildren, idx -> keys[idx], idx -> nodes[keys[idx]]);
+    }
+
+    @Override
+    public ObjectsPool getObjectsPool() {
+        return objectsPool;
     }
 
     @Override

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Maksim Zheravin
+ * Copyright 2019-2020 Maksim Zheravin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,13 +15,13 @@
  */
 package exchange.core2.collections.art;
 
-import lombok.extern.slf4j.Slf4j;
 import org.junit.Before;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.function.BiConsumer;
-import java.util.function.Function;
 import java.util.function.UnaryOperator;
 import java.util.stream.Stream;
 
@@ -29,8 +29,9 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.assertNull;
 
-@Slf4j
 public class LongAdaptiveRadixTreeMapTest {
+
+    private static Logger log = LoggerFactory.getLogger(LongAdaptiveRadixTreeMapTest.class);
 
     private LongAdaptiveRadixTreeMap<String> map;
     private TreeMap<Long, String> origMap;
@@ -157,7 +158,7 @@ public class LongAdaptiveRadixTreeMapTest {
         map.put(182736400230L, "182736400230");
         map.put(182736487234L, "182736487234");
         map.put(37, "37");
-        System.out.println(map.printDiagram());
+//        System.out.println(map.printDiagram());
 
 //        assertThat(map.getHigherValue(63120L), is(String.valueOf(182736400230L)));
 //        assertThat(map.getHigherValue(255), is(String.valueOf("273")));
@@ -197,7 +198,7 @@ public class LongAdaptiveRadixTreeMapTest {
         map.put(182736400230L, "182736400230");
         map.put(182736487234L, "182736487234");
         map.put(37, "37");
-        System.out.println(map.printDiagram());
+//        System.out.println(map.printDiagram());
 
         assertThat(map.getLowerValue(63120L), is(String.valueOf(273L)));
         assertThat(map.getLowerValue(255), is(String.valueOf("37")));
@@ -241,7 +242,7 @@ public class LongAdaptiveRadixTreeMapTest {
     @Test
     public void shouldCompactNodes() {
         put(2, "2");
-        System.out.println(map.printDiagram());
+//        System.out.println(map.printDiagram());
         assertThat(map.get(2), is("2"));
         assertNull(map.get(3));
         assertNull(map.get(256 + 2));
@@ -260,7 +261,7 @@ public class LongAdaptiveRadixTreeMapTest {
         put(0xFFFFFFFFFFFFFEL, "0xFFFFFFFFFFFFFE");
         put(0x112233445566L, "0x112233445566");
         put(0x1122AAEE5566L, "0x1122AAEE5566");
-        System.out.println(map.printDiagram());
+//        System.out.println(map.printDiagram());
 
         assertThat(map.get(0x414F32L), is("0x414F32"));
         assertThat(map.get(0x414F33L), is("0x414F33"));
@@ -289,7 +290,7 @@ public class LongAdaptiveRadixTreeMapTest {
         remove(0x414E00L);
         remove(0x407654L);
         remove(2);
-        System.out.println(map.printDiagram());
+//        System.out.println(map.printDiagram());
 
     }
 
@@ -419,30 +420,12 @@ public class LongAdaptiveRadixTreeMapTest {
             remove(key);
         }
 
-        System.out.println(map.printDiagram());
+//        System.out.println(map.printDiagram());
     }
 
-
-    public enum Benchmark {
-        BST_PUT,
-        BST_GET_HIT,
-        BST_REMOVE,
-        BST_FOREACH,
-        BST_FOREACH_DESC,
-        BST_HIGHER,
-        BST_LOWER,
-        ART_PUT,
-        ART_GET_HIT,
-        ART_REMOVE,
-        ART_FOREACH,
-        ART_FOREACH_DESC,
-        ART_HIGHER,
-        ART_LOWER
-    }
 
     @Test
     public void shouldLoadManyItems() {
-        Map<Benchmark, List<Long>> times = new HashMap<>();
 
         Random rand = new Random(1);
 
@@ -466,264 +449,169 @@ public class LongAdaptiveRadixTreeMapTest {
             forEachValuesBst.add(v);
         };
 
+        LongAdaptiveRadixTreeMap<Long> art = new LongAdaptiveRadixTreeMap<>();
 
-        final BiConsumer<Benchmark, Long> benchmarkConsumer =
-                (b, t) -> times.compute(b, (k, v) -> v == null ? new ArrayList<>() : v).add(t);
-
-        long timeEnd = System.currentTimeMillis() + 2_000;
-        for (int iter = 0; System.currentTimeMillis() < timeEnd && iter < 1000; iter++) {
-            log.debug("-------------------iteration:{} ({}s left)------------------------", iter, (timeEnd - System.currentTimeMillis()) / 1000);
-
-            LongAdaptiveRadixTreeMap<Long> art = new LongAdaptiveRadixTreeMap<>();
-
-            TreeMap<Long, Long> bst = new TreeMap<>();
+        TreeMap<Long, Long> bst = new TreeMap<>();
 
 //            int num = 500_000;
-            int num = 50_000;
-            List<Long> list = new ArrayList<>(num);
-            long j = 0;
-            log.debug("generate random numbers..");
-            long offset = 1_000_000_000L + rand.nextInt(1_000_000);
-            for (int i = 0; i < num; i++) {
-                list.add(offset + j);
-                j += stepFunction.apply(i);
-            }
-            log.debug("shuffle..");
-            Collections.shuffle(list, rand);
+        int num = 100_000;
+        List<Long> list = new ArrayList<>(num);
+        long j = 0;
+        log.debug("generate random numbers..");
+        long offset = 1_000_000_000L + rand.nextInt(1_000_000);
+        for (int i = 0; i < num; i++) {
+            list.add(offset + j);
+            j += stepFunction.apply(i);
+        }
+        log.debug("shuffle..");
+        Collections.shuffle(list, rand);
 
-            log.debug("put into BST..");
-            long t = System.nanoTime();
-            list.forEach(x -> bst.put(x, x));
-            benchmarkConsumer.accept(Benchmark.BST_PUT, System.nanoTime() - t);
+        log.debug("put into BST..");
+        list.forEach(x -> bst.put(x, x));
 
-            log.debug("put into ADT..");
+        log.debug("put into ADT..");
 //            list.forEach(x -> log.debug("{}", x));
 
-            t = System.nanoTime();
-            list.forEach(x -> art.put(x, x));
-            benchmarkConsumer.accept(Benchmark.ART_PUT, System.nanoTime() - t);
+        list.forEach(x -> art.put(x, x));
 
-            log.debug("shuffle..");
-            Collections.shuffle(list, rand);
+        log.debug("shuffle..");
+        Collections.shuffle(list, rand);
 
-            log.debug("get (hit) from BST..");
-            t = System.nanoTime();
-            long sum = 0;
-            for (long x : list) {
-                sum += bst.get(x);
-            }
-            benchmarkConsumer.accept(Benchmark.BST_GET_HIT, System.nanoTime() - t);
+        log.debug("get (hit) from BST..");
+        long sum = 0;
+        for (long x : list) {
+            sum += bst.get(x);
+        }
 
-            log.debug("get (hit) from ADT..");
-            t = System.nanoTime();
-            for (long x : list) {
-                sum += art.get(x);
-            }
-            benchmarkConsumer.accept(Benchmark.ART_GET_HIT, System.nanoTime() - t);
-            log.debug("done ({})", sum);
+        log.debug("get (hit) from ADT..");
+        for (long x : list) {
+            sum += art.get(x);
+        }
+        log.debug("done ({})", sum);
 
-            //log.debug("\n{}", art.printDiagram());
+        //log.debug("\n{}", art.printDiagram());
 
-            log.debug("validating..");
-            art.validateInternalState();
-            checkStreamsEqual(art.entriesList().stream(), bst.entrySet().stream());
+        log.debug("validating..");
+        art.validateInternalState();
+        checkStreamsEqual(art.entriesList().stream(), bst.entrySet().stream());
 
-            log.debug("shuffle again..");
-            Collections.shuffle(list, rand);
+        log.debug("shuffle again..");
+        Collections.shuffle(list, rand);
 
-            log.debug("higher from ART..");
-            t = System.nanoTime();
-            for (long x : list) {
-                Long v = art.getHigherValue(x);
-                sum += v == null ? 0 : v;
-            }
-            benchmarkConsumer.accept(Benchmark.ART_HIGHER, System.nanoTime() - t);
-            log.debug("done ({})", sum);
+        log.debug("higher from ART..");
+        for (long x : list) {
+            Long v = art.getHigherValue(x);
+            sum += v == null ? 0 : v;
+        }
+        log.debug("done ({})", sum);
 
-
-            log.debug("higher from BST..");
-            t = System.nanoTime();
-            for (long x : list) {
-                Map.Entry<Long, Long> entry = bst.higherEntry(x);
-                sum += (entry != null ? entry.getValue() : 0);
-            }
-            benchmarkConsumer.accept(Benchmark.BST_HIGHER, System.nanoTime() - t);
-            log.debug("done ({})", sum);
+        log.debug("higher from BST..");
+        for (long x : list) {
+            Map.Entry<Long, Long> entry = bst.higherEntry(x);
+            sum += (entry != null ? entry.getValue() : 0);
+        }
+        log.debug("done ({})", sum);
 
 
-            log.debug("lower from ART..");
-            t = System.nanoTime();
-            for (long x : list) {
-                Long v = art.getLowerValue(x);
-                sum += v == null ? 0 : v;
-            }
-            benchmarkConsumer.accept(Benchmark.ART_LOWER, System.nanoTime() - t);
-            log.debug("done ({})", sum);
+        log.debug("lower from ART..");
+        for (long x : list) {
+            Long v = art.getLowerValue(x);
+            sum += v == null ? 0 : v;
+        }
+        log.debug("done ({})", sum);
 
 
-            log.debug("lower from BST..");
-            t = System.nanoTime();
-            for (long x : list) {
-                Map.Entry<Long, Long> entry = bst.lowerEntry(x);
-                sum += (entry != null ? entry.getValue() : 0);
-            }
-            benchmarkConsumer.accept(Benchmark.BST_LOWER, System.nanoTime() - t);
-            log.debug("done ({})", sum);
+        log.debug("lower from BST..");
+        for (long x : list) {
+            Map.Entry<Long, Long> entry = bst.lowerEntry(x);
+            sum += (entry != null ? entry.getValue() : 0);
+        }
+        log.debug("done ({})", sum);
 
 
-            log.debug("validate getHigherValue method..");
-            for (long x : list) {
+        log.debug("validate getHigherValue method..");
+        for (long x : list) {
 //                log.debug("CHECK:{} {} ---------", x, String.format("%Xh", x));
-                Long v1 = art.getHigherValue(x);
-                Map.Entry<Long, Long> entry = bst.higherEntry(x);
-                Long v2 = entry != null ? entry.getValue() : null;
-                if (!Objects.equals(v1, v2)) {
-                    log.debug("ART  :{} {}", v1, String.format("%Xh", v1));
-                    log.debug("BST  :{} {}", v2, String.format("%Xh", v2));
-                    System.out.println(art.printDiagram());
-                    throw new IllegalStateException();
-                }
+            Long v1 = art.getHigherValue(x);
+            Map.Entry<Long, Long> entry = bst.higherEntry(x);
+            Long v2 = entry != null ? entry.getValue() : null;
+            if (!Objects.equals(v1, v2)) {
+                log.debug("ART  :{} {}", v1, String.format("%Xh", v1));
+                log.debug("BST  :{} {}", v2, String.format("%Xh", v2));
+//                System.out.println(art.printDiagram());
+                throw new IllegalStateException();
+            }
 
 //                assertThat(v1, is(v2));
-            }
+        }
 
-            log.debug("validate getLowerValue method..");
-            for (long x : list) {
+        log.debug("validate getLowerValue method..");
+        for (long x : list) {
 //                log.debug("CHECK:{} {} ---------", x, String.format("%Xh", x));
-                Long v1 = art.getLowerValue(x);
-                Map.Entry<Long, Long> entry = bst.lowerEntry(x);
-                Long v2 = entry != null ? entry.getValue() : null;
-                if (!Objects.equals(v1, v2)) {
-                    log.debug("ART  :{} {}", v1, String.format("%Xh", v1));
-                    log.debug("BST  :{} {}", v2, String.format("%Xh", v2));
-                    System.out.println(art.printDiagram());
-                    throw new IllegalStateException();
-                }
+            Long v1 = art.getLowerValue(x);
+            Map.Entry<Long, Long> entry = bst.lowerEntry(x);
+            Long v2 = entry != null ? entry.getValue() : null;
+            if (!Objects.equals(v1, v2)) {
+                log.debug("ART  :{} {}", v1, String.format("%Xh", v1));
+                log.debug("BST  :{} {}", v2, String.format("%Xh", v2));
+//                System.out.println(art.printDiagram());
+                throw new IllegalStateException();
+            }
 
 //                assertThat(v1, is(v2));
-            }
+        }
 
 //            log.debug("\n{}", art.printDiagram());
 
-            log.debug("forEach BST...");
-            t = System.nanoTime();
-            bst.entrySet().stream().limit(forEachSize).forEach(e -> forEachConsumerBst.accept(e.getKey(), e.getValue()));
-            benchmarkConsumer.accept(Benchmark.BST_FOREACH, System.nanoTime() - t);
+        log.debug("forEach BST...");
+        bst.entrySet().stream().limit(forEachSize).forEach(e -> forEachConsumerBst.accept(e.getKey(), e.getValue()));
 
-            log.debug("forEach ADT...");
-            t = System.nanoTime();
-            art.forEach(forEachConsumerArt, forEachSize);
-            benchmarkConsumer.accept(Benchmark.ART_FOREACH, System.nanoTime() - t);
+        log.debug("forEach ADT...");
+        art.forEach(forEachConsumerArt, forEachSize);
 
 //            log.debug(" forEach size {} vs {}", forEachKeysArt.size(), forEachKeysBst.size());
 
-            log.debug("validate forEach...");
-            assertThat(forEachKeysArt, is(forEachKeysBst));
-            assertThat(forEachValuesArt, is(forEachValuesBst));
-            forEachKeysArt.clear();
-            forEachKeysBst.clear();
-            forEachValuesArt.clear();
-            forEachValuesBst.clear();
+        log.debug("validate forEach...");
+        assertThat(forEachKeysArt, is(forEachKeysBst));
+        assertThat(forEachValuesArt, is(forEachValuesBst));
+        forEachKeysArt.clear();
+        forEachKeysBst.clear();
+        forEachValuesArt.clear();
+        forEachValuesBst.clear();
 
-            log.debug("forEachDesc BST...");
-            t = System.nanoTime();
-            bst.descendingMap().entrySet().stream().limit(forEachSize).forEach(e -> forEachConsumerBst.accept(e.getKey(), e.getValue()));
-            benchmarkConsumer.accept(Benchmark.BST_FOREACH_DESC, System.nanoTime() - t);
+        log.debug("forEachDesc BST...");
+        bst.descendingMap().entrySet().stream().limit(forEachSize).forEach(e -> forEachConsumerBst.accept(e.getKey(), e.getValue()));
 
-            log.debug("forEachDesc ADT...");
-            t = System.nanoTime();
-            art.forEachDesc(forEachConsumerArt, forEachSize);
-            benchmarkConsumer.accept(Benchmark.ART_FOREACH_DESC, System.nanoTime() - t);
-
+        log.debug("forEachDesc ADT...");
+        art.forEachDesc(forEachConsumerArt, forEachSize);
 //            log.debug(" forEach size {} vs {}", forEachKeysArt.size(), forEachKeysBst.size());
 
-            log.debug("validate forEachDesc...");
-            assertThat(forEachKeysArt, is(forEachKeysBst));
-            assertThat(forEachValuesArt, is(forEachValuesBst));
-            forEachKeysArt.clear();
-            forEachKeysBst.clear();
-            forEachValuesArt.clear();
-            forEachValuesBst.clear();
+        log.debug("validate forEachDesc...");
+        assertThat(forEachKeysArt, is(forEachKeysBst));
+        assertThat(forEachValuesArt, is(forEachValuesBst));
+        forEachKeysArt.clear();
+        forEachKeysBst.clear();
+        forEachValuesArt.clear();
+        forEachValuesBst.clear();
 
 
-            log.debug("remove from BST..");
-            t = System.nanoTime();
-            list.forEach(bst::remove);
-            benchmarkConsumer.accept(Benchmark.BST_REMOVE, System.nanoTime() - t);
+        log.debug("remove from BST..");
+        list.forEach(bst::remove);
 
-
-            log.debug("remove from ADT..");
+        log.debug("remove from ADT..");
 //        list.forEach(x -> {
 ////            log.debug("\n{}", adt.printDiagram());
 //            adt.validateInternalState();
 //            log.debug("REMOVING {}", x);
 //            adt.remove(x);
 //        });
-            t = System.nanoTime();
-            list.forEach(art::remove);
-            benchmarkConsumer.accept(Benchmark.ART_REMOVE, System.nanoTime() - t);
+        list.forEach(art::remove);
 
-            log.debug("validating..");
-            art.validateInternalState();
-            checkStreamsEqual(art.entriesList().stream(), bst.entrySet().stream());
+        log.debug("validating..");
+        art.validateInternalState();
+        checkStreamsEqual(art.entriesList().stream(), bst.entrySet().stream());
 
-
-            Function<Benchmark, Long> getBenchmarkNs = b -> Math.round(times.get(b).stream().mapToLong(x -> x).average().orElse(0));
-
-            long bstPutTimeNsAvg = getBenchmarkNs.apply(Benchmark.BST_PUT);
-            long artPutTimeNsAvg = getBenchmarkNs.apply(Benchmark.ART_PUT);
-            long bstGetHitTimeNsAvg = getBenchmarkNs.apply(Benchmark.BST_GET_HIT);
-            long artGetHitTimeNsAvg = getBenchmarkNs.apply(Benchmark.ART_GET_HIT);
-            long bstRemoveTimeNsAvg = getBenchmarkNs.apply(Benchmark.BST_REMOVE);
-            long artRemoveTimeNsAvg = getBenchmarkNs.apply(Benchmark.ART_REMOVE);
-            long bstForEachTimeNsAvg = getBenchmarkNs.apply(Benchmark.BST_FOREACH);
-            long artForEachTimeNsAvg = getBenchmarkNs.apply(Benchmark.ART_FOREACH);
-            long bstForEachDescTimeNsAvg = getBenchmarkNs.apply(Benchmark.BST_FOREACH_DESC);
-            long artForEachDescTimeNsAvg = getBenchmarkNs.apply(Benchmark.ART_FOREACH_DESC);
-            long bstHigherTimeNsAvg = getBenchmarkNs.apply(Benchmark.BST_HIGHER);
-            long artHigherTimeNsAvg = getBenchmarkNs.apply(Benchmark.ART_HIGHER);
-            long bstLowerTimeNsAvg = getBenchmarkNs.apply(Benchmark.BST_LOWER);
-            long artLowerTimeNsAvg = getBenchmarkNs.apply(Benchmark.ART_LOWER);
-
-            // remove 33% oldest results
-            if (iter % 3 == 2) {
-                times.values().forEach(v -> v.remove(0));
-            }
-
-
-            log.info("AVERAGE PUT    BST {}ms ADT {}ms ({}%)",
-                    nanoToMs(bstPutTimeNsAvg), nanoToMs(artPutTimeNsAvg), percentImprovement(bstPutTimeNsAvg, artPutTimeNsAvg));
-
-            log.info("AVERAGE GETHIT BST {}ms ADT {}ms ({}%)",
-                    nanoToMs(bstGetHitTimeNsAvg), nanoToMs(artGetHitTimeNsAvg), percentImprovement(bstGetHitTimeNsAvg, artGetHitTimeNsAvg));
-
-            log.info("AVERAGE REMOVE BST {}ms ADT {}ms ({}%)",
-                    nanoToMs(bstRemoveTimeNsAvg), nanoToMs(artRemoveTimeNsAvg), percentImprovement(bstRemoveTimeNsAvg, artRemoveTimeNsAvg));
-
-            log.info("AVERAGE FOREACH BST {}ms ADT {}ms ({}%)",
-                    nanoToMs(bstForEachTimeNsAvg), nanoToMs(artForEachTimeNsAvg), percentImprovement(bstForEachTimeNsAvg, artForEachTimeNsAvg));
-
-            log.info("AVERAGE FOREACH DESC BST {}ms ADT {}ms ({}%)",
-                    nanoToMs(bstForEachDescTimeNsAvg), nanoToMs(artForEachDescTimeNsAvg), percentImprovement(bstForEachDescTimeNsAvg, artForEachDescTimeNsAvg));
-
-            log.info("AVERAGE HIGHER BST {}ms ADT {}ms ({}%)",
-                    nanoToMs(bstHigherTimeNsAvg), nanoToMs(artHigherTimeNsAvg), percentImprovement(bstHigherTimeNsAvg, artHigherTimeNsAvg));
-
-            log.info("AVERAGE LOWER BST {}ms ADT {}ms ({}%)",
-                    nanoToMs(bstLowerTimeNsAvg), nanoToMs(artLowerTimeNsAvg), percentImprovement(bstLowerTimeNsAvg, artLowerTimeNsAvg));
-        }
-
-        log.info("---------------------------------------");
     }
-
-    private static float nanoToMs(long nano) {
-        return ((float) (nano / 1000)) / 1000f;
-    }
-
-    private static int percentImprovement(long oldTime, long newTime) {
-        return (int) (100f * ((float) oldTime / (float) newTime - 1f));
-    }
-
 
     private void put(long key, String value) {
 //        System.out.println("------------------ put "+ key);
