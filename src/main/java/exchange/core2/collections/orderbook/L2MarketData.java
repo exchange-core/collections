@@ -13,9 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package exchange.core2.core.common;
-
-import lombok.ToString;
+package exchange.core2.collections.orderbook;
 
 import java.util.Arrays;
 
@@ -24,7 +22,6 @@ import java.util.Arrays;
  * <p>
  * NOTE: Can have dirty data, askSize and bidSize are important!
  */
-@ToString
 public final class L2MarketData {
 
     public static final int L2_SIZE = 32;

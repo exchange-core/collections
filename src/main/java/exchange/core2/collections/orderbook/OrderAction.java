@@ -13,11 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package exchange.core2.core.common;
+package exchange.core2.collections.orderbook;
 
-import lombok.Getter;
-
-@Getter
 public enum OrderAction {
     ASK(0),
     BID(1);
