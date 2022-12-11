@@ -1,11 +1,14 @@
 package exchange.core2.collections.orderbook.naive;
 
+import exchange.core2.collections.orderbook.IOrder;
 import exchange.core2.collections.orderbook.OrderAction;
 
-public final class PendingOrder {
+import java.util.Objects;
+
+public final class NaivePendingOrder implements IOrder {
 
 
-    public PendingOrder(long orderId, long price, long size, long filled, long reserveBidPrice, OrderAction action, long uid, long timestamp) {
+    public NaivePendingOrder(long orderId, long price, long size, long filled, long reserveBidPrice, OrderAction action, long uid, long timestamp) {
         this.orderId = orderId;
         this.price = price;
         this.size = size;
@@ -18,11 +21,11 @@ public final class PendingOrder {
 
     final long orderId;
 
-    final long price;
+    long price;
 
-    final long size;
+    long size;
 
-    final long filled;
+    long filled;
 
     // new orders - reserved price for fast moves of GTC bid orders in exchange mode
     final long reserveBidPrice;
@@ -34,4 +37,50 @@ public final class PendingOrder {
 
     final long timestamp;
 
+    @Override
+    public long getPrice() {
+        return price;
+    }
+
+    @Override
+    public long getSize() {
+        return size;
+    }
+
+    @Override
+    public long getFilled() {
+        return filled;
+    }
+
+    @Override
+    public long getUid() {
+        return uid;
+    }
+
+    @Override
+    public OrderAction getAction() {
+        return action;
+    }
+
+    @Override
+    public long getOrderId() {
+        return orderId;
+    }
+
+    @Override
+    public long getTimestamp() {
+        return timestamp;
+    }
+
+    @Override
+    public long getReserveBidPrice() {
+        return reserveBidPrice;
+    }
+
+    @Override
+    public int stateHash() {
+        return Objects.hash(orderId, action, price, size, reserveBidPrice, filled,
+                //userCookie,
+                uid);
+    }
 }

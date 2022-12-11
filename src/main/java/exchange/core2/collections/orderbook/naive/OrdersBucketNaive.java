@@ -13,39 +13,41 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package exchange.core2.collections.orderbook;
+package exchange.core2.collections.orderbook.naive;
 
-import exchange.core2.core.common.IOrder;
-import exchange.core2.core.common.MatcherTradeEvent;
-import exchange.core2.core.common.Order;
-import exchange.core2.core.common.OrderAction;
-import exchange.core2.core.utils.SerializationUtils;
-import net.openhft.chronicle.bytes.BytesIn;
-import net.openhft.chronicle.bytes.BytesOut;
-import net.openhft.chronicle.bytes.WriteBytesMarshallable;
+import exchange.core2.collections.orderbook.OrderAction;
+import exchange.core2.collections.orderbook.OrderBookEventsHelper;
 
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.function.LongConsumer;
 import java.util.stream.Collectors;
 
-public final class OrdersBucketNaive implements Comparable<OrdersBucketNaive>, WriteBytesMarshallable {
+public final class OrdersBucketNaive implements Comparable<OrdersBucketNaive> {
 
     private final long price;
 
-    private final LinkedHashMap<Long, Order> entries;
+    private final LinkedHashMap<Long, NaivePendingOrder> entries;
+
+    private final OrderBookEventsHelper eventsHelper;
 
     private long totalVolume;
 
-    public OrdersBucketNaive(final long price) {
+
+    public OrdersBucketNaive(final long price, final OrderBookEventsHelper eventsHelper) {
         this.price = price;
         this.entries = new LinkedHashMap<>();
         this.totalVolume = 0;
+        this.eventsHelper = eventsHelper;
     }
 
-    public OrdersBucketNaive(BytesIn bytes) {
-        this.price = bytes.readLong();
-        this.entries = SerializationUtils.readLongMap(bytes, LinkedHashMap::new, Order::new);
-        this.totalVolume = bytes.readLong();
+
+    public long getPrice() {
+        return price;
+    }
+
+    public long getTotalVolume() {
+        return totalVolume;
     }
 
     /**
@@ -53,7 +55,7 @@ public final class OrdersBucketNaive implements Comparable<OrdersBucketNaive>, W
      *
      * @param order - order
      */
-    public void put(Order order) {
+    public void put(NaivePendingOrder order) {
         entries.put(order.orderId, order);
         totalVolume += order.size - order.filled;
     }
@@ -65,8 +67,8 @@ public final class OrdersBucketNaive implements Comparable<OrdersBucketNaive>, W
      * @param uid     - order uid
      * @return order if removed, or null if not found
      */
-    public Order remove(long orderId, long uid) {
-        Order order = entries.get(orderId);
+    public NaivePendingOrder remove(long orderId, long uid) {
+        final NaivePendingOrder order = entries.get(orderId);
 //        log.debug("removing order: {}", order);
         if (order == null || order.uid != uid) {
             return null;
@@ -83,33 +85,24 @@ public final class OrdersBucketNaive implements Comparable<OrdersBucketNaive>, W
      * Completely matching orders will be removed, partially matched order kept in the bucked.
      *
      * @param volumeToCollect - volume to collect
-     * @param activeOrder     - for getReserveBidPrice
-     * @param helper          - events helper
      * @return - total matched volume, events, completed orders to remove
      */
-    public MatcherResult match(long volumeToCollect, IOrder activeOrder, OrderBookEventsHelper helper) {
+    public long match(long volumeToCollect,
+                      final long activeReservedBidPrice,
+                      final LongConsumer orderRemover) {
 
-//        log.debug("---- match: {}", volumeToCollect);
-
-        final Iterator<Map.Entry<Long, Order>> iterator = entries.entrySet().iterator();
+        final Iterator<Map.Entry<Long, NaivePendingOrder>> iterator = entries.entrySet().iterator();
 
         long totalMatchingVolume = 0;
 
-        final List<Long> ordersToRemove = new ArrayList<>();
-
-        MatcherTradeEvent eventsHead = null;
-        MatcherTradeEvent eventsTail = null;
-
         // iterate through all orders
         while (iterator.hasNext() && volumeToCollect > 0) {
-            final Map.Entry<Long, Order> next = iterator.next();
-            final Order order = next.getValue();
+            final Map.Entry<Long, NaivePendingOrder> next = iterator.next();
+            final NaivePendingOrder order = next.getValue();
 
             // calculate exact volume can fill for this order
-//            log.debug("volumeToCollect={} order: s{} f{}", volumeToCollect, order.size, order.filled);
             final long v = Math.min(volumeToCollect, order.size - order.filled);
             totalMatchingVolume += v;
-//            log.debug("totalMatchingVolume={} v={}", totalMatchingVolume, v);
 
             order.filled += v;
             volumeToCollect -= v;
@@ -118,23 +111,20 @@ public final class OrdersBucketNaive implements Comparable<OrdersBucketNaive>, W
             // remove from order book filled orders
             final boolean fullMatch = order.size == order.filled;
 
-            final long bidderHoldPrice = order.action == OrderAction.ASK ? activeOrder.getReserveBidPrice() : order.reserveBidPrice;
-            final MatcherTradeEvent tradeEvent = helper.sendTradeEvent(order, fullMatch, volumeToCollect == 0, v, bidderHoldPrice);
-
-            if (eventsTail == null) {
-                eventsHead = tradeEvent;
-            } else {
-                eventsTail.nextEvent = tradeEvent;
-            }
-            eventsTail = tradeEvent;
+            eventsHelper.sendTradeEvent(
+                    order,
+                    fullMatch,
+                    volumeToCollect == 0,
+                    v,
+                    order.action == OrderAction.ASK ? activeReservedBidPrice : order.reserveBidPrice);
 
             if (fullMatch) {
-                ordersToRemove.add(order.orderId);
+                orderRemover.accept(order.orderId);
                 iterator.remove();
             }
         }
 
-        return new MatcherResult(eventsHead, eventsTail, totalMatchingVolume, ordersToRemove);
+        return totalMatchingVolume;
     }
 
     /**
@@ -164,7 +154,7 @@ public final class OrdersBucketNaive implements Comparable<OrdersBucketNaive>, W
         }
     }
 
-    public Order findOrder(long orderId) {
+    public NaivePendingOrder findOrder(long orderId) {
         return entries.get(orderId);
     }
 
@@ -173,7 +163,7 @@ public final class OrdersBucketNaive implements Comparable<OrdersBucketNaive>, W
      *
      * @return new array with references to orders, preserving execution queue order
      */
-    public List<Order> getAllOrders() {
+    public List<NaivePendingOrder> getAllOrders() {
         return new ArrayList<>(entries.values());
     }
 
@@ -183,7 +173,7 @@ public final class OrdersBucketNaive implements Comparable<OrdersBucketNaive>, W
      *
      * @param consumer action consumer function
      */
-    public void forEachOrder(Consumer<Order> consumer) {
+    public void forEachOrder(Consumer<NaivePendingOrder> consumer) {
         entries.values().forEach(consumer);
     }
 
@@ -192,15 +182,9 @@ public final class OrdersBucketNaive implements Comparable<OrdersBucketNaive>, W
                 .map(o -> String.format("id%d_L%d_F%d", o.orderId, o.size, o.filled))
                 .collect(Collectors.joining(", "));
 
-        return String.format("%d : vol:%d num:%d : %s", getPrice(), getTotalVolume(), getNumOrders(), orders);
+        return String.format("%d : vol:%d num:%d : %s", price, totalVolume, getNumOrders(), orders);
     }
 
-    @Override
-    public void writeMarshallable(BytesOut bytes) {
-        bytes.writeLong(price);
-        SerializationUtils.marshallLongMap(entries, bytes);
-        bytes.writeLong(totalVolume);
-    }
 
     @Override
     public int compareTo(OrdersBucketNaive other) {
@@ -211,7 +195,7 @@ public final class OrdersBucketNaive implements Comparable<OrdersBucketNaive>, W
     public int hashCode() {
         return Objects.hash(
                 price,
-                Arrays.hashCode(entries.values().toArray(new Order[0])));
+                Arrays.hashCode(entries.values().toArray(new NaivePendingOrder[0])));
     }
 
     @Override
@@ -225,6 +209,12 @@ public final class OrdersBucketNaive implements Comparable<OrdersBucketNaive>, W
     }
 
     public final class MatcherResult {
+
+        public MatcherResult(long volume, List<Long> ordersToRemove) {
+            this.volume = volume;
+            this.ordersToRemove = ordersToRemove;
+        }
+
         public long volume;
         public List<Long> ordersToRemove;
     }

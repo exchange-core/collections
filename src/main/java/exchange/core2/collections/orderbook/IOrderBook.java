@@ -13,24 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package exchange.core2.core.orderbook;
+package exchange.core2.collections.orderbook;
 
-import exchange.core2.collections.objpool.ObjectsPool;
-import exchange.core2.core.common.*;
-import exchange.core2.core.common.cmd.CommandResultCode;
-import exchange.core2.core.common.cmd.OrderCommand;
-import exchange.core2.core.common.cmd.OrderCommandType;
-import exchange.core2.core.common.config.LoggingConfiguration;
-import exchange.core2.core.utils.HashingUtils;
-import lombok.Getter;
-import net.openhft.chronicle.bytes.BytesIn;
-import net.openhft.chronicle.bytes.WriteBytesMarshallable;
+import org.agrona.BitUtil;
+import org.agrona.DirectBuffer;
 
+import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Stream;
 
-public interface IOrderBook extends WriteBytesMarshallable, StateHash {
+public interface IOrderBook<S extends ISymbolSpecification> extends StateHash {
 
     /**
      * Process new order.
@@ -41,41 +34,41 @@ public interface IOrderBook extends WriteBytesMarshallable, StateHash {
      * GTC - place as a new limit order into th order book.
      * <p>
      * Rejection chain attached in case of error (to simplify risk handling)
-     *
-     * @param cmd - order to match/place
+     * <p>
+     * |---byte orderCommandType---|---long uid---|---long orderId---|---long price---|
+     * |---long size---|---byte orderAction---|---byte orderType---|---int productCode---|
      */
-    void newOrder(OrderCommand cmd);
+    void newOrder(DirectBuffer buffer, int offset);
 
     /**
      * Cancel order completely.
      * <p>
      * fills cmd.action  with original original order action
-     *
-     * @param cmd - order command
-     * @return MATCHING_UNKNOWN_ORDER_ID if order was not found, otherwise SUCCESS
+     * <p>
+     * |---byte orderCommandType---|---long uid---|---long orderId---|---int productCode---|
      */
-    CommandResultCode cancelOrder(OrderCommand cmd);
+    void cancelOrder(DirectBuffer buffer, int offset);
 
     /**
      * Decrease the size of the order by specific number of lots
      * <p>
      * fills cmd.action  with original  order action
-     *
-     * @param cmd - order command
-     * @return MATCHING_UNKNOWN_ORDER_ID if order was not found, otherwise SUCCESS
+     * <p>
+     * |---byte orderCommandType---|---long uid---|---long orderId---|---long reduceSize---|
+     * |---int productCode---|
      */
-    CommandResultCode reduceOrder(OrderCommand cmd);
+    void reduceOrder(DirectBuffer buffer, int offset);
 
     /**
      * Move order
      * <p>
      * newPrice - new price (if 0 or same - order will not moved)
      * fills cmd.action  with original original order action
-     *
-     * @param cmd - order command
-     * @return MATCHING_UNKNOWN_ORDER_ID if order was not found, otherwise SUCCESS
+     * <p>
+     * |---byte orderCommandType---|---long uid---|---long orderId---|---long newPrice---|
+     * |---int productCode---|
      */
-    CommandResultCode moveOrder(OrderCommand cmd);
+    void moveOrder(DirectBuffer buffer, int offset);
 
     // testing only ?
     int getOrdersNum(OrderAction action);
@@ -90,11 +83,6 @@ public interface IOrderBook extends WriteBytesMarshallable, StateHash {
     void validateInternalState();
 
     /**
-     * @return actual implementation
-     */
-    OrderBookImplType getImplementationType();
-
-    /**
      * Search for all orders for specified user.<p>
      * Slow, because order book do not maintain uid-to-order index.<p>
      * Produces garbage.<p>
@@ -103,9 +91,9 @@ public interface IOrderBook extends WriteBytesMarshallable, StateHash {
      * @param uid user id
      * @return list of orders
      */
-    List<Order> findUserOrders(long uid);
+    List<IOrder> findUserOrders(long uid);
 
-    CoreSymbolSpecification getSymbolSpec();
+    S getSymbolSpec();
 
     Stream<? extends IOrder> askOrdersStream(boolean sorted);
 
@@ -129,9 +117,18 @@ public interface IOrderBook extends WriteBytesMarshallable, StateHash {
         // log.debug("  getSymbolSpec hash: {}", orderBook.getSymbolSpec().stateHash());
 
         return Objects.hash(
-                HashingUtils.stateHashStream(askOrdersStream(true)),
-                HashingUtils.stateHashStream(bidOrdersStream(true)),
+                stateHashStream(askOrdersStream(true)),
+                stateHashStream(bidOrdersStream(true)),
                 getSymbolSpec().stateHash());
+    }
+
+     static int stateHashStream(final Stream<? extends StateHash> stream) {
+        int h = 0;
+        final Iterator<? extends StateHash> iterator = stream.iterator();
+        while (iterator.hasNext()) {
+            h = h * 31 + iterator.next().stateHash();
+        }
+        return h;
     }
 
     /**
@@ -173,81 +170,86 @@ public interface IOrderBook extends WriteBytesMarshallable, StateHash {
     int getTotalBidBuckets(int limit);
 
 
-    static CommandResultCode processCommand(final IOrderBook orderBook, final OrderCommand cmd) {
+    /*
+     * Error code
+     */
 
-        final OrderCommandType commandType = cmd.command;
+    short MATCHING_SUCCESS = 0;
 
-        if (commandType == OrderCommandType.MOVE_ORDER) {
+    short MATCHING_UNKNOWN_ORDER_ID = -3002;
+    short MATCHING_UNSUPPORTED_COMMAND = -3004;
+    short MATCHING_INVALID_ORDER_BOOK_ID = -3005;
+    short MATCHING_MOVE_FAILED_PRICE_OVER_RISK_LIMIT = -3041;
+    short MATCHING_REDUCE_FAILED_WRONG_SIZE = -3051;
 
-            return orderBook.moveOrder(cmd);
+    /*
+     * Incoming message offsets
+     *
+     */
+    int PLACE_OFFSET_UID = 0;
+    int PLACE_OFFSET_ORDER_ID = PLACE_OFFSET_UID + BitUtil.SIZE_OF_LONG;
+    int PLACE_OFFSET_PRICE = PLACE_OFFSET_ORDER_ID + BitUtil.SIZE_OF_LONG;
+    int PLACE_OFFSET_RESERVED_BID_PRICE = PLACE_OFFSET_PRICE + BitUtil.SIZE_OF_LONG;
+    int PLACE_OFFSET_SIZE = PLACE_OFFSET_PRICE + BitUtil.SIZE_OF_LONG;
+    int PLACE_OFFSET_ACTION = PLACE_OFFSET_SIZE + BitUtil.SIZE_OF_LONG;
+    int PLACE_OFFSET_TYPE = PLACE_OFFSET_ACTION + BitUtil.SIZE_OF_BYTE;
+    int PLACE_OFFSET_END = PLACE_OFFSET_TYPE + BitUtil.SIZE_OF_BYTE;
 
-        } else if (commandType == OrderCommandType.CANCEL_ORDER) {
+    int CANCEL_OFFSET_UID = 0;
+    int CANCEL_OFFSET_ORDER_ID = CANCEL_OFFSET_UID + BitUtil.SIZE_OF_LONG;
+    int CANCEL_OFFSET_END = CANCEL_OFFSET_ORDER_ID + BitUtil.SIZE_OF_LONG;
 
-            return orderBook.cancelOrder(cmd);
+    int REDUCE_OFFSET_UID = 0;
+    int REDUCE_OFFSET_ORDER_ID  = REDUCE_OFFSET_UID + BitUtil.SIZE_OF_LONG;
+    int REDUCE_OFFSET_SIZE = REDUCE_OFFSET_ORDER_ID + BitUtil.SIZE_OF_LONG;
+    int REDUCE_OFFSET_END = REDUCE_OFFSET_SIZE + BitUtil.SIZE_OF_LONG;
 
-        } else if (commandType == OrderCommandType.REDUCE_ORDER) {
+    int MOVE_OFFSET_UID = 0;
+    int MOVE_OFFSET_ORDER_ID = MOVE_OFFSET_UID + BitUtil.SIZE_OF_LONG;
+    int MOVE_OFFSET_PRICE = MOVE_OFFSET_ORDER_ID + BitUtil.SIZE_OF_LONG;
+    int MOVE_OFFSET_END = MOVE_OFFSET_PRICE + BitUtil.SIZE_OF_LONG;
 
-            return orderBook.reduceOrder(cmd);
+    /*
+     * Outgoing message offset
+     */
+    int RESPONSE_CODE_SIZE = BitUtil.SIZE_OF_SHORT;
+    int RESPONSE_FIRST_MSG_OFFSET = RESPONSE_CODE_SIZE + BitUtil.SIZE_OF_INT;
 
-        } else if (commandType == OrderCommandType.PLACE_ORDER) {
 
-            if (cmd.resultCode == CommandResultCode.VALID_FOR_MATCHING_ENGINE) {
-                orderBook.newOrder(cmd);
-                return CommandResultCode.SUCCESS;
-            } else {
-                return cmd.resultCode; // no change
-            }
+    /*
+     * Order types
+     */
 
-        } else if (commandType == OrderCommandType.ORDER_BOOK_REQUEST) {
-            int size = (int) cmd.size;
-            cmd.marketData = orderBook.getL2MarketDataSnapshot(size >= 0 ? size : Integer.MAX_VALUE);
-            return CommandResultCode.SUCCESS;
+    byte ORDER_TYPE_GTC = 0; // Good till Cancel - equivalent to regular limit order
 
-        } else {
-            return CommandResultCode.MATCHING_UNSUPPORTED_COMMAND;
-        }
+    // Immediate or Cancel - equivalent to strict-risk market order
+    byte ORDER_TYPE_IOC = 1; // with price cap
+    byte ORDER_TYPE_IOC_BUDGET = 2; // with total amount cap
 
-    }
+    // Fill or Kill - execute immediately completely or not at all
+    byte ORDER_TYPE_FOK = 3; // with price cap
+    byte ORDER_TYPE_FOK_BUDGET = 4; // total amount cap
 
-    static IOrderBook create(BytesIn bytes, ObjectsPool objectsPool, OrderBookEventsHelper eventsHelper, LoggingConfiguration loggingCfg) {
-        switch (OrderBookImplType.of(bytes.readByte())) {
-            case NAIVE:
-                return new OrderBookNaiveImpl(bytes, loggingCfg);
-            case DIRECT:
-                return new OrderBookDirectImpl(bytes, objectsPool, eventsHelper, loggingCfg);
-            default:
-                throw new IllegalArgumentException();
-        }
-    }
 
-    @FunctionalInterface
-    interface OrderBookFactory {
+    /*
+     * Matcher Event types
+     */
 
-        IOrderBook create(CoreSymbolSpecification spec, ObjectsPool pool, OrderBookEventsHelper eventsHelper, LoggingConfiguration loggingCfg);
-    }
+    // After cancel/reduce order - risk engine should unlock deposit accordingly
+    byte MATCHER_EVENT_REDUCE = 0;
 
-    @Getter
-    enum OrderBookImplType {
-        NAIVE(0),
-        DIRECT(2);
+    // Trade event
+    // Can be triggered by place ORDER or for MOVE order command.
+    byte MATCHER_EVENT_TRADE = 1;
 
-        private byte code;
+    // Reject event
+    // Can happen only when MARKET order has to be rejected by Matcher Engine due lack of liquidity
+    // That basically means no ASK (or BID) orders left in the order book for any price.
+    // Before being rejected active order can be partially filled.
+    byte MATCHER_EVENT_REJECT = 2;
 
-        OrderBookImplType(int code) {
-            this.code = (byte) code;
-        }
-
-        public static OrderBookImplType of(byte code) {
-            switch (code) {
-                case 0:
-                    return NAIVE;
-                case 2:
-                    return DIRECT;
-                default:
-                    throw new IllegalArgumentException("unknown OrderBookImplType:" + code);
-            }
-        }
-    }
+    // Custom binary data attached
+    byte MATCHER_EVENT_BINARY_EVENT = 3;
 
 
 }

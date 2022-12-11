@@ -13,189 +13,120 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package exchange.core2.core.orderbook;
+package exchange.core2.collections.orderbook;
 
-import exchange.core2.core.common.IOrder;
-import exchange.core2.core.common.MatcherEventType;
-import exchange.core2.core.common.MatcherTradeEvent;
-import exchange.core2.core.common.cmd.OrderCommand;
-import exchange.core2.core.utils.SerializationUtils;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import net.openhft.chronicle.bytes.NativeBytes;
-import net.openhft.chronicle.wire.Wire;
+import org.agrona.BitUtil;
+import org.agrona.MutableDirectBuffer;
 
-import java.util.*;
-import java.util.function.Supplier;
-import java.util.stream.Stream;
-
-import static exchange.core2.core.ExchangeCore.EVENTS_POOLING;
-
-@Slf4j
-@RequiredArgsConstructor
 public final class OrderBookEventsHelper {
 
-    public static final OrderBookEventsHelper NON_POOLED_EVENTS_HELPER = new OrderBookEventsHelper(MatcherTradeEvent::new);
+    private final MutableDirectBuffer resultsBuffer;
 
-    private final Supplier<MatcherTradeEvent> eventChainsSupplier;
-
-    private MatcherTradeEvent eventsChainHead;
-
-    public MatcherTradeEvent sendTradeEvent(final IOrder matchingOrder,
-                                            final boolean makerCompleted,
-                                            final boolean takerCompleted,
-                                            final long size,
-                                            final long bidderHoldPrice) {
-        //final long takerOrderTimestamp
-
-//        log.debug("** sendTradeEvent: active id:{} matched id:{}", activeOrder.orderId, matchingOrder.orderId);
-//        log.debug("** sendTradeEvent: price:{} v:{}", price, v);
-
-        final MatcherTradeEvent event = newMatcherEvent();
-
-        event.eventType = MatcherEventType.TRADE;
-        event.section = 0;
-
-        event.activeOrderCompleted = takerCompleted;
-
-        event.matchedOrderId = matchingOrder.getOrderId();
-        event.matchedOrderUid = matchingOrder.getUid();
-        event.matchedOrderCompleted = makerCompleted;
-
-        event.price = matchingOrder.getPrice();
-        event.size = size;
-
-        // set order reserved price for correct released EBids
-        event.bidderHoldPrice = bidderHoldPrice;
-
-        return event;
-
+    public OrderBookEventsHelper(MutableDirectBuffer resultsBuffer) {
+        this.resultsBuffer = resultsBuffer;
     }
 
-    public MatcherTradeEvent sendReduceEvent(final IOrder order, final long reduceSize, final boolean completed) {
-//        log.debug("Cancel ");
-        final MatcherTradeEvent event = newMatcherEvent();
-        event.eventType = MatcherEventType.REDUCE;
-        event.section = 0;
-        event.activeOrderCompleted = completed;
-//        event.activeOrderSeq = order.seq;
-        event.matchedOrderId = 0;
-        event.matchedOrderCompleted = false;
-        event.price = order.getPrice();
-//        event.size = order.getSize() - order.getFilled();
-        event.size = reduceSize;
+    public void sendTradeEvent(final IOrder matchingOrder,
+                               final boolean makerCompleted,
+                               final boolean takerCompleted,
+                               final long size,
+                               final long bidderHoldPrice) {
 
-        event.bidderHoldPrice = order.getReserveBidPrice(); // set order reserved price for correct released EBids
+        int offset = resultsBuffer.getInt(IOrderBook.RESPONSE_CODE_SIZE);
 
-        return event;
+        resultsBuffer.putByte(offset, IOrderBook.MATCHER_EVENT_TRADE);
+        offset += BitUtil.SIZE_OF_BYTE;
+
+        // TODO single write in the end of block
+        resultsBuffer.putByte(offset, takerCompleted ? (byte) 1 : 0);
+        offset += BitUtil.SIZE_OF_BYTE;
+
+        // maker completed
+        resultsBuffer.putByte(offset, makerCompleted ? (byte) 1 : 0);
+        offset += BitUtil.SIZE_OF_BYTE;
+
+        // matched order Id
+        resultsBuffer.putLong(offset, matchingOrder.getOrderId());
+        offset += BitUtil.SIZE_OF_LONG;
+
+        // matched order UID
+        resultsBuffer.putLong(offset, matchingOrder.getUid());
+        offset += BitUtil.SIZE_OF_LONG;
+
+        // matching size
+        resultsBuffer.putLong(offset, size);
+        offset += BitUtil.SIZE_OF_LONG;
+
+        // matching price
+        resultsBuffer.putLong(offset, matchingOrder.getPrice());
+        offset += BitUtil.SIZE_OF_LONG;
+
+        // matching order reserved price for released Exchange Bids funds
+        resultsBuffer.putLong(offset, bidderHoldPrice);
+        offset += BitUtil.SIZE_OF_LONG;
+
+        resultsBuffer.putInt(IOrderBook.RESPONSE_CODE_SIZE, offset);
     }
 
+    public void sendReduceEvent(final IOrder order,
+                                final long reduceSize,
+                                final boolean completed) {
 
-    public void attachRejectEvent(final OrderCommand cmd, final long rejectedSize) {
+        int offset = resultsBuffer.getInt(IOrderBook.RESPONSE_CODE_SIZE);
 
-//        log.debug("Rejected {}", cmd.orderId);
-//        log.debug("\n{}", getL2MarketDataSnapshot(10).dumpOrderBook());
+        resultsBuffer.putByte(offset, IOrderBook.MATCHER_EVENT_REDUCE);
+        offset += BitUtil.SIZE_OF_BYTE;
 
-        final MatcherTradeEvent event = newMatcherEvent();
+        resultsBuffer.putByte(offset, completed ? (byte) 1 : 0);
+        offset += BitUtil.SIZE_OF_BYTE;
 
-        event.eventType = MatcherEventType.REJECT;
+        // fill action fields (for events handling)
+        resultsBuffer.putByte(offset, order.getAction() == OrderAction.BID ? (byte) 1 : 0);
+        offset += BitUtil.SIZE_OF_BYTE;
 
-        event.section = 0;
+        // reduced/cancelled size
+        resultsBuffer.putLong(offset, reduceSize);
+        offset += BitUtil.SIZE_OF_LONG;
 
-        event.activeOrderCompleted = true;
-//        event.activeOrderSeq = cmd.seq;
+        // order price
+        resultsBuffer.putLong(offset, order.getPrice());
+        offset += BitUtil.SIZE_OF_LONG;
 
-        event.matchedOrderId = 0;
-        event.matchedOrderCompleted = false;
+        // TODO can we use single price field ?
+        // reserve price
+        resultsBuffer.putLong(offset, order.getReserveBidPrice());
+        offset += BitUtil.SIZE_OF_LONG;
 
-        event.price = cmd.price;
-        event.size = rejectedSize;
-
-        event.bidderHoldPrice = cmd.reserveBidPrice; // set command reserved price for correct released EBids
-
-        // insert event
-        event.nextEvent = cmd.matcherEvent;
-        cmd.matcherEvent = event;
+        resultsBuffer.putInt(IOrderBook.RESPONSE_CODE_SIZE, offset);
     }
 
-    public MatcherTradeEvent createBinaryEventsChain(final long timestamp,
-                                                     final int section,
-                                                     final NativeBytes<Void> bytes) {
+    // TODO can use common method REJECT/REDUCE_ASK/REDUCE_BID/REDUCE_ASK_COMPLETE/REDUCE_BID_COMPLETE ?
 
-        long[] dataArray = SerializationUtils.bytesToLongArray(bytes, 5);
-
-        MatcherTradeEvent firstEvent = null;
-        MatcherTradeEvent lastEvent = null;
-        for (int i = 0; i < dataArray.length; i += 5) {
-
-            final MatcherTradeEvent event = newMatcherEvent();
-
-            event.eventType = MatcherEventType.BINARY_EVENT;
-
-            event.section = section;
-            event.matchedOrderId = dataArray[i];
-            event.matchedOrderUid = dataArray[i + 1];
-            event.price = dataArray[i + 2];
-            event.size = dataArray[i + 3];
-            event.bidderHoldPrice = dataArray[i + 4];
-
-            event.nextEvent = null;
-
-//            log.debug("BIN EVENT: {}", event);
-
-            // attach in direct order
-            if (firstEvent == null) {
-                firstEvent = event;
-            } else {
-                lastEvent.nextEvent = event;
-            }
-            lastEvent = event;
-        }
-
-        return firstEvent;
-    }
+    public void attachRejectEvent(final long price,
+                                  final long bidderHoldPrice,
+                                  final long rejectedSize) {
 
 
-    public static NavigableMap<Integer, Wire> deserializeEvents(final OrderCommand cmd) {
+        int offset = resultsBuffer.getInt(IOrderBook.RESPONSE_CODE_SIZE);
 
-        final Map<Integer, List<MatcherTradeEvent>> sections = new HashMap<>();
-        cmd.processMatcherEvents(evt -> sections.computeIfAbsent(evt.section, k -> new ArrayList<>()).add(evt));
+        resultsBuffer.putByte(offset, IOrderBook.MATCHER_EVENT_REJECT);
+        offset += BitUtil.SIZE_OF_BYTE;
 
-        NavigableMap<Integer, Wire> result = new TreeMap<>();
+        // rejected size
+        resultsBuffer.putLong(offset, rejectedSize);
+        offset += BitUtil.SIZE_OF_LONG;
 
-        sections.forEach((section, events) -> {
-            final long[] dataArray = events.stream()
-                    .flatMap(evt -> Stream.of(
-                            evt.matchedOrderId,
-                            evt.matchedOrderUid,
-                            evt.price,
-                            evt.size,
-                            evt.bidderHoldPrice))
-                    .mapToLong(s -> s)
-                    .toArray();
+        // order price
+        resultsBuffer.putLong(offset, price);
+        offset += BitUtil.SIZE_OF_LONG;
 
-            final Wire wire = SerializationUtils.longsToWire(dataArray);
+        // TODO can we use single price field ?
+        // reserve price
+        // set command reserved price for correct released EBids
+        resultsBuffer.putLong(offset, bidderHoldPrice);
+        offset += BitUtil.SIZE_OF_LONG;
 
-            result.put(section, wire);
-        });
-
-
-        return result;
-    }
-
-    private MatcherTradeEvent newMatcherEvent() {
-
-        if (EVENTS_POOLING) {
-            if (eventsChainHead == null) {
-                eventsChainHead = eventChainsSupplier.get();
-//            log.debug("UPDATED HEAD size={}", eventsChainHead == null ? 0 : eventsChainHead.getChainSize());
-            }
-            final MatcherTradeEvent res = eventsChainHead;
-            eventsChainHead = eventsChainHead.nextEvent;
-            return res;
-        } else {
-            return new MatcherTradeEvent();
-        }
+        resultsBuffer.putInt(IOrderBook.RESPONSE_CODE_SIZE, offset);
     }
 
 }

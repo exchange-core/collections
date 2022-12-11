@@ -1,4 +1,8 @@
 package exchange.core2.collections.orderbook;
 
-public class ISymbolSpecification {
+public interface ISymbolSpecification extends StateHash {
+
+    boolean isExchangeType();
+
 }
+
