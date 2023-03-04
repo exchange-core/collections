@@ -1,6 +1,5 @@
 package exchange.core2.collections.hashtable;
 
-import exchange.core2.collections.orderbook.naive.OrderBookNaiveImpl;
 import org.agrona.collections.Hashing;
 import org.agrona.collections.Long2LongHashMap;
 import org.junit.Before;
@@ -8,8 +7,10 @@ import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.*;
-import java.util.stream.IntStream;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Random;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
@@ -191,6 +192,46 @@ public class LongLongHashtableTest {
         log.info("done");
     }
 
+    @Test
+    public void should_upsize_throughput() {
+
+        RandomDataSetsProvider randomDataSetsProvider = RandomDataSetsProvider.create();
+
+        long t = System.currentTimeMillis();
+        final int mask = (1 << 23) - 1;
+        log.debug("mask=" + mask);
+
+        hashtable = new LongLongHashtable();
+        Random rand = new Random(1L);
+
+        int j = 0;
+        long[] dataset = randomDataSetsProvider.next();
+
+        for (int i = 0; i < 1_000_000_000; i++) {
+
+            if(j > dataset.length - 2){
+                dataset = randomDataSetsProvider.next();
+                j = 0;
+            }
+
+            final long key = dataset[j++];
+            final long value = dataset[j++];
+
+//            final long key = rand.nextLong();
+//            final long value = rand.nextLong();
+            hashtable.put(key, value);
+
+            //refMap.forEach((k, v) -> assertThat(hashtable.get(k), is(v)));
+
+            if ((i & mask) == 0) {
+                final long t2 = System.currentTimeMillis();
+                log.debug("i={} t={}ms", i, t2 - t);
+                t = t2;
+            }
+        }
+
+    }
+
     /**
      * 15:26:26.635 [main] INFO exchange.core2.collections.hashtable.LongLongHashtableTest - Benchmarking put 1000000 elements...
      * 15:26:26.713 [main] INFO exchange.core2.collections.hashtable.LongLongHashtableTest - PUT speed: 78ns
@@ -357,6 +398,56 @@ public class LongLongHashtableTest {
 
 
     }
+
+    /*
+
+
+     */
+
+    @Test
+    public void should_upsize_async() throws InterruptedException {
+        int n = 13_000_000;
+        long seed = -923421549367843497L;
+
+        hashtable = new LongLongHashtable();
+        Random rand = new Random(seed);
+        for (int i = 0; i < n; i++) {
+            final long key = rand.nextLong();
+            final long value = rand.nextLong();
+            hashtable.put(key, value);
+        }
+
+        log.info("Put completed");
+
+        Thread.sleep(100);
+
+        log.info("validating get...");
+        rand = new Random(seed);
+        for (int i = 0; i < n; i++) {
+            final long key = rand.nextLong();
+            final long value = rand.nextLong();
+
+            final long found = hashtable.get(key);
+            if (found != value) {
+                log.error("key={} found={} expected={} i={}", key, found, value, i);
+            }
+
+            assertThat(hashtable.get(key), is(value));
+//            assertThat(hashtable.remove(key), is(value));
+        }
+
+
+//        log.info("confirm empty...");
+//        rand = new Random(seed);
+//        for (int i = 0; i < n; i++) {
+//            final long key = rand.nextLong();
+//            final long value = rand.nextLong();
+//            assertFalse(hashtable.containsKey(key));
+//        }
+//
+//        log.info("done");
+    }
+
 
     public boolean canFillGapAndFinish(int k, int h, int g) {
 
