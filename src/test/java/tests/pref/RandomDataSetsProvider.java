@@ -1,5 +1,6 @@
-package exchange.core2.collections.hashtable;
+package tests.pref;
 
+import exchange.core2.collections.hashtable.HashingUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -13,7 +14,7 @@ public class RandomDataSetsProvider {
     final int size = 10_000_000;
     final Random random = new Random(1L);
 
-    private BlockingQueue<long[]> queue = new LinkedBlockingQueue<>(2);
+    final private BlockingQueue<long[]> queue = new LinkedBlockingQueue<>(2);
 
     public static RandomDataSetsProvider create() {
         final RandomDataSetsProvider provider = new RandomDataSetsProvider();

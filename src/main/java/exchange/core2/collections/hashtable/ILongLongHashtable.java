@@ -6,6 +6,7 @@ import java.util.stream.LongStream;
 
 public interface ILongLongHashtable {
 
+    // TODO put val=0 is the same as removal ??
     long put(long key, long value);
 
     long get(long key);
@@ -13,7 +14,6 @@ public interface ILongLongHashtable {
     boolean containsKey(long key);
 
     long remove(long key);
-
 
     void clear();
 
@@ -23,5 +23,6 @@ public interface ILongLongHashtable {
 
     void forEach(LongLongConsumer consumer);
 
+    long size();
 
 }

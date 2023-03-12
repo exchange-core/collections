@@ -4,7 +4,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Queue;
-import java.util.concurrent.CompletableFuture;
 
 public class HashtableResizer {
 
@@ -12,23 +11,12 @@ public class HashtableResizer {
 
     private final long[] data;
 
-    private final Queue<Long> invalidationQueue;
-
-    public HashtableResizer(long[] data, Queue<Long> invalidationQueue) {
+    public HashtableResizer(long[] data) {
         this.data = data;
-        this.invalidationQueue = invalidationQueue;
     }
 
     public long[] resizeSync() {
         return resize();
-    }
-
-    public CompletableFuture<long[]> resizeAsync() {
-        return CompletableFuture.supplyAsync(() -> {
-            final long[] data2 = resize();
-            replicate(data, data2, invalidationQueue);
-            return data2;
-        });
     }
 
 
