@@ -60,6 +60,10 @@ public class PerfLongLongHashtable {
      * 15:26:26.713 [main] INFO exchange.core2.collections.hashtable.LongLongHashtableTest - PUT speed: 78ns
      * 15:26:26.776 [main] INFO exchange.core2.collections.hashtable.LongLongHashtableTest - GET speed: 63ns (acc=4832899208090569750)
      * 15:26:26.901 [main] INFO exchange.core2.collections.hashtable.LongLongHashtableTest - REMOVE speed: 125ns
+     *
+     * 17:23:36.364 [main] INFO tests.pref.PerfLongLongHashtable - PUT speed: 114ns
+     * 17:23:36.475 [main] INFO tests.pref.PerfLongLongHashtable - GET speed: 111ns (acc=4252319330582285564)
+     * 17:23:36.651 [main] INFO tests.pref.PerfLongLongHashtable - REMOVE speed: 176ns
      */
     @Test
     public void should_upsize_perf() {

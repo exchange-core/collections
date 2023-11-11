@@ -1,7 +1,7 @@
 package exchange.core2.collections.hashtable;
 
+import org.agrona.BitUtil;
 import org.agrona.collections.Hashing;
-import org.agrona.collections.Long2LongHashMap;
 import org.junit.Before;
 import org.junit.Test;
 import org.slf4j.Logger;
@@ -155,7 +155,6 @@ public class LongLongHashtableTest {
     }
 
 
-
     @Test
     public void should_remove_full_collision_series() {
 
@@ -208,6 +207,15 @@ public class LongLongHashtableTest {
 
             //refMap.forEach((k, v) -> assertThat(hashtable.get(k), is(v)));
 
+            if (BitUtil.isPowerOfTwo(i)) {
+
+                //hashtable.printLayout();
+
+                assertThat(hashtable.size(), is(i + 1L));
+                log.info("validating get...");
+                refMap.forEach((k, v) -> assertThat(hashtable.get(k), is(v)));
+            }
+
         }
 
         assertThat(hashtable.size(), is(50_000L));
@@ -221,7 +229,6 @@ public class LongLongHashtableTest {
 
         log.info("done");
     }
-
 
 
     @Test
@@ -251,7 +258,6 @@ public class LongLongHashtableTest {
 
 
     }
-
 
 
     public boolean canFillGapAndFinish(int k, int h, int g) {

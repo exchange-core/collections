@@ -70,16 +70,33 @@ public class LongLongRadixHashtableTest {
 
     @Test
     public void tmp() {
-        final int newMask = -(1 << 29);
-        log.debug("newMask = {}", Integer.toHexString(newMask));
 
-        int bitsShift = 29;
+        int subtables = 256;
 
-        for (int i = 0; i < 4; i++) {
-            final int destBits = (i * 2 + 1) << bitsShift;
+        for (int i = 1; i <= 256; i++) {
 
-            log.debug("destBits = {}", String.format("%8X", destBits));
+            double x = (double) subtables / i;
+
+            int r = (int) x;
+
+            //int s = r * i;
+            double f = x - r;
+            long k = Math.round(f * i);
+
+            // (i-k) * r / subtables + k * (r + 1) / subtables = 1
+
+            log.debug("{}: {} * {}/{} + {} * {}/{} = 1", i, i - k, r, subtables, k, r + 1, subtables);
+
+
+            if ((i - k) * r + k * (r + 1) != subtables) {
+                throw new IllegalStateException();
+            }
+
+            //log.debug("i={} x={} xRounded={} f={} k={}", i, x, r, f, k);
+
+
         }
+
     }
 
 }

@@ -173,12 +173,24 @@ public class LongLongHashtable implements ILongLongHashtable {
             return;
         }
 
-        final HashtableResizer hashtableResizer = new HashtableResizer(data);
+        final boolean useSync = size < 12;
 
-        log.debug("Sync resizing...");
-        final long[] data2 = hashtableResizer.resizeSync();
+        if (!useSync) printLayout("BEFORE RESIZE");
 
+        final long[] data2;
+        if (useSync) {
+            final HashtableResizer hashtableResizer = new HashtableResizer(data);
+            log.debug("Sync resizing...");
+            data2 = hashtableResizer.resizeSync();
+        } else {
+            final HashtableAsyncResizer hashtableResizer = new HashtableAsyncResizer(data);
+            log.debug("Async resizing...");
+            data2 = hashtableResizer.resizeAsync();
+        }
         switchToNewArray(data2);
+
+        if (!useSync) printLayout("AFTER RESIZE");
+
         log.debug("RESIZE done, upsizeThreshold=" + upsizeThreshold);
     }
 
@@ -275,6 +287,27 @@ public class LongLongHashtable implements ILongLongHashtable {
         // TODO check load factor is correct
 
 
+    }
+
+    public void printLayout(String comment) {
+
+        log.debug("---- {} start --- size:{} --- capacity:{} --- ", comment, size, data.length / 2);
+        for (int i = 0; i < data.length; i += 2) {
+            final long key = data[i];
+            if (key != HashingUtils.NOT_ALLOWED_KEY) {
+                final int hash = Hashing.hash(key);
+                final int targetPos = hash & mask;
+                log.debug("{}. T:{} H:{} {}={}", i >> 1, targetPos, String.format("%08X", hash), key, data[i + 1]);
+            } else {
+                log.debug("{}. ---", i >> 1);
+            }
+
+            if (i > 256) {
+                log.debug("... skip ...");
+                break;
+            }
+        }
+        log.debug("---- {} end --- ", comment);
     }
 
 //    private int desiredPosition(long key) {
