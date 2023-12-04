@@ -3,6 +3,8 @@ package exchange.core2.collections.hashtable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.concurrent.CompletableFuture;
+
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
 
 public class HashtableAsyncResizer {
@@ -11,70 +13,191 @@ public class HashtableAsyncResizer {
 
     private final long[] prevData;
 
+    private long[] data2;
+    private int newMask;
+    private volatile int g0 = -1;
+    private volatile int gp = -1;
+
+    private volatile long pauseRequest = 0;
+    private volatile long pauseResponse = 0;
+
+    private CompletableFuture<Void> copyingProcess;
+
     public HashtableAsyncResizer(long[] prevData) {
         this.prevData = prevData;
     }
 
-    public long[] resizeAsync() {
-        return initResize();
+    public void resizeAsync() {
+        initResize();
+    }
+
+    public boolean isFinished() {
+        return copyingProcess.isDone();
+    }
+
+    public long[] waitCompletion() {
+        copyingProcess.join();
+        return data2;
     }
 
 
-    private long[] initResize() {
+    public boolean isInMigratedSegment(int pos) {
+        final int from = g0;
+        final int to = gp;
+        if (from == -1 || to == -1) { // TODO remove double volatile read
+            return false;
+        }
+        log.debug("check pos:{} in migrated segment {}..{} ", pos, g0, gp);
 
-        log.info("(S) Allocating array: long[{}] ... -----------------", prevData.length * 2);
-
-        final int g0 = findNextGapPos(0);
-        final int g0next = g0 + 2; // TODO migrate 32 elements?
-        final int gp = findNextGapPos(g0next == prevData.length ? 0 : g0next);
-        log.info("found g0={} gp={}", g0, gp);
-
-
-        // TODO allocate in new thread and don't block until allocatied
-        final long[] data2 = new long[prevData.length * 2];
-        final int newMask = prevData.length - 1;
-
-
-        log.info("(S) Initial migration g0..gp segments ...");
-        for (int pos = g0next; pos != gp; pos += 2) {
-            if (pos == prevData.length) {
-                pos = 0;
-            }
-            final long key = prevData[pos];
-            if (key == NOT_ALLOWED_KEY) {
-                continue;
-            }
-            final int offset = HashingUtils.findFreeOffset(key, data2, newMask);
-            data2[offset] = key;
-            data2[offset + 1] = prevData[pos + 1];
+        if(from == to){
+            // assume finished
+            return true;
         }
 
+        // TODO check correctness
 
-        int pos = gp;
-        log.info("(S) Next segment after {}...", pos);
+        if (from <= to) {
+            // |--from++++++to--------------|
+            return pos > from && pos < to;
+        } else {
+            // |++++++++++++to--------from++|
+            return pos > from || pos < to;
+        }
+        // TODO extend gaps if necessary (or spin)
+    }
+
+    public static boolean isInMigratedSegment(int pos, int g0, int gp) {
+        if (g0 == -1 || gp == -1) {
+            return false;
+        }
+
+        if (g0 == gp) {
+            // assume finished
+            return true;
+        }
+
+        // TODO check correctness
+        if (g0 <= gp) {
+            return pos > g0 && pos < gp;
+        } else {
+            return pos > g0 || pos < gp;
+        }
+    }
+
+    public long[] getNewDataArray() {
+        return data2;
+    }
+
+    public int getNewMask() {
+        return newMask;
+    }
+
+    public int getG0() {
+        return g0;
+    }
+
+    public void setG0(int g0) {
+        this.g0 = g0;
+    }
+
+    public int getGp() {
+        return gp;
+    }
+
+
+    public void pause() {
+        long ticket = pauseRequest;
+        if ((ticket & 1) == 1) {
+            throw new IllegalStateException("Already paused");
+        }
+        ticket++;
+        pauseRequest = ticket;
+        log.debug("pauseRequest = {}, waiting..", ticket);
+        while (pauseResponse != ticket && !copyingProcess.isDone()) { // TODO - DONE grants pause but migration not finished ??
+            Thread.yield();
+        }
+        log.debug("request granted: pauseResponse={}  copyingProcess.isDone()={}", pauseResponse, copyingProcess.isDone());
+    }
+
+    public void resume() {
+        long ticket = pauseRequest;
+        if ((ticket & 1) == 0) {
+            throw new IllegalStateException("Not paused");
+        }
+        ticket++;
+
+        log.debug("pauseRelease:  pauseRequest={}", ticket);
+        pauseRequest = ticket;
+    }
+
+    private void initResize() {
+        log.info("(A) ----------- starting async migration capacity: {}->{} -----------------", prevData.length / 2, prevData.length);
+        copyingProcess = CompletableFuture.runAsync(this::doMigration);
+    }
+
+    private void doMigration() {
+
+        log.info("(A) Allocating array: long[{}] ...", prevData.length * 2);
+        data2 = new long[prevData.length * 2];
+        newMask = prevData.length - 1;
+
+
+        g0 = findNextGapPos(0);
+        log.info("(A) Allocated new array, first gap g0={}, copying...", g0);
+
+
+        int endPos = g0;
+        int pos = endPos;
+
+        int counter = 0;
+        log.info("(A) Next segment after {}...", pos);
         do {
+
             pos += 2;
             if (pos == prevData.length) {
                 pos = 0;
             }
             final long key = prevData[pos];
             if (key == NOT_ALLOWED_KEY) {
-                // TODO report every 1024 keys
+                if (counter >= 128) {
+//                    log.debug("Report gp={}", pos);
+                    gp = pos; // TODO lazy set
+                    counter = 0;
+
+                    // check if pause requested
+                    long ticket = pauseRequest;
+                    if ((ticket & 1) == 1) {
+                        log.debug("(A) Detected pause requested: {} (gp=pos={})", ticket, pos);
+                        pauseResponse = ticket;
+                        // indicate pause and wait for release from application
+                        while (pauseRequest == ticket) {
+                            Thread.yield();
+                        }
+                        log.debug("(A) Detected pause released: {}", ticket);
+                        // indicate pause release (previous pause, not just any)
+                        pauseResponse = ticket + 1;
+
+                        // can be changed in rare scenario
+                        final int newEndPos = g0;
+                        if(newEndPos != endPos) {
+                            log.debug("(A) RARE: updated endPos {}->{} (cur pos={})", endPos, newEndPos, pos);
+                            endPos = newEndPos;
+                        }
+                    }
+                }
                 continue;
             }
             final int offset = HashingUtils.findFreeOffset(key, data2, newMask);
             data2[offset] = key;
             data2[offset + 1] = prevData[pos + 1];
-        } while (pos != g0);
+            counter++;
+        } while (pos != endPos);
 
-        // log.info("(S) Segment ended {}...", pos);
-
-
-        log.info("(S) Copying completed ----------------------");
-
-        return data2;
+        gp = pos;
+        log.info("(A) Copying completed ----------------------");
 
     }
+
 
     private int findNextGapPos(final int initialPos) {
 

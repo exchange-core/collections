@@ -8,6 +8,8 @@ import org.slf4j.LoggerFactory;
 
 import java.util.stream.LongStream;
 
+import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
+
 public class LongLongHashtable implements ILongLongHashtable {
 
     private static final Logger log = LoggerFactory.getLogger(LongLongHashtable.class);
@@ -37,11 +39,13 @@ public class LongLongHashtable implements ILongLongHashtable {
         this.upsizeThreshold = (int) ((mask + 1) * upsizeThresholdPerc);
     }
 
-
     @Override
     public long put(long key, long value) {
-//        log.debug("PUT key:{} val:{}", key, value);
+
+        if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
+        //        log.debug("PUT key:{} val:{}", key, value);
         final int offset = HashingUtils.findFreeOffset(key, data, mask);
+
         final long prevValue = data[offset + 1];
         if (data[offset] != key) {
             size++;
@@ -60,14 +64,14 @@ public class LongLongHashtable implements ILongLongHashtable {
 
     @Override
     public long get(long key) {
-//        log.debug("GET key:{}", key);
         final int offset = HashingUtils.findFreeOffset(key, data, mask);
         return data[offset + 1];
     }
 
+
     @Override
     public boolean containsKey(long key) {
-        return get(key) != HashingUtils.NOT_ALLOWED_KEY;
+        return get(key) != NOT_ALLOWED_KEY;
     }
 
     @Override
@@ -76,11 +80,14 @@ public class LongLongHashtable implements ILongLongHashtable {
     }
 
     public long remove(long key, int hash) {
+        return removeInternal(key, hash, data, mask);
+    }
 
-        int lastPos = (hash & mask);
+    private long removeInternal(long key, int hash, long[] datax, int maskx) {
+        int lastPos = (hash & maskx);
 
         // try all keys until either gap (NOT_ALLOWED_KEY)
-        long existingKey = data[lastPos << 1];
+        long existingKey = datax[lastPos << 1];
         int gapPos = -1;
         long oldValue = 0L;
         while (true) {
@@ -88,38 +95,32 @@ public class LongLongHashtable implements ILongLongHashtable {
             if (existingKey == key) {
                 // desired key found
                 gapPos = lastPos;
-                oldValue = data[(lastPos << 1) + 1];
+                oldValue = datax[(lastPos << 1) + 1];
                 size--;
-//                log.debug("found prev value at gapPos={} oldValue={}", gapPos, oldValue);
             }
 
             // try next element
-            final int posNext = (lastPos + 1) & mask;
-            if (data[posNext << 1] == HashingUtils.NOT_ALLOWED_KEY) {
-//                log.debug("done probing, {} is empty", posNext);
+            final int posNext = (lastPos + 1) & maskx;
+            if (datax[posNext << 1] == NOT_ALLOWED_KEY) {
                 break;
             } else {
-                existingKey = data[posNext << 1];
+                existingKey = datax[posNext << 1];
                 lastPos = posNext;
-//                log.debug("try next pos={} existingKey={}", lastPos, existingKey);
             }
         }
 
         if (gapPos == -1) {
-//            log.debug("nothing to remove, returning 0");
             // nothing to remove - can just return
             return 0L;
         } else {
             // doing cleanup starting from last entry (pos)
-//        log.debug("last pos={}", lastPos);
-            moveGap(gapPos, lastPos);
-//        log.debug("return oldValue={}", oldValue);
+            moveGap(gapPos, lastPos, datax, maskx);
             return oldValue;
         }
     }
 
 
-    private void moveGap(int gapPos, int lastPos) {
+    private static void moveGap(int gapPos, int lastPos, long[] data, int mask) {
 
         // move gap to the right until it is at the last position
         while (gapPos != lastPos) {
@@ -139,7 +140,7 @@ public class LongLongHashtable implements ILongLongHashtable {
                 if (p == gapPos) {
                     // reached beginning of series (all entries has desired position after the gap)
 //                    log.debug("final x=lastPos={}", gapPos);
-                    data[gapPos << 1] = HashingUtils.NOT_ALLOWED_KEY;
+                    data[gapPos << 1] = NOT_ALLOWED_KEY;
                     data[(gapPos << 1) + 1] = 0;
 
                     return;
@@ -158,14 +159,14 @@ public class LongLongHashtable implements ILongLongHashtable {
 //        log.debug("final gapPos=lastPos={}", gapPos);
 
         // because gap is at a last position of the series - it is safe to mark gap as empty and finish
-        data[gapPos << 1] = HashingUtils.NOT_ALLOWED_KEY;
+        data[gapPos << 1] = NOT_ALLOWED_KEY;
         data[(gapPos << 1) + 1] = 0;
 
     }
 
     private void resize() {
 
-        log.debug("RESIZE {}->{} elements={} ...", data.length, data.length * 2L, size);
+        // log.debug("RESIZE {}->{} elements={} ...", data.length, data.length * 2L, size);
 
         if (data.length * 2L > Integer.MAX_VALUE) {
             log.warn("WARN: Can not upsize hashtable - performance will degrade gradually");
@@ -173,25 +174,11 @@ public class LongLongHashtable implements ILongLongHashtable {
             return;
         }
 
-        final boolean useSync = size < 12;
-
-        if (!useSync) printLayout("BEFORE RESIZE");
-
         final long[] data2;
-        if (useSync) {
-            final HashtableResizer hashtableResizer = new HashtableResizer(data);
-            log.debug("Sync resizing...");
-            data2 = hashtableResizer.resizeSync();
-        } else {
-            final HashtableAsyncResizer hashtableResizer = new HashtableAsyncResizer(data);
-            log.debug("Async resizing...");
-            data2 = hashtableResizer.resizeAsync();
-        }
+        final HashtableResizer hashtableResizer = new HashtableResizer(data);
+        // log.debug("Sync resizing...");
+        data2 = hashtableResizer.resizeSync();
         switchToNewArray(data2);
-
-        if (!useSync) printLayout("AFTER RESIZE");
-
-        log.debug("RESIZE done, upsizeThreshold=" + upsizeThreshold);
     }
 
     private void switchToNewArray(long[] data2) {
@@ -236,13 +223,13 @@ public class LongLongHashtable implements ILongLongHashtable {
 
         for (int i = 0; i < data.length; i += 2) {
             final long key = data[i];
-            if (key != HashingUtils.NOT_ALLOWED_KEY) {
+            if (key != NOT_ALLOWED_KEY) {
                 final int hash = Hashing.hash(key);
                 final boolean match = (hash & destMask) == destBits;
 //                log.debug("key={} hash={} pos={} match={}", key, String.format("%08X", hash), i >> 1, match);
                 if (match) {
                     dest.put(key, data[i + 1]);
-                    data[i] = HashingUtils.NOT_ALLOWED_KEY;
+                    data[i] = NOT_ALLOWED_KEY;
                     data[i + 1] = 0;
                     size--;
                 }
@@ -252,18 +239,18 @@ public class LongLongHashtable implements ILongLongHashtable {
 
         for (int i = 0; i < data.length; i += 2) {
             final long key = data[i];
-            if (key != HashingUtils.NOT_ALLOWED_KEY) {
+            if (key != NOT_ALLOWED_KEY) {
                 final int hash = Hashing.hash(key);
                 int j = (hash & mask) << 1;
 
 //                log.debug("key={} hash={} curPos={} minPos={}", key, String.format("%08X", hash), i >> 1, j >> 1);
 
                 while (j != i) {
-                    if (data[j] == HashingUtils.NOT_ALLOWED_KEY) {
+                    if (data[j] == NOT_ALLOWED_KEY) {
                         // found gap
                         data[j] = data[i];
                         data[j + 1] = data[i + 1];
-                        data[i] = HashingUtils.NOT_ALLOWED_KEY;
+                        data[i] = NOT_ALLOWED_KEY;
                         data[i + 1] = 0;
 
 //                        log.debug("replaced to {}", j >> 1);
@@ -294,7 +281,7 @@ public class LongLongHashtable implements ILongLongHashtable {
         log.debug("---- {} start --- size:{} --- capacity:{} --- ", comment, size, data.length / 2);
         for (int i = 0; i < data.length; i += 2) {
             final long key = data[i];
-            if (key != HashingUtils.NOT_ALLOWED_KEY) {
+            if (key != NOT_ALLOWED_KEY) {
                 final int hash = Hashing.hash(key);
                 final int targetPos = hash & mask;
                 log.debug("{}. T:{} H:{} {}={}", i >> 1, targetPos, String.format("%08X", hash), key, data[i + 1]);
