@@ -1,10 +1,8 @@
 package tests.stress;
 
-import exchange.core2.collections.hashtable.LongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongHashtableAbstractTest;
 import exchange.core2.collections.hashtable.LongLongLLHashtable;
 import org.agrona.BitUtil;
-import org.agrona.collections.Long2LongHashMap;
 import org.agrona.collections.MutableInteger;
 import org.junit.Test;
 import org.slf4j.Logger;
@@ -13,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.Future;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
@@ -25,14 +24,42 @@ public class LongLongLLHashtableStressTest {
     @Test
     public void should_upsize() {
 
-        final Random rand = new Random(14232313L);
-        for (int iteration = 0; iteration < 1000; iteration++) {
+        runTestSingleThread(14232313L, 1000, 500000);
+    }
+
+    @Test
+    public void should_upsize_multi_threaded() throws InterruptedException {
+
+        final Thread.UncaughtExceptionHandler ueh = (t, e) -> {
+            throw new RuntimeException(e);
+        };
+
+        final Thread[] threads = new Thread[4];
+        for (int i = 0; i < 4; i++) {
+            final long seed = Integer.hashCode(i);
+            final Thread thread = new Thread(() -> runTestSingleThread(seed, 1000, 500000));
+            thread.setName("TEST-" + i);
+            thread.start();
+            thread.setUncaughtExceptionHandler(ueh);
+            threads[i] = thread;
+        }
+
+        for (final Thread t : threads) {
+            t.join();
+        }
+
+    }
+
+
+    private static void runTestSingleThread(long seed, int iterations, long size) {
+
+        final Random rand = new Random(seed);
+
+        for (int iteration = 0; iteration < iterations; iteration++) {
 
             final LongLongLLHashtable hashtable = new LongLongLLHashtable();
             final Map<Long, Long> refMap = new HashMap<>();
 
-//            final long size = 5000000L;
-            final long size = 500000L;
             for (long i = 0; i < size; i++) {
                 final long key = rand.nextLong();
                 final long value = rand.nextLong();
