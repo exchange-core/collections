@@ -47,14 +47,12 @@ public class HashtableAsyncResizer {
         if (from == -1 || to == -1) { // TODO remove double volatile read
             return false;
         }
-        log.debug("check pos:{} in migrated segment {}..{} ", pos, g0, gp);
+        //   log.debug("check pos:{} in migrated segment {}..{} ", pos, g0, gp);
 
-        if(from == to){
+        if (from == to) {
             // assume finished
             return true;
         }
-
-        // TODO check correctness
 
         if (from <= to) {
             // |--from++++++to--------------|
@@ -63,7 +61,6 @@ public class HashtableAsyncResizer {
             // |++++++++++++to--------from++|
             return pos > from || pos < to;
         }
-        // TODO extend gaps if necessary (or spin)
     }
 
     public static boolean isInMigratedSegment(int pos, int g0, int gp) {
@@ -76,7 +73,6 @@ public class HashtableAsyncResizer {
             return true;
         }
 
-        // TODO check correctness
         if (g0 <= gp) {
             return pos > g0 && pos < gp;
         } else {
@@ -105,52 +101,60 @@ public class HashtableAsyncResizer {
     }
 
 
-    public void pause() {
+    public boolean pause() {
         long ticket = pauseRequest;
         if ((ticket & 1) == 1) {
             throw new IllegalStateException("Already paused");
         }
         ticket++;
         pauseRequest = ticket;
-        log.debug("pauseRequest = {}, waiting..", ticket);
-        while (pauseResponse != ticket && !copyingProcess.isDone()) { // TODO - DONE grants pause but migration not finished ??
+        //     log.debug("pauseRequest = {}, waiting..", ticket);
+        while (pauseResponse != ticket) {
+            if (copyingProcess.isDone()) {
+                return true;
+            }
             Thread.yield();
         }
-        log.debug("request granted: pauseResponse={}  copyingProcess.isDone()={}", pauseResponse, copyingProcess.isDone());
+        //   log.debug("request granted: pauseResponse={}  copyingProcess.isDone()={}", pauseResponse, copyingProcess.isDone());
+        return false;
     }
 
-    public void resume() {
+    public long resume() {
         long ticket = pauseRequest;
         if ((ticket & 1) == 0) {
             throw new IllegalStateException("Not paused");
         }
         ticket++;
 
-        log.debug("pauseRelease:  pauseRequest={}", ticket);
+        //     log.debug("pauseRelease:  pauseRequest={}", ticket);
         pauseRequest = ticket;
+        return ticket;
     }
 
     private void initResize() {
-        log.info("(A) ----------- starting async migration capacity: {}->{} -----------------", prevData.length / 2, prevData.length);
-        copyingProcess = CompletableFuture.runAsync(this::doMigration);
+        //log.info("(A) ----------- starting async migration capacity: {}->{} -----------------", prevData.length / 2, prevData.length);
+        final String threadName = Thread.currentThread().getName();
+        copyingProcess = CompletableFuture.runAsync(() -> doMigration(threadName + "-M"));
     }
 
-    private void doMigration() {
+    private void doMigration(String threadName) {
 
-        log.info("(A) Allocating array: long[{}] ...", prevData.length * 2);
+        Thread.currentThread().setName(threadName); // TODO remove
+
+        //log.info("(A) Allocating array: long[{}] ...", prevData.length * 2);
         data2 = new long[prevData.length * 2];
         newMask = prevData.length - 1;
 
 
         g0 = findNextGapPos(0);
-        log.info("(A) Allocated new array, first gap g0={}, copying...", g0);
+        //log.info("(A) Allocated new array, first gap g0={}, copying...", g0);
 
 
         int endPos = g0;
         int pos = endPos;
 
         int counter = 0;
-        log.info("(A) Next segment after {}...", pos);
+        //log.info("(A) Next segment after {}...", pos);
         do {
 
             pos += 2;
@@ -159,7 +163,7 @@ public class HashtableAsyncResizer {
             }
             final long key = prevData[pos];
             if (key == NOT_ALLOWED_KEY) {
-                if (counter >= 128) {
+                if (counter >= 127) {
 //                    log.debug("Report gp={}", pos);
                     gp = pos; // TODO lazy set
                     counter = 0;
@@ -167,19 +171,20 @@ public class HashtableAsyncResizer {
                     // check if pause requested
                     long ticket = pauseRequest;
                     if ((ticket & 1) == 1) {
-                        log.debug("(A) Detected pause requested: {} (gp=pos={})", ticket, pos);
+                        //log.debug("(A) Detected pause requested: {} (gp=pos={})", ticket, pos);
                         pauseResponse = ticket;
                         // indicate pause and wait for release from application
                         while (pauseRequest == ticket) {
                             Thread.yield();
                         }
-                        log.debug("(A) Detected pause released: {}", ticket);
+
+                        //log.debug("(A) Detected pause released: {}", ticket);
                         // indicate pause release (previous pause, not just any)
                         pauseResponse = ticket + 1;
 
                         // can be changed in rare scenario
                         final int newEndPos = g0;
-                        if(newEndPos != endPos) {
+                        if (newEndPos != endPos) {
                             log.debug("(A) RARE: updated endPos {}->{} (cur pos={})", endPos, newEndPos, pos);
                             endPos = newEndPos;
                         }
@@ -188,13 +193,14 @@ public class HashtableAsyncResizer {
                 continue;
             }
             final int offset = HashingUtils.findFreeOffset(key, data2, newMask);
+
             data2[offset] = key;
             data2[offset + 1] = prevData[pos + 1];
             counter++;
         } while (pos != endPos);
 
         gp = pos;
-        log.info("(A) Copying completed ----------------------");
+        //log.info("(A) Copying completed gp={} pauseResponse={} ----------------------", gp, pauseResponse);
 
     }
 

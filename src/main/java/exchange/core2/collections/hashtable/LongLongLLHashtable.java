@@ -38,13 +38,13 @@ public class LongLongLLHashtable implements ILongLongHashtable {
         this.data = new long[arraySize * 2];
         this.upsizeThresholdPerc = 0.65f;
         this.mask = (this.data.length / 2) - 1;
-        this.upsizeThreshold = (int) ((mask + 1) * upsizeThresholdPerc);
+        this.upsizeThreshold = calculateUpsizeThreshold();
     }
 
     @Override
     public long put(long key, long value) {
         if (resizer != null && resizer.isFinished()) {
-            log.debug("PUT {}: finished can switch to new array", key);
+            // log.debug("PUT {}: finished can switch to new array", key);
             switchToNewArray();
         }
 
@@ -77,7 +77,7 @@ public class LongLongLLHashtable implements ILongLongHashtable {
         int g0 = resizer.getG0();
 
         if (HashtableAsyncResizer.isInMigratedSegment(pos, g0, gp)) {
-            log.debug("PUT: {} put {} In MigratedSegment {} {}", key, pos, g0, gp);
+            //log.debug("PUT: {} put {} In MigratedSegment {} {}", key, pos, g0, gp);
 
             final int offset = HashingUtils.findFreeOffset(key, resizer.getNewDataArray(), resizer.getNewMask());
 
@@ -89,88 +89,102 @@ public class LongLongLLHashtable implements ILongLongHashtable {
                 if (resizer.isFinished()) {
                     break;
                 }
-                log.debug("PUT {}: RARE Rereading gp before = {} (offset:{} +mask:{})", key, gp, offset, offset & mask);
+                //log.debug("PUT {}: RARE Rereading gp before = {} (offset:{} +mask:{})", key, gp, offset, offset & mask);
                 gp = resizer.getGp();
-                log.debug("PUT {}: RARE Rereading gp after = {}", key, gp);
+                //log.debug("PUT {}: RARE Rereading gp after = {}", key, gp);
             }
 
             return putInternalInsert(resizer.getNewDataArray(), offset, key, value);
 
         }
 
-        log.debug("PUT {}: Requesting pause...", key);
-        resizer.pause();
-        log.debug("PUT {}: Pause granted, processing", key);
+        int offset;
+        boolean copyingProcessDone;
+        do {
+            //  log.debug("PUT {}: Requesting pause...", key);
+            copyingProcessDone = resizer.pause();
+            //  log.debug("PUT {}: Pause granted, processing", key);
 
+            gp = resizer.getGp();
+            if (HashtableAsyncResizer.isInMigratedSegment(pos, g0, gp)) {
+                // migrated now
+                //   log.debug("PUT {}: insert into new array", key);
+                final int offsetNew = HashingUtils.findFreeOffset(key, resizer.getNewDataArray(), resizer.getNewMask());
 
-        gp = resizer.getGp();
-        if (HashtableAsyncResizer.isInMigratedSegment(pos, g0, gp)) {
-            // migrated now
-            log.debug("PUT {}: insert into new array", key);
-            final int offset = HashingUtils.findFreeOffset(key, resizer.getNewDataArray(), resizer.getNewMask());
-
-            // rare scenario: offset reached gp when on pause
-            // resume-pause-read gp (g0 can not be changed by migrator)
-            while ((offset & mask) == gp) { // TODO incorrect ??? (mask)
-                log.debug("PUT {}: RARE gp {} == (offset:{} +mask:{}), resuming and then requesting pause", key, gp, offset, offset & mask);
-                resizer.resume();
-                Thread.yield();
-                resizer.pause();
-                if (resizer.isFinished()) {
-                    break;
+                // rare scenario: offset reached gp when on pause
+                // resume-pause-read gp (g0 can not be changed by migrator)
+                while ((offsetNew & mask) == gp) {
+                    //       log.debug("PUT {}: RARE gp {} == (offset:{} +mask:{}), resuming and then requesting pause", key, gp, offset, offset & mask);
+                    resizer.resume();
+                    Thread.yield();
+                    resizer.pause();
+                    if (resizer.isFinished()) {
+                        break;
+                    }
+                    gp = resizer.getGp();
+                    //      log.debug("PUT {}: Rereading gp after pause = {}", key, gp);
                 }
-                gp = resizer.getGp();
-                log.debug("PUT {}: Rereading gp after pause = {}", key, gp);
+
+                final long prevVal = putInternalInsert(resizer.getNewDataArray(), offsetNew, key, value);
+                resizer.resume();
+
+                return prevVal;
             }
 
-            final long prevVal = putInternalInsert(resizer.getNewDataArray(), offset, key, value);
+            // not migrated yet
+            offset = HashingUtils.findFreeOffset(key, data, mask);
+
+            //   log.debug("PUT {}: insert into old array, pos={} (gp={})", key, offset, gp);
+
+            if (offset != gp) {
+                break;
+            }
+            log.debug("PUT {}: RARE offset == gp ({})", key, gp);
             resizer.resume();
-            return prevVal;
-        }
-
-        // not migrated yet (TODO NOTE: wont work for PUT because of possible g0/gp extension)
-        final int offset = HashingUtils.findFreeOffset(key, data, mask);
-
-        log.debug("PUT {}: insert into old array, pos={} (gp={})", key, offset, gp);
-
-        // TODO  offset == gp possible RARE ^^^^^
-
+        } while (true);
 
 
         // rare scenario: offset reached g0 (stays always empty)
         // have to extend g0 (surely g0 != gp now)
         if (offset == g0) {
+
+            int g0orig = g0;
             log.debug("PUT {}: RARE Extending backwards section g0={}", key, g0);
             do {
                 if (g0 == 0) {
                     g0 = data.length;
                 }
                 g0 -= 2;
-                log.debug("PUT {}: check {} if busy..", key, g0);
+                //log.debug("PUT {}: check {} if busy..", key, g0);
             } while (data[g0] != NOT_ALLOWED_KEY);
 
             // note: it is possible g0=gp now
 
-            log.debug("Found new g0={}, migrating from old g0={} (gp={})", g0, offset, gp);
+            //log.debug("Found new g0={}, migrating from old g0={} (gp={})", g0, offset, gp);
             final long[] data2 = resizer.getNewDataArray();
             int pos2 = (g0 + 2);
-            pos2 = pos2 == data.length ? 0: pos2;
-            do {
+            pos2 = pos2 == data.length ? 0 : pos2;
+            while (pos2 != offset) {
                 final long key2 = data[pos2];
+                if (key2 == NOT_ALLOWED_KEY) {
+                    throw new IllegalStateException("should not migrate empty key");
+                }
+
                 final int offset2 = HashingUtils.findFreeOffset(key2, data2, resizer.getNewMask());
-                log.debug("move pos2={}(old) offset2={}(new) k={} v={}", pos2, offset2, key2, data[pos2 + 1]);
+                //log.debug("move pos2={}(old) offset2={}(new) k={} v={}", pos2, offset2, key2, data[pos2 + 1]);
                 data2[offset2] = key2;
                 data2[offset2 + 1] = data[pos2 + 1];
                 pos2 += 2;
-                pos2 = pos2 == data.length ? 0: pos2;
-            } while (pos2 != offset);
+                pos2 = pos2 == data.length ? 0 : pos2;
+
+            }
 
             // offset will be different for data2
             final int offsetFinal = HashingUtils.findFreeOffset(key, data2, resizer.getNewMask());
 
             resizer.setG0(g0);
             final long prevVal = putInternalInsert(data2, offsetFinal, key, value);
-            log.debug("DONE RARE: offsetFinal={} prevVal={}", offsetFinal, prevVal);
+            //log.debug("DONE RARE: offsetFinal={} prevVal={}", offsetFinal, prevVal);
 
             resizer.resume();
             return prevVal;
@@ -179,7 +193,9 @@ public class LongLongLLHashtable implements ILongLongHashtable {
         // can proceed with old section and resume
 
         final long prevVal = putInternalInsert(data, offset, key, value);
+
         resizer.resume();
+
         return prevVal;
     }
 
@@ -199,8 +215,10 @@ public class LongLongLLHashtable implements ILongLongHashtable {
     public long get(long key) {
 
         if (resizer != null && resizer.isFinished()) {
-            log.debug("GET {}: finished can switch to new array", key);
+
+            //    log.debug("GET {}: finished can switch to new array", key);
             switchToNewArray();
+
         }
 
         if (resizer == null) {
@@ -212,25 +230,25 @@ public class LongLongLLHashtable implements ILongLongHashtable {
         int pos = (hash & mask) << 1;
 
         if (resizer.isInMigratedSegment(pos)) {
-            log.debug("GET {}: migrated, get from new array", key);
+            //      log.debug("GET {}: migrated, get from new array", key);
             return getFromNewDataArray(key);
         } else {
-            log.debug("GET {}: Requesting pause...", key);
+            //        log.debug("GET {}: Requesting pause...", key);
             resizer.pause();
-            log.debug("GET {}: Pause granted, processing", key);
+            //        log.debug("GET {}: Pause granted, processing", key);
             final long val;
             if (resizer.isInMigratedSegment(pos)) {
-                log.debug("GET {}: migrated, taking from new", key);
+                //          log.debug("GET {}: migrated, taking from new", key);
                 // migrated now
                 val = getFromNewDataArray(key);
             } else {
-                log.debug("GET {}: not migrated, taking from old", key);
-                // not migrated yet (TODO NOTE: wont work for PUT because of possible g0/gp extension)
+                //         log.debug("GET {}: not migrated, taking from old", key);
+                // not migrated yet
                 final int offset = HashingUtils.findFreeOffset(key, data, mask);
                 val = data[offset + 1];
             }
             resizer.resume();
-            log.debug("GET {}: Returning val={}", key, val);
+            //       log.debug("GET {}: Returning val={}", key, val);
             return val;
         }
 
@@ -257,7 +275,7 @@ public class LongLongLLHashtable implements ILongLongHashtable {
         // blockOnResizing();
 
         if (resizer != null && resizer.isFinished()) {
-            log.debug("REMOVE {}: migration finished can switch to new array", key);
+            //        log.debug("REMOVE {}: migration finished can switch to new array", key);
             switchToNewArray();
         }
         if (resizer == null) {
@@ -266,25 +284,25 @@ public class LongLongLLHashtable implements ILongLongHashtable {
 
         int pos = (hash & mask) << 1;
         if (resizer.isInMigratedSegment(pos)) {
-            log.debug("REMOVE {}: in migrated range, can remove from new array", key);
+            //       log.debug("REMOVE {}: in migrated range, can remove from new array", key);
             return removeInternal(key, hash, resizer.getNewDataArray(), resizer.getNewMask());
         }
 
-        log.debug("REMOVE {}: Requesting pause...", key);
+        //   log.debug("REMOVE {}: Requesting pause...", key);
         resizer.pause();
-        log.debug("REMOVE {}: Pause granted, processing", key);
+        //  log.debug("REMOVE {}: Pause granted, processing", key);
         final long val;
         if (resizer.isInMigratedSegment(pos)) {
-            log.debug("REMOVE {}: migrated, removing from new", key);
+            // log.debug("REMOVE {}: migrated, removing from new", key);
             // migrated now
             val = removeInternal(key, hash, resizer.getNewDataArray(), resizer.getNewMask());
         } else {
-            log.debug("REMOVE {}: not migrated, taking from old", key);
+            //       log.debug("REMOVE {}: not migrated, taking from old", key);
             // not migrated yet
             val = removeInternal(key, hash, data, mask);
         }
         resizer.resume();
-        log.debug("REMOVE {}: Returning val={}", key, val);
+        //    log.debug("REMOVE {}: Returning val={}", key, val);
         return val;
     }
 
@@ -371,7 +389,7 @@ public class LongLongLLHashtable implements ILongLongHashtable {
 
     private void resize() {
 
-        log.debug("RESIZE {}->{} elements={} ...", data.length, data.length * 2L, size);
+        //log.debug("RESIZE {}->{} elements={} ...", data.length, data.length * 2L, size);
 
         if (data.length * 2L > Integer.MAX_VALUE) {
             log.warn("WARN: Can not upsize hashtable - performance will degrade gradually");
@@ -379,19 +397,19 @@ public class LongLongLLHashtable implements ILongLongHashtable {
             return;
         }
 
-        final boolean useSync = size < 12;
+        final boolean useSync = size < 20000;
 
         if (useSync) {
             final HashtableResizer hashtableResizer = new HashtableResizer(data);
-            log.debug("Sync resizing...");
+            //log.debug("Sync resizing...");
             this.data = hashtableResizer.resizeSync();
             mask = mask * 2 + 1;
-            upsizeThreshold = (int) ((mask + 1) * upsizeThresholdPerc);
-            log.debug("SYNC RESIZE done, upsizeThreshold=" + upsizeThreshold);
+            upsizeThreshold = calculateUpsizeThreshold();
+            //log.debug("SYNC RESIZE done, upsizeThreshold=" + upsizeThreshold);
         } else {
-            printLayout("BEFORE async RESIZE");
+            //printLayout("BEFORE async RESIZE");
             final HashtableAsyncResizer hashtableResizer = new HashtableAsyncResizer(data);
-            log.debug("Async resizing...");
+            //log.debug("Async resizing...");
             hashtableResizer.resizeAsync();
             resizer = hashtableResizer;
         }
@@ -404,7 +422,7 @@ public class LongLongLLHashtable implements ILongLongHashtable {
             resizer.waitCompletion();
             switchToNewArray();
             log.debug("ASYNC RESIZE done, upsizeThreshold=" + upsizeThreshold);
-            printLayout("AFTER async RESIZE");
+            // printLayout("AFTER async RESIZE");
         }
     }
 
@@ -412,8 +430,12 @@ public class LongLongLLHashtable implements ILongLongHashtable {
     private void switchToNewArray() {
         this.data = resizer.getNewDataArray();
         mask = mask * 2 + 1;
-        upsizeThreshold = (int) ((mask + 1) * upsizeThresholdPerc);
+        upsizeThreshold = calculateUpsizeThreshold();
         resizer = null;
+    }
+
+    private long calculateUpsizeThreshold(){
+        return   (int) ((mask + 1) * upsizeThresholdPerc);
     }
 
     @Override
