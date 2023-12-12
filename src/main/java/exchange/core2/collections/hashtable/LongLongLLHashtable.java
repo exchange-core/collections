@@ -17,37 +17,44 @@ public class LongLongLLHashtable implements ILongLongHashtable {
     public static final int DEFAULT_ARRAY_SIZE = 16;
 
     private final float upsizeThresholdPerc;
+    private final float blockThresholdPerc;
 
     private long[] data;
     private long size = 0;
     private int mask;
     private long upsizeThreshold;
-
+    private long blockThreshold;
     private HashtableAsyncResizer resizer;
 
     public LongLongLLHashtable() {
         this(DEFAULT_ARRAY_SIZE);
     }
 
-    public LongLongLLHashtable(int arraySize) {
+    public LongLongLLHashtable(int size) {
 
-        if (!BitUtil.isPowerOfTwo(arraySize)) {
-            throw new IllegalArgumentException();
-        }
+        final int arraySize = BitUtil.findNextPositivePowerOfTwo(size);
 
         this.data = new long[arraySize * 2];
         this.upsizeThresholdPerc = 0.65f;
+        this.blockThresholdPerc = 0.7f;
         this.mask = (this.data.length / 2) - 1;
         this.upsizeThreshold = calculateUpsizeThreshold();
+        this.blockThreshold = calculateBlockThreshold();
     }
 
     @Override
     public long put(long key, long value) {
-        if (resizer != null && resizer.isFinished()) {
-            // log.debug("PUT {}: finished can switch to new array", key);
-            switchToNewArray();
+        if (resizer != null) {
+            if (resizer.isFinished()) {
+                // log.debug("PUT {}: finished can switch to new array", key);
+                switchToNewArray();
+            } else if (size >= blockThreshold) {
+                log.warn("BLOCKED: blockThreshold={}", blockThreshold);
+                resizer.waitCompletion();
+                switchToNewArray();
+                log.warn("UNBLOCKED");
+            }
         }
-
         if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
 
         if (resizer == null) {
@@ -412,6 +419,7 @@ public class LongLongLLHashtable implements ILongLongHashtable {
             //log.debug("Async resizing...");
             hashtableResizer.resizeAsync();
             resizer = hashtableResizer;
+            blockThreshold = calculateBlockThreshold();
         }
     }
 
@@ -431,11 +439,16 @@ public class LongLongLLHashtable implements ILongLongHashtable {
         this.data = resizer.getNewDataArray();
         mask = mask * 2 + 1;
         upsizeThreshold = calculateUpsizeThreshold();
+        blockThreshold = calculateBlockThreshold();
         resizer = null;
     }
 
-    private long calculateUpsizeThreshold(){
-        return   (int) ((mask + 1) * upsizeThresholdPerc);
+    private long calculateUpsizeThreshold() {
+        return (int) ((mask + 1) * upsizeThresholdPerc);
+    }
+
+    private long calculateBlockThreshold() {
+        return (int) ((mask + 1) * blockThresholdPerc);
     }
 
     @Override

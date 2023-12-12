@@ -21,6 +21,7 @@ public class HashtableAsyncResizer {
     private volatile long pauseRequest = 0;
     private volatile long pauseResponse = 0;
 
+    private CompletableFuture<long[]> arrayFeature;
     private CompletableFuture<Void> copyingProcess;
 
     public HashtableAsyncResizer(long[] prevData) {
@@ -132,8 +133,9 @@ public class HashtableAsyncResizer {
     }
 
     private void initResize() {
-        //log.info("(A) ----------- starting async migration capacity: {}->{} -----------------", prevData.length / 2, prevData.length);
+        log.info("(A) ----------- starting async migration capacity: {}->{} -----------------", prevData.length / 2, prevData.length);
         final String threadName = Thread.currentThread().getName();
+        arrayFeature = CompletableFuture.supplyAsync(() -> new long[prevData.length * 2]);
         copyingProcess = CompletableFuture.runAsync(() -> doMigration(threadName + "-M"));
     }
 
@@ -141,20 +143,38 @@ public class HashtableAsyncResizer {
 
         Thread.currentThread().setName(threadName); // TODO remove
 
-        //log.info("(A) Allocating array: long[{}] ...", prevData.length * 2);
-        data2 = new long[prevData.length * 2];
+        log.info("(A) Allocating array: long[{}] ...", prevData.length * 2);
+
+        while(!arrayFeature.isDone()){
+            Thread.yield();
+            // check if pause requested
+            long ticket = pauseRequest;
+            if ((ticket & 1) == 1) {
+                //log.debug("(A) Detected pause requested: {} (gp=pos={})", ticket, pos);
+                pauseResponse = ticket;
+                // indicate pause and wait for release from application
+                while (pauseRequest == ticket) {
+                    Thread.yield();
+                }
+
+                //log.debug("(A) Detected pause released: {}", ticket);
+                // indicate pause release (previous pause, not just any)
+                pauseResponse = ticket + 1;
+            }
+        }
+
+        data2 = arrayFeature.join();
         newMask = prevData.length - 1;
 
-
         g0 = findNextGapPos(0);
-        //log.info("(A) Allocated new array, first gap g0={}, copying...", g0);
+        log.info("(A) Allocated new array, first gap g0={}, copying...", g0);
 
 
         int endPos = g0;
         int pos = endPos;
 
         int counter = 0;
-        //log.info("(A) Next segment after {}...", pos);
+        log.info("(A) Next segment after {}...", pos);
         do {
 
             pos += 2;
@@ -200,7 +220,7 @@ public class HashtableAsyncResizer {
         } while (pos != endPos);
 
         gp = pos;
-        //log.info("(A) Copying completed gp={} pauseResponse={} ----------------------", gp, pauseResponse);
+        log.info("(A) Copying completed gp={} pauseResponse={} ----------------------", gp, pauseResponse);
 
     }
 
