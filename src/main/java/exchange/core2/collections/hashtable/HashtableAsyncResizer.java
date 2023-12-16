@@ -22,6 +22,8 @@ public class HashtableAsyncResizer {
     private volatile long pauseResponse = 0;
 
     private CompletableFuture<long[]> arrayFeature;
+
+    private final CompletableFuture<Void> copyingAllowed = new CompletableFuture<>();
     private CompletableFuture<Void> copyingProcess;
 
     public HashtableAsyncResizer(long[] prevData) {
@@ -37,10 +39,22 @@ public class HashtableAsyncResizer {
     }
 
     public long[] waitCompletion() {
+        copyingAllowed.complete(null);
         copyingProcess.join();
         return data2;
     }
 
+    public boolean isArrayAllocated() {
+        return arrayFeature.isDone();
+    }
+
+    public boolean isWaitingPermissionToCopy() {
+        return arrayFeature.isDone() && !copyingAllowed.isDone();
+    }
+
+    public void allowCopying() {
+        copyingAllowed.complete(null);
+    }
 
     public boolean isInMigratedSegment(int pos) {
         final int from = g0;
@@ -145,24 +159,8 @@ public class HashtableAsyncResizer {
 
         log.info("(A) Allocating array: long[{}] ...", prevData.length * 2);
 
-        while(!arrayFeature.isDone()){
-            Thread.yield();
-            // check if pause requested
-            long ticket = pauseRequest;
-            if ((ticket & 1) == 1) {
-                //log.debug("(A) Detected pause requested: {} (gp=pos={})", ticket, pos);
-                pauseResponse = ticket;
-                // indicate pause and wait for release from application
-                while (pauseRequest == ticket) {
-                    Thread.yield();
-                }
-
-                //log.debug("(A) Detected pause released: {}", ticket);
-                // indicate pause release (previous pause, not just any)
-                pauseResponse = ticket + 1;
-            }
-        }
-
+        copyingAllowed.join();
+        log.info("(A) waiting arrayFeature...");
         data2 = arrayFeature.join();
         newMask = prevData.length - 1;
 
