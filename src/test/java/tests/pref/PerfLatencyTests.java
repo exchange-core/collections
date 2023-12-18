@@ -9,7 +9,10 @@ import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.Function;
@@ -270,6 +273,50 @@ public class PerfLatencyTests {
         );
     }
 
+    /*
+25200000: {50.0%=0.6us, 90.0%=12.2ms, 95.0%=13.6ms, 99.0%=14.8ms, 99.9%=15.1ms, 99.99%=15.1ms, W=1.46s}
+27900000: {50.0%=6.5ms, 90.0%=19.3ms, 95.0%=603ms, 99.0%=605ms, 99.9%=605ms, 99.99%=605ms, W=605ms}
+50400000: {50.0%=6.6ms, 90.0%=19.9ms, 95.0%=21.7ms, 99.0%=22.9ms, 99.9%=23.2ms, 99.99%=23.2ms, W=3.5s}
+64300000: {50.0%=10.1ms, 90.0%=922ms, 95.0%=924ms, 99.0%=925ms, 99.9%=926ms, 99.99%=926ms, W=926ms}
+100700000: {50.0%=1.0us, 90.0%=9.2ms, 95.0%=10.9ms, 99.0%=12.2ms, 99.9%=12.5ms, 99.99%=12.5ms, W=8.1s}
+168900000: {50.0%=18.2ms, 90.0%=39ms, 95.0%=41ms, 99.0%=1.35s, 99.9%=1.35s, 99.99%=1.35s, W=1.35s}
+     */
+    @Test
+    public void benchmarkStdHashMap() {
+        benchmarkAbstract(
+            (long[] kv) -> {
+                final Map<Long, Long> hashtable = new HashMap<>(5000000);
+                for (long l : kv) hashtable.put(l, l);
+                return hashtable;
+            },
+            this::benchmark,
+            (Map<Long, Long> hashtable, long[] kv) -> {
+                for (long l : kv) hashtable.put(l, l);
+            }
+        );
+    }
+
+    /*
+12600000: {50.0%=0.4us, 90.0%=5.8ms, 95.0%=9.3ms, 99.0%=11.9ms, 99.9%=12.5ms, 99.99%=12.6ms, W=1.29s}
+25200000: {50.0%=0.6us, 90.0%=10.9ms, 95.0%=14.1ms, 99.0%=16.6ms, 99.9%=17.0ms, 99.99%=17.1ms, W=3.6s}
+50400000: {50.0%=8.4ms, 90.0%=23.9ms, 95.0%=25.7ms, 99.0%=27.1ms, 99.9%=27.5ms, 99.99%=27.5ms, W=5.1s}
+100700000: {50.0%=0.7us, 90.0%=11.9ms, 95.0%=14.0ms, 99.0%=15.5ms, 99.9%=15.8ms, 99.99%=15.8ms, W=12.9s}
+     */
+    @Test
+    public void benchmarkStdCHM() {
+        benchmarkAbstract(
+            (long[] kv) -> {
+                final Map<Long, Long> hashtable = new ConcurrentHashMap<>(5000000);
+                for (long l : kv) hashtable.put(l, l);
+                return hashtable;
+            },
+            this::benchmark,
+            (Map<Long, Long> hashtable, long[] kv) -> {
+                for (long l : kv) hashtable.put(l, l);
+            }
+        );
+    }
+
 
     private <T> void benchmarkAbstract(Function<long[], T> factory,
                                        BiFunction<T, long[], SingleResult> singleTest,
@@ -296,6 +343,8 @@ public class PerfLatencyTests {
         log.debug("Benchmarking...");
 
         final long[] keys = new long[n2];
+
+        // TODO make continuous test (non-stop)
 
         for (int j = 0; j < 1780; j++) {
             for (int i = 0; i < n2; i++) keys[i] = rand.nextLong();
@@ -350,7 +399,7 @@ public class PerfLatencyTests {
         long planneTimeOffsetPs = 0L;
         long lastKnownTimeOffsetPs = 0L;
 
-        int nanoTimeRequestsCounter = 0;
+        //int nanoTimeRequestsCounter = 0;
 
         for (int i = 0; i < keys.length; i++) {
 
@@ -362,7 +411,7 @@ public class PerfLatencyTests {
 
                 lastKnownTimeOffsetPs = (System.nanoTime() - startTimeNs) << 10;
 
-                nanoTimeRequestsCounter++;
+                // nanoTimeRequestsCounter++;
 
                 // spin until its time to send next command
                 Thread.onSpinWait(); // 1us-26  max34
@@ -441,6 +490,39 @@ public class PerfLatencyTests {
 
         return new SingleResult(hashtable.size(), histogramPut, histogramPut, histogramPut);
     }
+
+
+    private SingleResult benchmark(Map<Long, Long> hashtable, long[] keys) {
+
+        int tps = 1_000_000;
+
+
+        final Histogram histogramPut = new Histogram(60_000_000_000L, 3);
+
+        final long picosPerCmd = (1024L * 1_000_000_000L) / tps;
+        final long startTimeNs = System.nanoTime();
+
+        long planneTimeOffsetPs = 0L;
+        long lastKnownTimeOffsetPs = 0L;
+
+        for (int i = 0; i < keys.length; i++) {
+            final long key = keys[i];
+            planneTimeOffsetPs += picosPerCmd;
+            while (planneTimeOffsetPs > lastKnownTimeOffsetPs) {
+                lastKnownTimeOffsetPs = (System.nanoTime() - startTimeNs) << 10;
+                // spin until its time to send next command
+                Thread.onSpinWait(); // 1us-26  max34
+                // LockSupport.parkNanos(1L); // 1us-25 max29
+                // Thread.yield();   // 1us-28  max32
+            }
+            hashtable.put(key, key);
+            final long putNs = System.nanoTime() - startTimeNs - (lastKnownTimeOffsetPs >> 10);
+            histogramPut.recordValue(putNs);
+        }
+
+        return new SingleResult(hashtable.size(), histogramPut, histogramPut, histogramPut);
+    }
+
 
     record SingleResult(long size, Histogram avgPut, Histogram avgGet, Histogram avgRemove) {
 

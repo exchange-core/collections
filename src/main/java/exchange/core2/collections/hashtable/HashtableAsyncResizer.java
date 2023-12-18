@@ -13,25 +13,26 @@ public class HashtableAsyncResizer {
 
     private final long[] prevData;
 
-    private long[] data2;
-    private int newMask;
+    private final long[] data2;
+    private final int newMask;
     private volatile int g0 = -1;
     private volatile int gp = -1;
 
     private volatile long pauseRequest = 0;
     private volatile long pauseResponse = 0;
 
-    private CompletableFuture<long[]> arrayFeature;
-
-    private final CompletableFuture<Void> copyingAllowed = new CompletableFuture<>();
     private CompletableFuture<Void> copyingProcess;
 
-    public HashtableAsyncResizer(long[] prevData) {
+    public HashtableAsyncResizer(long[] prevData, long[] data2) {
         this.prevData = prevData;
+        this.data2 = data2;
+        this.newMask = prevData.length - 1;
     }
 
     public void resizeAsync() {
-        initResize();
+        log.info("(A) ----------- starting async migration capacity: {}->{} -----------------", prevData.length / 2, prevData.length);
+        final String threadName = Thread.currentThread().getName();
+        copyingProcess = CompletableFuture.runAsync(() -> doMigration(threadName + "-M"));
     }
 
     public boolean isFinished() {
@@ -39,21 +40,8 @@ public class HashtableAsyncResizer {
     }
 
     public long[] waitCompletion() {
-        copyingAllowed.complete(null);
         copyingProcess.join();
         return data2;
-    }
-
-    public boolean isArrayAllocated() {
-        return arrayFeature.isDone();
-    }
-
-    public boolean isWaitingPermissionToCopy() {
-        return arrayFeature.isDone() && !copyingAllowed.isDone();
-    }
-
-    public void allowCopying() {
-        copyingAllowed.complete(null);
     }
 
     public boolean isInMigratedSegment(int pos) {
@@ -146,23 +134,8 @@ public class HashtableAsyncResizer {
         return ticket;
     }
 
-    private void initResize() {
-        log.info("(A) ----------- starting async migration capacity: {}->{} -----------------", prevData.length / 2, prevData.length);
-        final String threadName = Thread.currentThread().getName();
-        arrayFeature = CompletableFuture.supplyAsync(() -> new long[prevData.length * 2]);
-        copyingProcess = CompletableFuture.runAsync(() -> doMigration(threadName + "-M"));
-    }
-
     private void doMigration(String threadName) {
-
         Thread.currentThread().setName(threadName); // TODO remove
-
-        log.info("(A) Allocating array: long[{}] ...", prevData.length * 2);
-
-        copyingAllowed.join();
-        log.info("(A) waiting arrayFeature...");
-        data2 = arrayFeature.join();
-        newMask = prevData.length - 1;
 
         g0 = findNextGapPos(0);
         log.info("(A) Allocated new array, first gap g0={}, copying...", g0);

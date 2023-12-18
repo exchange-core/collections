@@ -7,7 +7,9 @@ import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashMap;
 import java.util.Hashtable;
+import java.util.Map;
 import java.util.Random;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
@@ -142,6 +144,22 @@ public class PerfThroughputTests {
         );
     }
 
+    @Test
+    public void benchmarkStdHashMap() {
+        benchmarkAbstract(
+            (long[] kv) -> {
+                final Map<Long,Long> hashtable = new HashMap<>();
+                for (long l : kv) hashtable.put(l, l);
+                return hashtable;
+            },
+            this::benchmark,
+            (Map<Long,Long> hashtable, long[] kv) -> {
+                for (long l : kv) hashtable.put(l, l);
+            }
+        );
+    }
+
+
 
     private <T> void benchmarkAbstract(Function<long[], T> factory,
                                        BiFunction<T, long[], SingleResult> singleTest,
@@ -232,6 +250,23 @@ public class PerfThroughputTests {
         long removNs = (System.nanoTime() - t) / keys.length;
         return new SingleResult(hashtable.size(), putNs, getNs, removNs, acc);
     }
+
+    private SingleResult benchmark(Map<Long, Long> hashtable, long[] keys) {
+        long t = System.nanoTime();
+        for (long key : keys) hashtable.put(key, key);
+        long putNs = (System.nanoTime() - t) / keys.length;
+
+        t = System.nanoTime();
+        long acc = 0;
+        for (long key : keys) acc += hashtable.get(key);
+        long getNs = (System.nanoTime() - t) / keys.length;
+
+        t = System.nanoTime();
+        for (long key : keys) hashtable.remove(key);
+        long removNs = (System.nanoTime() - t) / keys.length;
+        return new SingleResult(hashtable.size(), putNs, getNs, removNs, acc);
+    }
+
 
     record SingleResult(long size, long avgPut, long avgGet, long avgRemove, long acc) {
 
