@@ -36,10 +36,10 @@ public class LongLongLLHashtable implements ILongLongHashtable {
 
     public LongLongLLHashtable(int size) {
 
-        final int arraySize = BitUtil.findNextPositivePowerOfTwo(size);
+        this.upsizeThresholdPerc = 0.65f;
+        final int arraySize = BitUtil.findNextPositivePowerOfTwo((int) (size / upsizeThresholdPerc));
 
         this.data = new long[arraySize * 2];
-        this.upsizeThresholdPerc = 0.65f;
         this.blockThresholdPerc = 0.95f;
         this.mask = (this.data.length / 2) - 1;
         this.upsizeThreshold = calculateUpsizeThreshold();

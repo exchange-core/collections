@@ -27,14 +27,12 @@ public class LongLongHashtable implements ILongLongHashtable {
         this(DEFAULT_ARRAY_SIZE);
     }
 
-    public LongLongHashtable(int arraySize) {
+    public LongLongHashtable(int size) {
 
-        if (!BitUtil.isPowerOfTwo(arraySize)) {
-            throw new IllegalArgumentException();
-        }
+        this.upsizeThresholdPerc = 0.65f;
+        final int arraySize = BitUtil.findNextPositivePowerOfTwo((int) (size / upsizeThresholdPerc));
 
         this.data = new long[arraySize * 2];
-        this.upsizeThresholdPerc = 0.65f;
         this.mask = (this.data.length / 2) - 1;
         this.upsizeThreshold = (int) ((mask + 1) * upsizeThresholdPerc);
     }
@@ -177,7 +175,11 @@ public class LongLongHashtable implements ILongLongHashtable {
         final long[] data2;
         final HashtableResizer hashtableResizer = new HashtableResizer(data);
         // log.debug("Sync resizing...");
+//        if (data.length >= 32768) { // TODO find right value
+//            data2 = hashtableResizer.resizeParallelSync();
+//        } else {
         data2 = hashtableResizer.resizeSync();
+//        }
         switchToNewArray(data2);
     }
 

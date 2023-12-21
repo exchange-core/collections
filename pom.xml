@@ -107,6 +107,11 @@
             </dependency>
 -->
 
+            <dependency>
+                <groupId>net.openhft</groupId>
+                <artifactId>chronicle-map</artifactId>
+                <version>3.25ea3</version>
+            </dependency>
 
             <!-- Eclipse (Goldman Sachs) collections -->
             <dependency>
@@ -219,6 +224,11 @@
             <groupId>net.openhft</groupId>
             <artifactId>chronicle-wire</artifactId>
         </dependency>-->
+
+        <dependency>
+            <groupId>net.openhft</groupId>
+            <artifactId>chronicle-map</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.agrona</groupId>
