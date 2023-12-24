@@ -12,12 +12,23 @@ public class HashingUtils {
 
     public static int threshold = 512; // TODO not threadsafe!!
 
+    /**
+     * Finds free offset where key cell either empty or the same as provided
+     * @param key - key provided
+     * @param data - data array
+     * @param mask - mask for data array
+     * @return offset in the array
+     */
     public static int findFreeOffset(long key, long[] data, int mask) {
-        long i = 0;
-
         final int hash = Hashing.hash(key);
         int pos = (hash & mask) << 1;
 //        log.debug("collision on key:{} hash:{}(0x{})->pos:{}(0x{})", key, hash, String.format("%x", hash), pos, String.format("%x", pos));
+        return findFreeOffset(key, pos, data);
+    }
+
+    public static int findFreeOffset(long key, int pos, long[] data) {
+        long i = 0;
+
         long existingKey = data[pos];
         while (existingKey != NOT_ALLOWED_KEY && existingKey != key) {
             // try next element
@@ -37,10 +48,5 @@ public class HashingUtils {
         }
 
         return pos;
-    }
-
-    public enum MigrationState {
-        STATIC,
-        MIGRATING
     }
 }

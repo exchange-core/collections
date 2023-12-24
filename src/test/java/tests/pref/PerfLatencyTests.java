@@ -1,5 +1,6 @@
 package tests.pref;
 
+import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
 import exchange.core2.collections.hashtable.ILongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongLLHashtable;
@@ -102,11 +103,12 @@ public class PerfLatencyTests {
 
 
     /*
-11000000: {50.0%=0.1us, 90.0%=0.2us, 95.0%=0.4us, 99.0%=0.9us, 99.9%=1.8us, 99.99%=16.4us, W=465ms}
-21900000: {50.0%=0.1us, 90.0%=0.2us, 95.0%=0.4us, 99.0%=0.8us, 99.9%=1.7us, 99.99%=3.8us, W=787ms}
-43700000: {50.0%=0.1us, 90.0%=0.2us, 95.0%=0.4us, 99.0%=1.2us, 99.9%=2.1us, 99.99%=13.6us, W=1.57s}
-87300000: {50.0%=0.2us, 90.0%=0.3us, 95.0%=0.5us, 99.0%=1.3us, 99.9%=2.2us, 99.99%=5.4us, W=3.1s}
-175600000: {50.0%=0.2us, 90.0%=0.3us, 95.0%=0.5us, 99.0%=1.3us, 99.9%=2.1us, 99.99%=5.0us, W=7.5us}
+    11000000: {50.0%=7.7ms, 90.0%=14.2ms, 95.0%=15.0ms, 99.0%=15.6ms, 99.9%=15.8ms, 99.99%=15.8ms, W=417ms}
+    21900000: {50.0%=6.8ms, 90.0%=13.0ms, 95.0%=13.8ms, 99.0%=14.5ms, 99.9%=14.6ms, 99.99%=14.6ms, W=873ms}
+    43700000: {50.0%=5.9ms, 90.0%=13.6ms, 95.0%=14.5ms, 99.0%=15.3ms, 99.9%=15.5ms, 99.99%=15.5ms, W=1.65s}
+    87300000: {50.0%=1.73ms, 90.0%=10.1ms, 95.0%=11.2ms, 99.0%=12.0ms, 99.9%=12.2ms, 99.99%=12.2ms, W=3.2s}
+    174500000: {50.0%=0.2us, 90.0%=1.49ms, 95.0%=2.54ms, 99.0%=3.4ms, 99.9%=3.6ms, 99.99%=3.6ms, W=6.3s}
+
      */
     @Test
     public void benchmarkAgrona() {
@@ -116,7 +118,7 @@ public class PerfLatencyTests {
                 for (long l : kv) hashtable.put(l, l);
                 return hashtable;
             },
-            this::benchmark,
+            this::benchmarkAgrona,
             (Long2LongHashMap hashtable, long[] kv) -> {
                 for (long l : kv) hashtable.put(l, l);
             }
@@ -189,6 +191,20 @@ public class PerfLatencyTests {
             }
         );
     }
+    @Test
+    public void benchmarkAdaptiveRadixTree() {
+        benchmarkAbstract(
+            (long[] kv) -> {
+                final LongAdaptiveRadixTreeMap<Long> map = new LongAdaptiveRadixTreeMap<>();
+                for (long l : kv) map.put(l, l);
+                return map;
+            },
+            this::benchmark,
+            (LongAdaptiveRadixTreeMap<Long> hashtable, long[] kv) -> {
+                for (long l : kv) hashtable.put(l, l);
+            }
+        );
+    }
 
 
     private <T> void benchmarkAbstract(Function<long[], T> factory,
@@ -230,6 +246,39 @@ public class PerfLatencyTests {
 //
 //        log.info("done");
     }
+
+    private void benchmarkLLnew() {
+        int n = 4_000_000;
+        long seed = 2918723469278364978L;
+
+
+        log.debug("Pre-filling {} random k/v pairs...", n);
+        Random rand = new Random(seed);
+        final long[] prefillKeys = new long[n];
+        for (int i = 0; i < n; i++) prefillKeys[i] = rand.nextLong();
+
+
+        int n2 = 100_000;
+
+        final ILongLongHashtable hashtable = new LongLongLLHashtable();
+        log.debug("Benchmarking...");
+
+        final long[] keys = new long[n2];
+
+        // TODO make continuous test (non-stop)
+
+//        for (int j = 0; j < 1780; j++) {
+//            for (int i = 0; i < n2; i++) keys[i] = rand.nextLong();
+//            final SingleResult benchmark = singleTest.apply(hashtable, keys);
+//            log.info("{}: {}", benchmark.size, LatencyTools.createLatencyReportFast(benchmark.avgGet));
+//            extraLoader.accept(hashtable, keys);
+//        }
+
+
+//
+//        log.info("done");
+    }
+
 
     /*
 
@@ -340,26 +389,32 @@ public class PerfLatencyTests {
         return new SingleResult(hashtable.size(), histogramPut, histogramPut, histogramPut);
     }
 
-    private SingleResult benchmark(Long2LongHashMap hashtable, long[] keys) {
+    private SingleResult benchmarkAgrona(Long2LongHashMap hashtable, long[] keys) {
+
+        int tps = 1_000_000;
 
         final Histogram histogramPut = new Histogram(60_000_000_000L, 3);
 
-        for (long key : keys) {
-            long t = System.nanoTime();
+        final long picosPerCmd = (1024L * 1_000_000_000L) / tps;
+        final long startTimeNs = System.nanoTime();
+
+        long planneTimeOffsetPs = 0L;
+        long lastKnownTimeOffsetPs = 0L;
+
+        for (int i = 0; i < keys.length; i++) {
+            final long key = keys[i];
+            planneTimeOffsetPs += picosPerCmd;
+            while (planneTimeOffsetPs > lastKnownTimeOffsetPs) {
+                lastKnownTimeOffsetPs = (System.nanoTime() - startTimeNs) << 10;
+                // spin until its time to send next command
+                Thread.onSpinWait(); // 1us-26  max34
+                // LockSupport.parkNanos(1L); // 1us-25 max29
+                // Thread.yield();   // 1us-28  max32
+            }
             hashtable.put(key, key);
-            long putNs = (System.nanoTime() - t);
+            final long putNs = System.nanoTime() - startTimeNs - (lastKnownTimeOffsetPs >> 10);
             histogramPut.recordValue(putNs);
         }
-
-//        t = System.nanoTime();
-//        long acc = 0;
-//        for (long key : keys) acc += hashtable.get(key);
-//        long getNs = (System.nanoTime() - t) / keys.length;
-//
-//        t = System.nanoTime();
-//        for (long key : keys) hashtable.remove(key);
-//        long removNs = (System.nanoTime() - t) / keys.length;
-//        return new SingleResult(hashtable.size(), putNs, getNs, removNs, acc);
 
         return new SingleResult(hashtable.size(), histogramPut, histogramPut, histogramPut);
     }
@@ -396,6 +451,37 @@ public class PerfLatencyTests {
         return new SingleResult(hashtable.size(), histogramPut, histogramPut, histogramPut);
     }
 
+
+    private SingleResult benchmark(LongAdaptiveRadixTreeMap<Long> hashtable, long[] keys) {
+
+        int tps = 1_000_000;
+
+
+        final Histogram histogramPut = new Histogram(60_000_000_000L, 3);
+
+        final long picosPerCmd = (1024L * 1_000_000_000L) / tps;
+        final long startTimeNs = System.nanoTime();
+
+        long planneTimeOffsetPs = 0L;
+        long lastKnownTimeOffsetPs = 0L;
+
+        for (int i = 0; i < keys.length; i++) {
+            final long key = keys[i];
+            planneTimeOffsetPs += picosPerCmd;
+            while (planneTimeOffsetPs > lastKnownTimeOffsetPs) {
+                lastKnownTimeOffsetPs = (System.nanoTime() - startTimeNs) << 10;
+                // spin until its time to send next command
+                Thread.onSpinWait(); // 1us-26  max34
+                // LockSupport.parkNanos(1L); // 1us-25 max29
+                // Thread.yield();   // 1us-28  max32
+            }
+            hashtable.put(key, key);
+            final long putNs = System.nanoTime() - startTimeNs - (lastKnownTimeOffsetPs >> 10);
+            histogramPut.recordValue(putNs);
+        }
+
+        return new SingleResult(hashtable.size(Integer.MAX_VALUE), histogramPut, histogramPut, histogramPut);
+    }
 
     record SingleResult(long size, Histogram avgPut, Histogram avgGet, Histogram avgRemove) {
 
