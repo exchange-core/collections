@@ -3,6 +3,7 @@ package tests.pref;
 import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
 import exchange.core2.collections.hashtable.ILongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongHashtable;
+import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
 import exchange.core2.collections.hashtable.LongLongLLHashtable;
 import net.openhft.chronicle.map.ChronicleMap;
 import net.openhft.chronicle.map.ChronicleMapBuilder;
@@ -91,6 +92,176 @@ public class PerfLatencyTests {
         benchmarkAbstract(
             (long[] kv) -> {
                 final ILongLongHashtable hashtable = new LongLongLLHashtable(5000000);
+                for (long l : kv) hashtable.put(l, l);
+                return hashtable;
+            },
+            this::benchmark,
+            (ILongLongHashtable hashtable, long[] kv) -> {
+                for (long l : kv) hashtable.put(l, l);
+            }
+        );
+    }
+
+
+    /*
+01:20:56.341 [main] INFO  tests.pref.PerfLatencyTests - 10900000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.1us, 99.0%=3.3us, 99.9%=9.0us, 99.99%=25.9us, W=34us}
+01:20:56.361 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[67108864] ...
+01:20:56.457 [main] INFO  tests.pref.PerfLatencyTests - 11000000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.0us, 99.0%=3.3us, 99.9%=75us, 99.99%=100us, W=281us}
+01:20:56.569 [main] INFO  tests.pref.PerfLatencyTests - 11100000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.3us, 99.0%=21.7us, 99.9%=93us, 99.99%=467us, W=469us}
+01:20:56.598 [main] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 16777216->33554432 -----------------
+01:20:56.598 [main-M] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Allocated new array, startingPosition=28, copying initial...
+01:20:56.687 [main] INFO  tests.pref.PerfLatencyTests - 11200000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.5us, 99.0%=4.9us, 99.9%=44us, 99.99%=66us, W=281us}
+01:20:56.749 [main-M] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
+01:20:56.809 [main] INFO  tests.pref.PerfLatencyTests - 11300000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.3us, 99.0%=3.6us, 99.9%=8.9us, 99.99%=29.5us, W=35us}
+
+01:21:08.764 [main] INFO  tests.pref.PerfLatencyTests - 21800000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.3us, 99.0%=3.2us, 99.9%=15.9us, 99.99%=29.6us, W=38us}
+01:21:08.789 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[134217728] ...
+01:21:08.879 [main] INFO  tests.pref.PerfLatencyTests - 21900000: {50.0%=0.2us, 90.0%=1.1us, 95.0%=2.1us, 99.0%=7.2us, 99.9%=27.6us, 99.99%=34us, W=196us}
+01:21:09.009 [main] INFO  tests.pref.PerfLatencyTests - 22000000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.1us, 99.0%=3.0us, 99.9%=58us, 99.99%=96us, W=99us}
+01:21:09.123 [main] INFO  tests.pref.PerfLatencyTests - 22100000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.5us, 99.0%=4.6us, 99.9%=21.9us, 99.99%=59us, W=63us}
+01:21:09.242 [main] INFO  tests.pref.PerfLatencyTests - 22200000: {50.0%=0.2us, 90.0%=0.6us, 95.0%=1.0us, 99.0%=1.9us, 99.9%=8.4us, 99.99%=23.1us, W=31us}
+01:21:09.323 [main] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 33554432->67108864 -----------------
+01:21:09.324 [main-M] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Allocated new array, startingPosition=0, copying initial...
+01:21:09.357 [main] INFO  tests.pref.PerfLatencyTests - 22300000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.6us, 99.0%=8.0us, 99.9%=139us, 99.99%=173us, W=342us}
+01:21:09.483 [main] INFO  tests.pref.PerfLatencyTests - 22400000: {50.0%=0.5us, 90.0%=4.6us, 95.0%=13.7us, 99.0%=57us, 99.9%=92us, 99.99%=108us, W=199us}
+01:21:09.592 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT 359045713944176631: RARE Extending backwards section g0=0
+01:21:09.593 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - Found new g0=67108860, migrating from old g0=0
+01:21:09.593 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - DONE RARE: offsetFinal=67108864 prevVal=0
+01:21:09.611 [main] INFO  tests.pref.PerfLatencyTests - 22500000: {50.0%=0.4us, 90.0%=3.7us, 95.0%=181us, 99.0%=701us, 99.9%=1.06ms, 99.99%=1.11ms, W=1.29ms}
+01:21:09.733 [main] INFO  tests.pref.PerfLatencyTests - 22600000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.3us, 99.0%=3.3us, 99.9%=11.4us, 99.99%=24.8us, W=32us}
+01:21:09.738 [main-M] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
+01:21:09.845 [main] INFO  tests.pref.PerfLatencyTests - 22700000: {50.0%=0.2us, 90.0%=1.3us, 95.0%=2.9us, 99.0%=16.6us, 99.9%=58us, 99.99%=75us, W=126us}
+01:21:09.964 [main] INFO  tests.pref.PerfLatencyTests - 22800000: {50.0%=0.2us, 90.0%=1.3us, 95.0%=2.6us, 99.0%=21.6us, 99.9%=146us, 99.99%=499us, W=501us}
+01:21:10.075 [main] INFO  tests.pref.PerfLatencyTests - 22900000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=4.4us, 99.9%=14.2us, 99.99%=26.4us, W=32us}
+
+01:21:33.721 [main] INFO  tests.pref.PerfLatencyTests - 43500000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.1us, 99.0%=1.7us, 99.9%=5.3us, 99.99%=14.3us, W=20.6us}
+01:21:33.836 [main] INFO  tests.pref.PerfLatencyTests - 43600000: {50.0%=0.2us, 90.0%=1.1us, 95.0%=4.4us, 99.0%=155us, 99.9%=261us, 99.99%=281us, W=1.13ms}
+01:21:33.875 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[268435456] ...
+01:21:33.955 [main] INFO  tests.pref.PerfLatencyTests - 43700000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=45us, 99.9%=167us, 99.99%=735us, W=737us}
+01:21:34.071 [main] INFO  tests.pref.PerfLatencyTests - 43800000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=2.2us, 99.0%=39us, 99.9%=221us, 99.99%=241us, W=1.12ms}
+01:21:34.195 [main] INFO  tests.pref.PerfLatencyTests - 43900000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.1us, 99.0%=2.5us, 99.9%=12.7us, 99.99%=32us, W=35us}
+01:21:34.310 [main] INFO  tests.pref.PerfLatencyTests - 44000000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=4.2us, 99.9%=20.0us, 99.99%=37us, W=44us}
+01:21:34.430 [main] INFO  tests.pref.PerfLatencyTests - 44100000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.0us, 99.0%=1.9us, 99.9%=7.3us, 99.99%=24.0us, W=31us}
+01:21:34.548 [main] INFO  tests.pref.PerfLatencyTests - 44200000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.5us, 99.0%=4.6us, 99.9%=18.9us, 99.99%=39us, W=43us}
+01:21:34.672 [main] INFO  tests.pref.PerfLatencyTests - 44300000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.0us, 99.0%=2.1us, 99.9%=7.0us, 99.99%=14.7us, W=48us}
+01:21:34.788 [main] INFO  tests.pref.PerfLatencyTests - 44400000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=4.7us, 99.9%=23.0us, 99.99%=38us, W=41us}
+01:21:34.912 [main] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 67108864->134217728 -----------------
+01:21:34.912 [main-M] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Allocated new array, startingPosition=0, copying initial...
+01:21:34.912 [main] INFO  tests.pref.PerfLatencyTests - 44500000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.1us, 99.0%=3.1us, 99.9%=17.2us, 99.99%=28.3us, W=163us}
+01:21:35.029 [main] INFO  tests.pref.PerfLatencyTests - 44600000: {50.0%=0.2us, 90.0%=1.1us, 95.0%=1.9us, 99.0%=5.5us, 99.9%=20.1us, 99.99%=28.6us, W=37us}
+01:21:35.155 [main] INFO  tests.pref.PerfLatencyTests - 44700000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.1us, 99.0%=2.4us, 99.9%=26.2us, 99.99%=32us, W=34us}
+01:21:35.271 [main] INFO  tests.pref.PerfLatencyTests - 44800000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.7us, 99.0%=4.9us, 99.9%=17.6us, 99.99%=26.9us, W=41us}
+01:21:35.385 [main] INFO  tests.pref.PerfLatencyTests - 44900000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.2us, 99.0%=3.3us, 99.9%=27.5us, 99.99%=63us, W=65us}
+01:21:35.499 [main] INFO  tests.pref.PerfLatencyTests - 45000000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.3us, 99.0%=3.8us, 99.9%=10.8us, 99.99%=24.4us, W=33us}
+01:21:35.520 [main-M] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
+01:21:35.617 [main] INFO  tests.pref.PerfLatencyTests - 45100000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.2us, 99.0%=1.9us, 99.9%=6.3us, 99.99%=16.3us, W=32us}
+
+01:22:24.278 [main] INFO  tests.pref.PerfLatencyTests - 87200000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=3.0us, 99.9%=8.8us, 99.99%=23.2us, W=34us}
+01:22:24.344 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[536870912] ...
+01:22:24.403 [main] INFO  tests.pref.PerfLatencyTests - 87300000: {50.0%=0.3us, 90.0%=1.1us, 95.0%=1.8us, 99.0%=7.1us, 99.9%=63us, 99.99%=245us, W=248us}
+01:22:24.664 [main] INFO  tests.pref.PerfLatencyTests - 87400000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.1us, 99.0%=2.6us, 99.9%=10.8us, 99.99%=26.2us, W=31us}
+01:22:24.782 [main] INFO  tests.pref.PerfLatencyTests - 87500000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.0us, 99.0%=2.3us, 99.9%=8.7us, 99.99%=17.5us, W=27.2us}
+01:22:24.899 [main] INFO  tests.pref.PerfLatencyTests - 87600000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=4.0us, 99.9%=13.9us, 99.99%=27.3us, W=34us}
+01:22:25.021 [main] INFO  tests.pref.PerfLatencyTests - 87700000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.2us, 99.0%=3.5us, 99.9%=15.7us, 99.99%=28.6us, W=31us}
+01:22:25.138 [main] INFO  tests.pref.PerfLatencyTests - 87800000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=4.0us, 99.9%=16.6us, 99.99%=33us, W=60us}
+01:22:25.256 [main] INFO  tests.pref.PerfLatencyTests - 87900000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=4.6us, 99.9%=19.4us, 99.99%=33us, W=39us}
+01:22:25.373 [main] INFO  tests.pref.PerfLatencyTests - 88000000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.5us, 99.0%=4.9us, 99.9%=26.3us, 99.99%=51us, W=56us}
+01:22:25.494 [main] INFO  tests.pref.PerfLatencyTests - 88100000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.1us, 99.0%=2.6us, 99.9%=25.3us, 99.99%=59us, W=61us}
+01:22:25.611 [main] INFO  tests.pref.PerfLatencyTests - 88200000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.2us, 99.0%=3.5us, 99.9%=10.7us, 99.99%=23.8us, W=35us}
+01:22:25.738 [main] INFO  tests.pref.PerfLatencyTests - 88300000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.1us, 99.0%=2.6us, 99.9%=9.1us, 99.99%=23.1us, W=33us}
+01:22:25.855 [main] INFO  tests.pref.PerfLatencyTests - 88400000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.2us, 99.0%=3.3us, 99.9%=20.0us, 99.99%=32us, W=34us}
+01:22:25.975 [main] INFO  tests.pref.PerfLatencyTests - 88500000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.0us, 99.0%=2.3us, 99.9%=9.4us, 99.99%=23.8us, W=38us}
+01:22:26.092 [main] INFO  tests.pref.PerfLatencyTests - 88600000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=5.0us, 99.9%=26.0us, 99.99%=41us, W=49us}
+01:22:26.213 [main] INFO  tests.pref.PerfLatencyTests - 88700000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.0us, 99.0%=1.7us, 99.9%=8.5us, 99.99%=18.9us, W=27.9us}
+01:22:26.331 [main] INFO  tests.pref.PerfLatencyTests - 88800000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.5us, 99.0%=5.1us, 99.9%=32us, 99.99%=51us, W=59us}
+01:22:26.450 [main] INFO  tests.pref.PerfLatencyTests - 88900000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.1us, 99.0%=2.5us, 99.9%=8.7us, 99.99%=19.6us, W=33us}
+01:22:26.457 [main] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 134217728->268435456 -----------------
+01:22:26.457 [main-M] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Allocated new array, startingPosition=0, copying initial...
+01:22:26.567 [main] INFO  tests.pref.PerfLatencyTests - 89000000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.5us, 99.0%=4.7us, 99.9%=21.7us, 99.99%=43us, W=72us}
+01:22:26.694 [main] INFO  tests.pref.PerfLatencyTests - 89100000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.2us, 99.0%=2.9us, 99.9%=12.3us, 99.99%=25.3us, W=60us}
+01:22:26.810 [main] INFO  tests.pref.PerfLatencyTests - 89200000: {50.0%=0.2us, 90.0%=1.1us, 95.0%=2.0us, 99.0%=31us, 99.9%=578us, 99.99%=606us, W=608us}
+01:22:26.934 [main] INFO  tests.pref.PerfLatencyTests - 89300000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.2us, 99.0%=2.5us, 99.9%=8.8us, 99.99%=26.8us, W=33us}
+01:22:27.050 [main] INFO  tests.pref.PerfLatencyTests - 89400000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.5us, 99.0%=4.1us, 99.9%=13.3us, 99.99%=24.1us, W=33us}
+01:22:27.169 [main] INFO  tests.pref.PerfLatencyTests - 89500000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.2us, 99.0%=2.7us, 99.9%=7.9us, 99.99%=18.4us, W=31us}
+01:22:27.284 [main] INFO  tests.pref.PerfLatencyTests - 89600000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.7us, 99.0%=5.4us, 99.9%=23.0us, 99.99%=33us, W=43us}
+01:22:27.402 [main] INFO  tests.pref.PerfLatencyTests - 89700000: {50.0%=0.2us, 90.0%=1.2us, 95.0%=2.3us, 99.0%=6.2us, 99.9%=25.8us, 99.99%=36us, W=37us}
+01:22:27.520 [main] INFO  tests.pref.PerfLatencyTests - 89800000: {50.0%=0.2us, 90.0%=1.1us, 95.0%=1.8us, 99.0%=5.4us, 99.9%=20.3us, 99.99%=27.8us, W=39us}
+01:22:27.639 [main] INFO  tests.pref.PerfLatencyTests - 89900000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.3us, 99.0%=3.9us, 99.9%=11.3us, 99.99%=26.9us, W=34us}
+01:22:27.724 [main-M] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
+01:22:27.756 [main] INFO  tests.pref.PerfLatencyTests - 90000000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.5us, 99.0%=4.1us, 99.9%=14.9us, 99.99%=27.9us, W=32us}
+
+01:24:05.563 [main] INFO  tests.pref.PerfLatencyTests - 174300000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.2us, 99.0%=1.8us, 99.9%=4.2us, 99.99%=12.1us, W=16.2us}
+01:24:05.680 [main] INFO  tests.pref.PerfLatencyTests - 174400000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.3us, 99.0%=3.2us, 99.9%=30us, 99.99%=58us, W=63us}
+01:24:05.781 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[1073741824] ...
+01:24:05.798 [main] INFO  tests.pref.PerfLatencyTests - 174500000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.2us, 99.0%=2.0us, 99.9%=18.2us, 99.99%=40us, W=190us}
+01:24:06.171 [main] INFO  tests.pref.PerfLatencyTests - 174600000: {50.0%=0.2us, 90.0%=1.17ms, 95.0%=2.19ms, 99.0%=9.6ms, 99.9%=9.9ms, 99.99%=9.9ms, W=9.9ms}
+01:24:06.288 [main] INFO  tests.pref.PerfLatencyTests - 174700000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.1us, 99.0%=3.2us, 99.9%=14.7us, 99.99%=31us, W=36us}
+01:24:06.406 [main] INFO  tests.pref.PerfLatencyTests - 174800000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=5.4us, 99.9%=31us, 99.99%=60us, W=64us}
+01:24:06.532 [main] INFO  tests.pref.PerfLatencyTests - 174900000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.1us, 99.0%=2.5us, 99.9%=10.5us, 99.99%=25.8us, W=36us}
+01:24:06.649 [main] INFO  tests.pref.PerfLatencyTests - 175000000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.5us, 99.0%=4.9us, 99.9%=18.7us, 99.99%=29.2us, W=40us}
+01:24:06.767 [main] INFO  tests.pref.PerfLatencyTests - 175100000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.0us, 99.0%=1.8us, 99.9%=9.8us, 99.99%=27.2us, W=33us}
+01:24:06.885 [main] INFO  tests.pref.PerfLatencyTests - 175200000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.3us, 99.0%=4.2us, 99.9%=24.1us, 99.99%=35us, W=37us}
+01:24:07.005 [main] INFO  tests.pref.PerfLatencyTests - 175300000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.0us, 99.0%=1.7us, 99.9%=8.7us, 99.99%=21.6us, W=35us}
+01:24:07.123 [main] INFO  tests.pref.PerfLatencyTests - 175400000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=4.1us, 99.9%=15.6us, 99.99%=27.5us, W=37us}
+01:24:07.241 [main] INFO  tests.pref.PerfLatencyTests - 175500000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.1us, 99.0%=2.7us, 99.9%=14.5us, 99.99%=23.7us, W=35us}
+01:24:07.358 [main] INFO  tests.pref.PerfLatencyTests - 175600000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.6us, 99.0%=5.0us, 99.9%=22.2us, 99.99%=63us, W=66us}
+01:24:07.476 [main] INFO  tests.pref.PerfLatencyTests - 175700000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.1us, 99.0%=3.0us, 99.9%=14.8us, 99.99%=39us, W=67us}
+01:24:07.593 [main] INFO  tests.pref.PerfLatencyTests - 175800000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.6us, 99.0%=8.1us, 99.9%=51us, 99.99%=77us, W=80us}
+01:24:07.712 [main] INFO  tests.pref.PerfLatencyTests - 175900000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.1us, 99.0%=2.4us, 99.9%=18.9us, 99.99%=35us, W=41us}
+01:24:07.829 [main] INFO  tests.pref.PerfLatencyTests - 176000000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.6us, 99.0%=6.0us, 99.9%=34us, 99.99%=74us, W=78us}
+01:24:07.950 [main] INFO  tests.pref.PerfLatencyTests - 176100000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.0us, 99.0%=2.0us, 99.9%=12.4us, 99.99%=21.8us, W=34us}
+01:24:08.068 [main] INFO  tests.pref.PerfLatencyTests - 176200000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=4.5us, 99.9%=17.1us, 99.99%=27.8us, W=31us}
+01:24:08.196 [main] INFO  tests.pref.PerfLatencyTests - 176300000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.2us, 99.0%=4.0us, 99.9%=18.7us, 99.99%=32us, W=38us}
+01:24:08.312 [main] INFO  tests.pref.PerfLatencyTests - 176400000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.6us, 99.0%=6.1us, 99.9%=27.5us, 99.99%=42us, W=48us}
+01:24:08.430 [main] INFO  tests.pref.PerfLatencyTests - 176500000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.0us, 99.0%=1.8us, 99.9%=7.8us, 99.99%=18.7us, W=34us}
+01:24:08.548 [main] INFO  tests.pref.PerfLatencyTests - 176600000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.5us, 99.0%=5.0us, 99.9%=26.3us, 99.99%=38us, W=56us}
+01:24:08.668 [main] INFO  tests.pref.PerfLatencyTests - 176700000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.0us, 99.0%=1.8us, 99.9%=8.4us, 99.99%=26.5us, W=33us}
+01:24:08.786 [main] INFO  tests.pref.PerfLatencyTests - 176800000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=4.2us, 99.9%=11.8us, 99.99%=26.1us, W=35us}
+01:24:08.906 [main] INFO  tests.pref.PerfLatencyTests - 176900000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.1us, 99.0%=2.3us, 99.9%=8.6us, 99.99%=21.8us, W=33us}
+01:24:09.023 [main] INFO  tests.pref.PerfLatencyTests - 177000000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=4.1us, 99.9%=18.3us, 99.99%=28.4us, W=34us}
+01:24:09.143 [main] INFO  tests.pref.PerfLatencyTests - 177100000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.0us, 99.0%=2.2us, 99.9%=12.2us, 99.99%=28.4us, W=35us}
+01:24:09.261 [main] INFO  tests.pref.PerfLatencyTests - 177200000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.6us, 99.0%=5.1us, 99.9%=21.8us, 99.99%=31us, W=34us}
+01:24:09.381 [main] INFO  tests.pref.PerfLatencyTests - 177300000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.0us, 99.0%=1.9us, 99.9%=12.1us, 99.99%=26.3us, W=40us}
+01:24:09.498 [main] INFO  tests.pref.PerfLatencyTests - 177400000: {50.0%=0.2us, 90.0%=2.0us, 95.0%=4.6us, 99.0%=37us, 99.9%=114us, 99.99%=489us, W=492us}
+01:24:09.621 [main] INFO  tests.pref.PerfLatencyTests - 177500000: {50.0%=0.2us, 90.0%=0.7us, 95.0%=1.1us, 99.0%=2.8us, 99.9%=14.4us, 99.99%=44us, W=48us}
+01:24:09.739 [main] INFO  tests.pref.PerfLatencyTests - 177600000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=5.4us, 99.9%=28.0us, 99.99%=38us, W=43us}
+01:24:09.756 [main] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 268435456->536870912 -----------------
+01:24:09.756 [main-M] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Allocated new array, startingPosition=24, copying initial...
+01:24:09.863 [main] INFO  tests.pref.PerfLatencyTests - 177700000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.3us, 99.0%=3.5us, 99.9%=20.6us, 99.99%=32us, W=37us}
+01:24:09.982 [main] INFO  tests.pref.PerfLatencyTests - 177800000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.6us, 99.0%=5.5us, 99.9%=24.8us, 99.99%=37us, W=42us}
+01:24:10.112 [main] INFO  tests.pref.PerfLatencyTests - 177900000: {50.0%=0.3us, 90.0%=1.0us, 95.0%=1.6us, 99.0%=4.1us, 99.9%=11.0us, 99.99%=26.2us, W=31us}
+01:24:10.231 [main] INFO  tests.pref.PerfLatencyTests - 178000000: {50.0%=0.3us, 90.0%=1.4us, 95.0%=2.6us, 99.0%=8.2us, 99.9%=34us, 99.99%=51us, W=58us}
+01:24:10.351 [main] INFO  tests.pref.PerfLatencyTests - 178100000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.6us, 99.0%=5.1us, 99.9%=19.7us, 99.99%=32us, W=39us}
+01:24:10.470 [main] INFO  tests.pref.PerfLatencyTests - 178200000: {50.0%=0.3us, 90.0%=1.3us, 95.0%=2.2us, 99.0%=7.3us, 99.9%=32us, 99.99%=59us, W=66us}
+01:24:10.529 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT -3865192479369310576: RARE offset & mask == knownProgressCached (156231468)
+01:24:10.530 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT -3865192479369310576: RARE finished resizer=exchange.core2.collections.hashtable.HashtableAsync2Resizer@409bf450
+01:24:10.530 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT -3865192479369310576: RARE offset & mask == knownProgressCached (156231468)
+01:24:10.530 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT -3865192479369310576: RARE finished resizer=exchange.core2.collections.hashtable.HashtableAsync2Resizer@409bf450
+01:24:10.593 [main] INFO  tests.pref.PerfLatencyTests - 178300000: {50.0%=0.3us, 90.0%=1.0us, 95.0%=1.6us, 99.0%=10.7us, 99.9%=157us, 99.99%=194us, W=356us}
+01:24:10.714 [main] INFO  tests.pref.PerfLatencyTests - 178400000: {50.0%=0.3us, 90.0%=1.2us, 95.0%=2.1us, 99.0%=7.8us, 99.9%=25.8us, 99.99%=42us, W=56us}
+01:24:10.844 [main] INFO  tests.pref.PerfLatencyTests - 178500000: {50.0%=0.3us, 90.0%=1.0us, 95.0%=1.5us, 99.0%=3.9us, 99.9%=11.2us, 99.99%=22.0us, W=28.7us}
+01:24:10.962 [main] INFO  tests.pref.PerfLatencyTests - 178600000: {50.0%=0.3us, 90.0%=1.3us, 95.0%=2.3us, 99.0%=6.9us, 99.9%=25.1us, 99.99%=42us, W=60us}
+01:24:11.082 [main] INFO  tests.pref.PerfLatencyTests - 178700000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.4us, 99.0%=4.0us, 99.9%=12.5us, 99.99%=27.8us, W=31us}
+01:24:11.198 [main] INFO  tests.pref.PerfLatencyTests - 178800000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.5us, 99.0%=4.5us, 99.9%=24.7us, 99.99%=45us, W=50us}
+01:24:11.319 [main] INFO  tests.pref.PerfLatencyTests - 178900000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.2us, 99.0%=2.2us, 99.9%=6.3us, 99.99%=16.1us, W=27.5us}
+01:24:11.436 [main] INFO  tests.pref.PerfLatencyTests - 179000000: {50.0%=0.3us, 90.0%=1.7us, 95.0%=3.1us, 99.0%=7.2us, 99.9%=22.7us, 99.99%=32us, W=36us}
+01:24:11.556 [main] INFO  tests.pref.PerfLatencyTests - 179100000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.3us, 99.0%=3.2us, 99.9%=12.6us, 99.99%=23.8us, W=64us}
+01:24:11.671 [main] INFO  tests.pref.PerfLatencyTests - 179200000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.3us, 99.0%=3.3us, 99.9%=11.2us, 99.99%=25.7us, W=33us}
+01:24:11.790 [main] INFO  tests.pref.PerfLatencyTests - 179300000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.6us, 99.0%=4.5us, 99.9%=14.7us, 99.99%=25.4us, W=30us}
+01:24:11.908 [main] INFO  tests.pref.PerfLatencyTests - 179400000: {50.0%=0.3us, 90.0%=1.2us, 95.0%=2.2us, 99.0%=5.9us, 99.9%=19.2us, 99.99%=26.6us, W=31us}
+01:24:12.026 [main] INFO  tests.pref.PerfLatencyTests - 179500000: {50.0%=0.2us, 90.0%=0.9us, 95.0%=1.4us, 99.0%=3.8us, 99.9%=10.8us, 99.99%=25.5us, W=30us}
+01:24:12.141 [main] INFO  tests.pref.PerfLatencyTests - 179600000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.5us, 99.0%=4.3us, 99.9%=15.2us, 99.99%=27.4us, W=31us}
+01:24:12.261 [main] INFO  tests.pref.PerfLatencyTests - 179700000: {50.0%=0.2us, 90.0%=1.0us, 95.0%=1.5us, 99.0%=4.2us, 99.9%=15.6us, 99.99%=27.4us, W=29.6us}
+01:24:12.328 [main-M] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
+01:24:12.376 [main] INFO  tests.pref.PerfLatencyTests - 179800000: {50.0%=0.2us, 90.0%=0.8us, 95.0%=1.2us, 99.0%=2.7us, 99.9%=10.7us, 99.99%=26.3us, W=31us}
+
+     */
+
+    @Test
+    public void benchmarkLL2() {
+        benchmarkAbstract(
+            (long[] kv) -> {
+                final ILongLongHashtable hashtable = new LongLongLL2Hashtable(5000000);
                 for (long l : kv) hashtable.put(l, l);
                 return hashtable;
             },

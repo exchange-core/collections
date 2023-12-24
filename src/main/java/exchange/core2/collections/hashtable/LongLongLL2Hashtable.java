@@ -454,23 +454,23 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
     private void enableNextMigrationSegmentOrFinishMigration() {
         final int startingPosition = resizer.getStartingPosition();
 
-        log.debug("enableNextMigrationSegmentOrFinishMigration: allowedPosition={} startingPosition={}", allowedPosition, startingPosition);
+        //log.debug("enableNextMigrationSegmentOrFinishMigration: allowedPosition={} startingPosition={}", allowedPosition, startingPosition);
 
         if (allowedPosition == startingPosition) {
             switchToNewArray();
         } else {
 
 
-            log.debug("findNextGapPos after {}", (allowedPosition + 3114) & (data.length - 1));
+            //log.debug("findNextGapPos after {}", (allowedPosition + 3114) & (data.length - 1));
 
             int newAllowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (allowedPosition + 3114) & (data.length - 1));
 
             if(!resizer.isInOldData(newAllowedPosition, allowedPosition)){
-                log.debug("Override newAllowedPosition={} with startingPosition={}", newAllowedPosition, startingPosition);
+                //log.debug("Override newAllowedPosition={} with startingPosition={}", newAllowedPosition, startingPosition);
                 newAllowedPosition = startingPosition;
             }
 
-            log.debug("new allowedPosition: {} (data_len={})", newAllowedPosition, data.length);
+            //log.debug("new allowedPosition: {} (data_len={})", newAllowedPosition, data.length);
 
             allowedPosition = newAllowedPosition;
             resizer.setAllowedPosition(allowedPosition);
@@ -490,7 +490,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
 
 
     private void switchToNewArray() {
-        log.debug("switchToNewArray");
+        //log.debug("switchToNewArray");
 
         // can finalize migration
         resizer.setAllowedPosition(-1);

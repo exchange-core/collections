@@ -135,7 +135,7 @@ public class HashtableAsync2Resizer {
                 copyInterval(processedTill, allowedLocal);
                 processedTill = allowedLocal;
                 processedPosition = allowedLocal;
-                log.debug("processedPosition = {} , allowedPosition={}", processedPosition, allowedPosition);
+//                log.debug("processedPosition = {} , allowedPosition={}", processedPosition, allowedPosition);
             } else {
                 Thread.onSpinWait();
             }
@@ -143,7 +143,7 @@ public class HashtableAsync2Resizer {
     }
 
     private void copyInterval(final int from, int to) {
-        log.debug("(A) Copying segment {}..{} ...", from, to);
+//        log.debug("(A) Copying segment {}..{} ...", from, to);
         int pos = from;
         do {
             pos += 2;
@@ -157,7 +157,7 @@ public class HashtableAsync2Resizer {
                 dstData[offset + 1] = srcData[pos + 1];
             }
         } while (pos != to);
-        log.debug("(A) Copied segment {}..{}", from, to);
+//        log.debug("(A) Copied segment {}..{}", from, to);
     }
 
 
