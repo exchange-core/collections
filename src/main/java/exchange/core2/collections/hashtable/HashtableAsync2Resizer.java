@@ -66,6 +66,11 @@ public class HashtableAsync2Resizer {
      * (new data also includes 0=A=P)
      */
     public boolean notInNewData(int pos, int lasKnownProgress) { // TODO looks the same ^^^^
+
+        if(startingPosition == lasKnownProgress){
+            return false;
+        }
+
         if (startingPosition <= lasKnownProgress) {
             return pos < startingPosition || pos > lasKnownProgress;
         } else {

@@ -217,10 +217,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
             log.debug("PUT {}: RARE finished resizer={}", key, resizer);
         }
 
-        final long prevVal = putInternalInsert(dataNew, offsetNew, key, value);
-        log.debug("enableNextMigrationSegmentOrFinishMigration");
-        enableNextMigrationSegmentOrFinishMigration();
-        return prevVal;
+        return putInternalInsert(dataNew, offsetNew, key, value);
     }
 
 
@@ -274,7 +271,12 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         pos = (hash & resizer.getNewMask()) << 1;
         final int offset = HashingUtils.findFreeOffset(key, pos, newData);
         final long val = newData[offset + 1];
-        enableNextMigrationSegmentOrFinishMigration();
+
+        knownProgressCached = resizer.getProcessedPosition();
+        if (knownProgressCached == allowedPosition) {
+            enableNextMigrationSegmentOrFinishMigration();
+        }
+
         return val;
     }
 
@@ -293,13 +295,6 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         if (arrayFeature != null) {
             startAsyncCopying();
         }
-
-//        if (resizer != null) {
-//            if (resizer.isFinished()) {
-//                //        log.debug("REMOVE {}: migration finished can switch to new array", key);
-//                switchToNewArray();
-//            }
-//        }
 
         if (resizer == null) {
             return removeInternal(key, hash, data, mask);
@@ -327,7 +322,11 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         final long val = removeInternal(key, hash, resizer.getNewDataArray(), resizer.getNewMask());
         //    log.debug("REMOVE {}: Returning val={}", key, val);
         // migrated now
-        enableNextMigrationSegmentOrFinishMigration();
+
+        knownProgressCached = resizer.getProcessedPosition();
+        if (knownProgressCached == allowedPosition) {
+            enableNextMigrationSegmentOrFinishMigration();
+        }
 
         return val;
     }
@@ -444,7 +443,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
     private void startAsyncCopying() {
         if (arrayFeature.isDone()) {
             final int initialPos = HashtableAsync2Resizer.findNextGapPos(data, 0);
-            allowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (initialPos + 6314) & (data.length - 1)); // TODO fix
+            allowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (initialPos + 3114) & (data.length - 1)); // TODO fix
             resizer = new HashtableAsync2Resizer(data, arrayFeature.join(), initialPos, allowedPosition);
             arrayFeature = null;
             resizer.resizeAsync();
@@ -462,23 +461,14 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         } else {
 
 
-            log.debug("findNextGapPos after {}", (allowedPosition + 6314) & (data.length - 1));
+            log.debug("findNextGapPos after {}", (allowedPosition + 3114) & (data.length - 1));
 
-            int newAllowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (allowedPosition + 6314) & (data.length - 1));
+            int newAllowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (allowedPosition + 3114) & (data.length - 1));
 
-//            log.debug("(allowedPosition < startingPosition) = {}", (allowedPosition < startingPosition));
-//            log.debug("(newAllowedPosition > startingPosition) = {}", (newAllowedPosition > startingPosition));
-//            log.debug("(newAllowedPosition < allowedPosition) = {}", (newAllowedPosition < allowedPosition));
-
-            if ((newAllowedPosition > startingPosition) && (newAllowedPosition < allowedPosition)) { // TODO extend impl (start < 0)
+            if(!resizer.isInOldData(newAllowedPosition, allowedPosition)){
                 log.debug("Override newAllowedPosition={} with startingPosition={}", newAllowedPosition, startingPosition);
                 newAllowedPosition = startingPosition;
             }
-
-            if (startingPosition > data.length - 1000) {
-                throw new UnsupportedOperationException("startingPosition=" + startingPosition);
-            }
-
 
             log.debug("new allowedPosition: {} (data_len={})", newAllowedPosition, data.length);
 
@@ -544,6 +534,11 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
     @Override
     public long size() {
         return size;
+    }
+
+    @Deprecated
+    public int mask() {
+        return mask;
     }
 
     public long upsizeThreshold() {

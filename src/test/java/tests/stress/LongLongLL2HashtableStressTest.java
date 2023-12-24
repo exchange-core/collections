@@ -3,13 +3,17 @@ package tests.stress;
 import exchange.core2.collections.hashtable.LongLongHashtableAbstractTest;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
 import org.agrona.BitUtil;
+import org.agrona.collections.Hashing;
 import org.agrona.collections.Long2LongHashMap;
 import org.agrona.collections.MutableInteger;
+import org.agrona.collections.MutableLong;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.Arrays;
+import java.util.Currency;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
@@ -115,14 +119,33 @@ public class LongLongLL2HashtableStressTest {
 
                     MutableInteger errCnt = new MutableInteger(0);
 
+                    int mask = hashtable.mask() >> 1;
+
+                    MutableLong timeFrom = new MutableLong(Long.MAX_VALUE);
+                    MutableLong timeTo = new MutableLong(0L);
+                    MutableLong posFrom = new MutableLong(Long.MAX_VALUE);
+                    MutableLong posTo = new MutableLong(0L);
+
 
                     refMap.forEach((k, v) -> {
 
                         try {
                             assertThat(hashtable.get(k), is(v));
                         } catch (Throwable er) {
-                            log.error("PERIODIC: KEY={} VALUE={} {} {}", k, v, er.getClass(), er.getMessage());
-                            if (errCnt.incrementAndGet() > 40) {
+
+                            final int hash = Hashing.hash(k);
+                            int pos = (hash & mask) << 1;
+
+                            posFrom.set(Math.min(posFrom.get(), pos));
+                            posTo.set(Math.max(posTo.get(), pos));
+
+
+                            log.error("PERIODIC: KEY={} VALUE={} pos={} {} {}", k, v, pos, er.getClass(), er.getMessage());
+                            if (errCnt.incrementAndGet() > 200) {
+
+                                log.error("PERIOD: {} ... {}", Instant.ofEpochMilli(timeFrom.get()), Instant.ofEpochMilli(timeTo.get()));
+                                log.error("POS: {} ... {}", (posFrom.get()), (posTo.get()));
+
                                 throw er;
                             }
                         }
