@@ -1,10 +1,12 @@
 package tests.pref;
 
+import com.koloboke.collect.map.hash.HashLongLongMaps;
 import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
 import exchange.core2.collections.hashtable.ILongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
 import exchange.core2.collections.hashtable.LongLongLLHashtable;
+import net.openhft.affinity.AffinityLock;
 import net.openhft.chronicle.map.ChronicleMap;
 import net.openhft.chronicle.map.ChronicleMapBuilder;
 import org.HdrHistogram.Histogram;
@@ -340,6 +342,30 @@ public class PerfLatencyTests {
         );
     }
 
+    /*
+    11200000: {50.0%=0.26us, 90.0%=1.66ms, 95.0%=3.2ms, 99.0%=4.4ms, 99.9%=4.6ms, 99.99%=4.7ms, W=517ms}
+    22400000: {50.0%=0.26us, 90.0%=5.9ms, 95.0%=7.3ms, 99.0%=8.3ms, 99.9%=8.6ms, 99.99%=8.6ms, W=1.08s}
+    44800000: {50.0%=3.2ms, 90.0%=14.6ms, 95.0%=15.9ms, 99.0%=17.0ms, 99.9%=17.3ms, 99.99%=17.3ms, W=2.16s}
+    89500000: {50.0%=0.31us, 90.0%=3.5ms, 95.0%=5.1ms, 99.0%=6.3ms, 99.9%=6.5ms, 99.99%=6.6ms, W=4.5s}
+    179000000: {50.0%=0.4us, 90.0%=10.3ms, 95.0%=11.9ms, 99.0%=13.1ms, 99.9%=13.4ms, 99.99%=13.4ms, W=8.7s}
+
+
+     */
+    @Test
+    public void benchmarkKoloboke() {
+        benchmarkAbstract(
+            (long[] kv) -> {
+                final Map<Long, Long> hashtable = HashLongLongMaps.newMutableMap(5000000);
+                for (long l : kv) hashtable.put(l, l);
+                return hashtable;
+            },
+            this::benchmark,
+            (Map<Long, Long> hashtable, long[] kv) -> {
+                for (long l : kv) hashtable.put(l, l);
+            }
+        );
+    }
+
 
     @Test
     public void benchmarkChronicleMap() {
@@ -362,6 +388,30 @@ public class PerfLatencyTests {
             }
         );
     }
+
+    /*
+     * 5000000: {50.0%=0.28us, 90.0%=0.64us, 95.0%=2.18us, 99.0%=3.0us, 99.9%=114us, 99.99%=286us, W=335us}
+6000000: {50.0%=0.28us, 90.0%=0.58us, 95.0%=0.94us, 99.0%=2.68us, 99.9%=3.4us, 99.99%=12.5us, W=34us}
+7000000: {50.0%=0.29us, 90.0%=0.61us, 95.0%=1.0us, 99.0%=2.68us, 99.9%=3.2us, 99.99%=10.6us, W=20.2us}
+8000000: {50.0%=0.33us, 90.0%=0.63us, 95.0%=1.07us, 99.0%=2.68us, 99.9%=3.3us, 99.99%=6.9us, W=17.6us}
+9000000: {50.0%=0.36us, 90.0%=0.65us, 95.0%=1.17us, 99.0%=2.73us, 99.9%=3.5us, 99.99%=15.9us, W=60us}
+10000000: {50.0%=0.38us, 90.0%=2.12us, 95.0%=10.5us, 99.0%=160us, 99.9%=230us, 99.99%=246us, W=543us}
+11000000: {50.0%=0.4us, 90.0%=2.64us, 95.0%=52us, 99.0%=190us, 99.9%=239us, 99.99%=255us, W=516us}
+12000000: {50.0%=0.42us, 90.0%=2.68us, 95.0%=56us, 99.0%=195us, 99.9%=244us, 99.99%=260us, W=513us}
+13000000: {50.0%=0.43us, 90.0%=2.73us, 95.0%=59us, 99.0%=200us, 99.9%=249us, 99.99%=267us, W=509us}
+14000000: {50.0%=0.45us, 90.0%=2.81us, 95.0%=63us, 99.0%=206us, 99.9%=256us, 99.99%=271us, W=513us}
+15000000: {50.0%=0.46us, 90.0%=2.87us, 95.0%=66us, 99.0%=208us, 99.9%=259us, 99.99%=276us, W=510us}
+16000000: {50.0%=0.47us, 90.0%=3.0us, 95.0%=70us, 99.0%=213us, 99.9%=264us, 99.99%=281us, W=510us}
+17000000: {50.0%=0.47us, 90.0%=3.2us, 95.0%=72us, 99.0%=215us, 99.9%=267us, 99.99%=286us, W=526us}
+18000000: {50.0%=0.48us, 90.0%=4.1us, 95.0%=75us, 99.0%=219us, 99.9%=272us, 99.99%=290us, W=527us}
+19000000: {50.0%=0.49us, 90.0%=5.6us, 95.0%=77us, 99.0%=222us, 99.9%=276us, 99.99%=295us, W=531us}
+20000000: {50.0%=0.49us, 90.0%=7.1us, 95.0%=79us, 99.0%=225us, 99.9%=280us, 99.99%=335us, W=577us}
+21000000: {50.0%=0.5us, 90.0%=8.3us, 95.0%=82us, 99.0%=228us, 99.9%=282us, 99.99%=409us, W=706us}
+22000000: {50.0%=0.51us, 90.0%=9.6us, 95.0%=84us, 99.0%=230us, 99.9%=285us, 99.99%=304us, W=529us}
+23000000: {50.0%=0.51us, 90.0%=10.6us, 95.0%=85us, 99.0%=231us, 99.9%=287us, 99.99%=302us, W=516us}
+24000000: {50.0%=0.52us, 90.0%=11.9us, 95.0%=88us, 99.0%=233us, 99.9%=290us, 99.99%=308us, W=522us}
+25000000: {50.0%=0.52us, 90.0%=13.2us, 95.0%=89us, 99.0%=236us, 99.9%=292us, 99.99%=309us, W=527us}
+     */
     @Test
     public void benchmarkAdaptiveRadixTree() {
         benchmarkAbstract(
@@ -384,11 +434,12 @@ public class PerfLatencyTests {
         int n = 4_000_000;
         long seed = 2918723469278364978L;
 
+        try (AffinityLock ignore = AffinityLock.acquireLock()) {
 
-        log.debug("Pre-filling {} random k/v pairs...", n);
-        Random rand = new Random(seed);
-        final long[] prefillKeys = new long[n];
-        for (int i = 0; i < n; i++) prefillKeys[i] = rand.nextLong();
+            log.debug("Pre-filling {} random k/v pairs...", n);
+            Random rand = new Random(seed);
+            final long[] prefillKeys = new long[n];
+            for (int i = 0; i < n; i++) prefillKeys[i] = rand.nextLong();
 //
 //
 //        for (int i = 0; i < n; i++) {
@@ -397,20 +448,21 @@ public class PerfLatencyTests {
 //            hashtable.put(key, value);
 //        }
 
-        int n2 = 100_000;
+            int n2 = 1_000_000;
 
-        final T hashtable = factory.apply(prefillKeys);
-        log.debug("Benchmarking...");
+            final T hashtable = factory.apply(prefillKeys);
+            log.debug("Benchmarking...");
 
-        final long[] keys = new long[n2];
+            final long[] keys = new long[n2];
 
-        // TODO make continuous test (non-stop)
+            // TODO make continuous test (non-stop)
 
-        for (int j = 0; j < 1780; j++) {
-            for (int i = 0; i < n2; i++) keys[i] = rand.nextLong();
-            final SingleResult benchmark = singleTest.apply(hashtable, keys);
-            log.info("{}: {}", benchmark.size, LatencyTools.createLatencyReportFast(benchmark.avgGet));
-            extraLoader.accept(hashtable, keys);
+            for (int j = 0; j < 178; j++) {
+                for (int i = 0; i < n2; i++) keys[i] = rand.nextLong();
+                final SingleResult benchmark = singleTest.apply(hashtable, keys);
+                log.info("{}: {}", benchmark.size, LatencyTools.createLatencyReportFast(benchmark.avgGet));
+                extraLoader.accept(hashtable, keys);
+            }
         }
 
 

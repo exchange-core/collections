@@ -1,5 +1,6 @@
 package exchange.core2.collections.hashtable;
 
+import net.openhft.affinity.AffinityLock;
 import org.agrona.BitUtil;
 import org.agrona.collections.Hashing;
 import org.agrona.collections.LongLongConsumer;
@@ -65,10 +66,10 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
 
         if (resizer != null && size >= blockThreshold) {
 
-            log.warn("BLOCKED: blockThreshold={} allow copy till {}", blockThreshold,resizer.getStartingPosition());
+            log.warn("BLOCKED: blockThreshold={} allow copy till {}", blockThreshold, resizer.getStartingPosition());
             allowedPosition = resizer.getStartingPosition();
             resizer.setAllowedPosition(allowedPosition);
-            log.debug("A knownProgressCached = {} (allowedPosition={})", knownProgressCached,allowedPosition);
+            log.debug("A knownProgressCached = {} (allowedPosition={})", knownProgressCached, allowedPosition);
             while (knownProgressCached != allowedPosition) {
                 knownProgressCached = resizer.getProcessedPosition();
                 // log.debug("B knownProgressCached = {} (allowedPosition={})", knownProgressCached,allowedPosition);
@@ -435,7 +436,11 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         } else {
             //printLayout("BEFORE async RESIZE");
             log.info("(A) Allocating array: long[{}] ...", data.length * 2);
-            arrayFeature = CompletableFuture.supplyAsync(() -> new long[data.length * 2]);
+            arrayFeature = CompletableFuture.supplyAsync(() -> {
+                try (AffinityLock ignore = AffinityLock.acquireLock()) { // TODO use threads factory
+                    return new long[data.length * 2];
+                }
+            });
         }
     }
 
@@ -465,7 +470,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
 
             int newAllowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (allowedPosition + 3114) & (data.length - 1));
 
-            if(!resizer.isInOldData(newAllowedPosition, allowedPosition)){
+            if (!resizer.isInOldData(newAllowedPosition, allowedPosition)) {
                 //log.debug("Override newAllowedPosition={} with startingPosition={}", newAllowedPosition, startingPosition);
                 newAllowedPosition = startingPosition;
             }
@@ -551,7 +556,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         blockOnResizing();
 
         log.info("Copying data to new table destBits={}, destMask={} ...",
-            String.format("%08X", destBits), String.format("%08X", destMask));
+                String.format("%08X", destBits), String.format("%08X", destMask));
 
         for (int i = 0; i < data.length; i += 2) {
             final long key = data[i];

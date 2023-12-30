@@ -230,6 +230,13 @@
             <artifactId>chronicle-map</artifactId>
         </dependency>
 
+
+        <dependency>
+            <groupId>net.openhft</groupId>
+            <artifactId>affinity</artifactId>
+            <version>3.23.3</version>
+        </dependency>
+
         <dependency>
             <groupId>org.agrona</groupId>
             <artifactId>agrona</artifactId>
@@ -278,6 +285,19 @@
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-math3</artifactId>
             <scope>test</scope>
+        </dependency>
+
+        <!-- Koloboke -->
+        <dependency>
+            <groupId>com.koloboke</groupId>
+            <artifactId>koloboke-api-jdk8</artifactId>
+            <version>1.0.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.koloboke</groupId>
+            <artifactId>koloboke-impl-jdk8</artifactId>
+            <version>1.0.0</version>
+            <scope>runtime</scope>
         </dependency>
 
         <dependency>

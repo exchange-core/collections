@@ -1,6 +1,10 @@
 package tests.pref;
 
+import com.koloboke.collect.map.hash.HashLongLongMaps;
+import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
+import exchange.core2.collections.hashtable.ILongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongHashtable;
+import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
 import org.agrona.collections.Long2LongHashMap;
 import org.hamcrest.core.Is;
 import org.junit.Test;
@@ -11,6 +15,7 @@ import java.util.HashMap;
 import java.util.Hashtable;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.Function;
@@ -71,15 +76,15 @@ public class PerfThroughputTests {
     @Test
     public void benchmarkBasic() {
         benchmarkAbstract(
-            (long[] kv) -> {
-                final LongLongHashtable hashtable = new LongLongHashtable();
-                for (long l : kv) hashtable.put(l, l);
-                return hashtable;
-            },
-            this::benchmark,
-            (LongLongHashtable hashtable, long[] kv) -> {
-                for (long l : kv) hashtable.put(l, l);
-            }
+                (long[] kv) -> {
+                    final LongLongHashtable hashtable = new LongLongHashtable();
+                    for (long l : kv) hashtable.put(l, l);
+                    return hashtable;
+                },
+                this::benchmark,
+                (LongLongHashtable hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
         );
     }
 
@@ -129,36 +134,94 @@ public class PerfThroughputTests {
 21:00:35.520 [main] INFO  tests.pref.PerfThroughputTests - SingleResult[size=85000000, avgPut=133, avgGet=135, avgRemove=169, acc=6378332487476590290]
 21:00:36.107 [main] INFO  tests.pref.PerfThroughputTests - SingleResult[size=86000000, avgPut=129, avgGet=140, avgRemove=174, acc=-8377522509209559396]
 21:00:39.695 [main] INFO  tests.pref.PerfThroughputTests - SingleResult[size=87000000, avgPut=3294, avgGet=55, avgRemove=89, acc=2955427837856908500]     */
+
+    @Test
+    public void benchmarkLL2() {
+        benchmarkAbstract(
+                (long[] kv) -> {
+                    final ILongLongHashtable hashtable = new LongLongLL2Hashtable();
+                    for (long l : kv) hashtable.put(l, l);
+                    return hashtable;
+                },
+                this::benchmark,
+                (ILongLongHashtable hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
+        );
+    }
+
     @Test
     public void benchmarkAgrona() {
         benchmarkAbstract(
-            (long[] kv) -> {
-                final Long2LongHashMap hashtable = new Long2LongHashMap(0L);
-                for (long l : kv) hashtable.put(l, l);
-                return hashtable;
-            },
-            this::benchmark,
-            (Long2LongHashMap hashtable, long[] kv) -> {
-                for (long l : kv) hashtable.put(l, l);
-            }
+                (long[] kv) -> {
+                    final Long2LongHashMap hashtable = new Long2LongHashMap(0L);
+                    for (long l : kv) hashtable.put(l, l);
+                    return hashtable;
+                },
+                this::benchmark,
+                (Long2LongHashMap hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
         );
     }
 
     @Test
     public void benchmarkStdHashMap() {
         benchmarkAbstract(
-            (long[] kv) -> {
-                final Map<Long,Long> hashtable = new HashMap<>();
-                for (long l : kv) hashtable.put(l, l);
-                return hashtable;
-            },
-            this::benchmark,
-            (Map<Long,Long> hashtable, long[] kv) -> {
-                for (long l : kv) hashtable.put(l, l);
-            }
+                (long[] kv) -> {
+                    final Map<Long, Long> hashtable = new HashMap<>();
+                    for (long l : kv) hashtable.put(l, l);
+                    return hashtable;
+                },
+                this::benchmark,
+                (Map<Long, Long> hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
         );
     }
 
+    @Test
+    public void benchmarkStdCHM() {
+        benchmarkAbstract(
+                (long[] kv) -> {
+                    final Map<Long, Long> hashtable = new ConcurrentHashMap<>();
+                    for (long l : kv) hashtable.put(l, l);
+                    return hashtable;
+                },
+                this::benchmark,
+                (Map<Long, Long> hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
+        );
+    }    @Test
+    public void benchmarkKoloboke() {
+        benchmarkAbstract(
+                (long[] kv) -> {
+                    final Map<Long, Long> hashtable = HashLongLongMaps.newMutableMap();
+                    for (long l : kv) hashtable.put(l, l);
+                    return hashtable;
+                },
+                this::benchmark,
+                (Map<Long, Long> hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
+        );
+    }
+
+    @Test
+    public void benchmarkArt() {
+        benchmarkAbstract(
+                (long[] kv) -> {
+                    final LongAdaptiveRadixTreeMap<Long> map = new LongAdaptiveRadixTreeMap<>();
+                    for (long l : kv) map.put(l, l);
+                    return map;
+                },
+                this::benchmark,
+                (LongAdaptiveRadixTreeMap<Long> map, long[] kv) -> {
+                    for (long l : kv) map.put(l, l);
+                }
+        );
+    }
 
 
     private <T> void benchmarkAbstract(Function<long[], T> factory,
@@ -188,7 +251,7 @@ public class PerfThroughputTests {
 
         final long[] keys = new long[n2];
 
-        for (int j = 0; j < 100; j++) {
+        for (int j = 0; j < 190; j++) {
             for (int i = 0; i < n2; i++) keys[i] = rand.nextLong();
             final SingleResult benchmark = singleTest.apply(hashtable, keys);
             log.info("{}", benchmark);
@@ -196,12 +259,11 @@ public class PerfThroughputTests {
         }
 
 
-
 //
 //        log.info("done");
     }
 
-    private SingleResult benchmark(LongLongHashtable hashtable, long[] keys) {
+    private SingleResult benchmark(ILongLongHashtable hashtable, long[] keys) {
         long t = System.nanoTime();
         for (long key : keys) hashtable.put(key, key);
         long putNs = (System.nanoTime() - t) / keys.length;
@@ -265,6 +327,22 @@ public class PerfThroughputTests {
         for (long key : keys) hashtable.remove(key);
         long removNs = (System.nanoTime() - t) / keys.length;
         return new SingleResult(hashtable.size(), putNs, getNs, removNs, acc);
+    }
+
+    private SingleResult benchmark(LongAdaptiveRadixTreeMap<Long> map, long[] keys) {
+        long t = System.nanoTime();
+        for (long key : keys) map.put(key, key);
+        long putNs = (System.nanoTime() - t) / keys.length;
+
+        t = System.nanoTime();
+        long acc = 0;
+        for (long key : keys) acc += map.get(key);
+        long getNs = (System.nanoTime() - t) / keys.length;
+
+        t = System.nanoTime();
+        for (long key : keys) map.remove(key);
+        long removNs = (System.nanoTime() - t) / keys.length;
+        return new SingleResult(map.size(Integer.MAX_VALUE), putNs, getNs, removNs, acc);
     }
 
 

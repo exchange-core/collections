@@ -1,5 +1,6 @@
 package exchange.core2.collections.hashtable;
 
+import net.openhft.affinity.AffinityLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -106,38 +107,41 @@ public class HashtableAsync2Resizer {
     }
 
     private void doMigration(String threadName) {
-        Thread.currentThread().setName(threadName); // TODO remove
 
-        log.info("(A) Allocated new array, startingPosition={}, copying initial...", startingPosition);
+        try (AffinityLock ignore = AffinityLock.acquireLock()) { // TODO use threads factory
+            Thread.currentThread().setName(threadName); // TODO remove
 
-        int allowedLocal = allowedPosition;
+            log.info("(A) Allocated new array, startingPosition={}, copying initial...", startingPosition);
 
-        if (allowedLocal == -1) {
-            log.error("Unexpected -1 here");
-            throw new IllegalStateException();
-        }
-
-        copyInterval(startingPosition, allowedLocal);
-        int processedTill = allowedLocal;
-        processedPosition = allowedLocal;
-
-        while (true) {
-
-            allowedLocal = allowedPosition;
+            int allowedLocal = allowedPosition;
 
             if (allowedLocal == -1) {
-                // signalled to finish
-                log.info("(A) Copying completed ----------------------");
-                return;
+                log.error("Unexpected -1 here");
+                throw new IllegalStateException();
             }
 
-            if (processedTill != allowedLocal) {
-                copyInterval(processedTill, allowedLocal);
-                processedTill = allowedLocal;
-                processedPosition = allowedLocal;
+            copyInterval(startingPosition, allowedLocal);
+            int processedTill = allowedLocal;
+            processedPosition = allowedLocal;
+
+            while (true) {
+
+                allowedLocal = allowedPosition;
+
+                if (allowedLocal == -1) {
+                    // signalled to finish
+                    log.info("(A) Copying completed ----------------------");
+                    return;
+                }
+
+                if (processedTill != allowedLocal) {
+                    copyInterval(processedTill, allowedLocal);
+                    processedTill = allowedLocal;
+                    processedPosition = allowedLocal;
 //                log.debug("processedPosition = {} , allowedPosition={}", processedPosition, allowedPosition);
-            } else {
-                Thread.onSpinWait();
+                } else {
+                    Thread.onSpinWait();
+                }
             }
         }
     }
