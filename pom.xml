@@ -65,7 +65,7 @@
         <guava.version>28.2-jre</guava.version>
         <commons-math3.version>3.6.1</commons-math3.version>
         <commons-lang3.version>3.10</commons-lang3.version>
-        <eclipse.collections.version>10.2.0</eclipse.collections.version>
+        <eclipse.collections.version>12.0.0.M3</eclipse.collections.version>
         <hdr.histogram.version>2.1.12</hdr.histogram.version>
         <agrona.version>1.17.1</agrona.version>
         <slf4j.version>2.0.9</slf4j.version>
@@ -299,6 +299,13 @@
             <version>1.0.0</version>
             <scope>runtime</scope>
         </dependency>
+
+        <dependency>
+            <groupId>org.javolution</groupId>
+            <artifactId>javolution-core-java</artifactId>
+            <version>6.0.0</version>
+        </dependency>
+
 
         <dependency>
             <groupId>junit</groupId>

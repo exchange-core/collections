@@ -6,6 +6,7 @@ import exchange.core2.collections.hashtable.ILongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
 import exchange.core2.collections.hashtable.LongLongLLHashtable;
+import javolution.util.FastMap;
 import net.openhft.affinity.AffinityLock;
 import net.openhft.chronicle.map.ChronicleMap;
 import net.openhft.chronicle.map.ChronicleMapBuilder;
@@ -19,13 +20,32 @@ import org.slf4j.LoggerFactory;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
+/**
+ * -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC
+ * -XX:+UseZGC
+ */
+
 public class PerfLatencyTests {
     private static final Logger log = LoggerFactory.getLogger(PerfLatencyTests.class);
+
+
+    final Executor CORE_LOCK_EXECUTOR = task -> {
+        Thread thread = new Thread(() -> {
+            try (AffinityLock affinityLock = AffinityLock.acquireCore()) {
+                Thread.currentThread().setName("AFC" + affinityLock.cpuId());
+                task.run();
+            }
+        });
+        thread.start();
+    };
 
     /*
 11000000: {50.0%=6.7ms, 90.0%=12.6ms, 95.0%=13.4ms, 99.0%=14.0ms, 99.9%=14.1ms, 99.99%=14.1ms, W=325ms}
@@ -77,30 +97,30 @@ public class PerfLatencyTests {
     @Test
     public void benchmarkBasic() {
         benchmarkAbstract(
-            (long[] kv) -> {
-                final ILongLongHashtable hashtable = new LongLongHashtable(5000000);
-                for (long l : kv) hashtable.put(l, l);
-                return hashtable;
-            },
-            this::benchmark,
-            (ILongLongHashtable hashtable, long[] kv) -> {
-                for (long l : kv) hashtable.put(l, l);
-            }
+                (long[] kv) -> {
+                    final ILongLongHashtable hashtable = new LongLongHashtable(5000000);
+                    for (long l : kv) hashtable.put(l, l);
+                    return hashtable;
+                },
+                this::benchmarkExchangeHashtable,
+                (ILongLongHashtable hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
         );
     }
 
     @Test
     public void benchmarkLL() {
         benchmarkAbstract(
-            (long[] kv) -> {
-                final ILongLongHashtable hashtable = new LongLongLLHashtable(5000000);
-                for (long l : kv) hashtable.put(l, l);
-                return hashtable;
-            },
-            this::benchmark,
-            (ILongLongHashtable hashtable, long[] kv) -> {
-                for (long l : kv) hashtable.put(l, l);
-            }
+                (long[] kv) -> {
+                    final ILongLongHashtable hashtable = new LongLongLLHashtable(5000000);
+                    for (long l : kv) hashtable.put(l, l);
+                    return hashtable;
+                },
+                this::benchmarkExchangeHashtable,
+                (ILongLongHashtable hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
         );
     }
 
@@ -259,18 +279,22 @@ public class PerfLatencyTests {
 
      */
 
+    /**
+     * -Xms31g -Xmx31g -XX:+AlwaysPreTouch
+     */
     @Test
     public void benchmarkLL2() {
+
         benchmarkAbstract(
-            (long[] kv) -> {
-                final ILongLongHashtable hashtable = new LongLongLL2Hashtable(5000000);
-                for (long l : kv) hashtable.put(l, l);
-                return hashtable;
-            },
-            this::benchmark,
-            (ILongLongHashtable hashtable, long[] kv) -> {
-                for (long l : kv) hashtable.put(l, l);
-            }
+                (long[] kv) -> {
+                    final ILongLongHashtable hashtable = new LongLongLL2Hashtable(5000000, CORE_LOCK_EXECUTOR);
+                    for (long l : kv) hashtable.put(l, l);
+                    return hashtable;
+                },
+                this::benchmarkExchangeHashtable,
+                (ILongLongHashtable hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
         );
     }
 
@@ -286,15 +310,15 @@ public class PerfLatencyTests {
     @Test
     public void benchmarkAgrona() {
         benchmarkAbstract(
-            (long[] kv) -> {
-                final Long2LongHashMap hashtable = new Long2LongHashMap(5_000_000, Hashing.DEFAULT_LOAD_FACTOR, 0L);
-                for (long l : kv) hashtable.put(l, l);
-                return hashtable;
-            },
-            this::benchmarkAgrona,
-            (Long2LongHashMap hashtable, long[] kv) -> {
-                for (long l : kv) hashtable.put(l, l);
-            }
+                (long[] kv) -> {
+                    final Long2LongHashMap hashtable = new Long2LongHashMap(5_000_000, Hashing.DEFAULT_LOAD_FACTOR, 0L);
+                    for (long l : kv) hashtable.put(l, l);
+                    return hashtable;
+                },
+                this::benchmarkAgrona,
+                (Long2LongHashMap hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
         );
     }
 
@@ -309,15 +333,15 @@ public class PerfLatencyTests {
     @Test
     public void benchmarkStdHashMap() {
         benchmarkAbstract(
-            (long[] kv) -> {
-                final Map<Long, Long> hashtable = new HashMap<>(5000000);
-                for (long l : kv) hashtable.put(l, l);
-                return hashtable;
-            },
-            this::benchmark,
-            (Map<Long, Long> hashtable, long[] kv) -> {
-                for (long l : kv) hashtable.put(l, l);
-            }
+                (long[] kv) -> {
+                    final Map<Long, Long> hashtable = new HashMap<>(5000000);
+                    for (long l : kv) hashtable.put(l, l);
+                    return hashtable;
+                },
+                this::benchmarkStd,
+                (Map<Long, Long> hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
         );
     }
 
@@ -330,15 +354,15 @@ public class PerfLatencyTests {
     @Test
     public void benchmarkStdCHM() {
         benchmarkAbstract(
-            (long[] kv) -> {
-                final Map<Long, Long> hashtable = new ConcurrentHashMap<>(5000000);
-                for (long l : kv) hashtable.put(l, l);
-                return hashtable;
-            },
-            this::benchmark,
-            (Map<Long, Long> hashtable, long[] kv) -> {
-                for (long l : kv) hashtable.put(l, l);
-            }
+                (long[] kv) -> {
+                    final Map<Long, Long> hashtable = new ConcurrentHashMap<>(5000000);
+                    for (long l : kv) hashtable.put(l, l);
+                    return hashtable;
+                },
+                this::benchmarkStd,
+                (Map<Long, Long> hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
         );
     }
 
@@ -354,15 +378,30 @@ public class PerfLatencyTests {
     @Test
     public void benchmarkKoloboke() {
         benchmarkAbstract(
-            (long[] kv) -> {
-                final Map<Long, Long> hashtable = HashLongLongMaps.newMutableMap(5000000);
-                for (long l : kv) hashtable.put(l, l);
-                return hashtable;
-            },
-            this::benchmark,
-            (Map<Long, Long> hashtable, long[] kv) -> {
-                for (long l : kv) hashtable.put(l, l);
-            }
+                (long[] kv) -> {
+                    final Map<Long, Long> hashtable = HashLongLongMaps.newMutableMap(5000000);
+                    for (long l : kv) hashtable.put(l, l);
+                    return hashtable;
+                },
+                this::benchmarkStd,
+                (Map<Long, Long> hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
+        );
+    }
+
+    @Test
+    public void benchmarkJavoluton() {
+        benchmarkAbstract(
+                (long[] kv) -> {
+                    final Map<Long, Long> hashtable = new FastMap<>();
+                    for (long l : kv) hashtable.put(l, l);
+                    return hashtable;
+                },
+                this::benchmarkStd,
+                (Map<Long, Long> hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
         );
     }
 
@@ -370,60 +409,91 @@ public class PerfLatencyTests {
     @Test
     public void benchmarkChronicleMap() {
         benchmarkAbstract(
-            (long[] kv) -> {
+                (long[] kv) -> {
 
-                final ChronicleMapBuilder<Long, Long> longsMapBuilder =
-                    ChronicleMapBuilder.of(Long.class, Long.class)
-                        .name("long-long-benchmark-map")
-                        .entries(100_000_000);
-                final ChronicleMap<Long, Long> longsMap =
-                    longsMapBuilder.create();
+                    final ChronicleMapBuilder<Long, Long> longsMapBuilder =
+                            ChronicleMapBuilder.of(Long.class, Long.class)
+                                    .name("long-long-benchmark-map")
+                                    .entries(100_000_000);
+                    final ChronicleMap<Long, Long> longsMap =
+                            longsMapBuilder.create();
 
-                for (long l : kv) longsMap.put(l, l);
-                return longsMap;
-            },
-            this::benchmark,
-            (Map<Long, Long> hashtable, long[] kv) -> {
-                for (long l : kv) hashtable.put(l, l);
-            }
+                    for (long l : kv) longsMap.put(l, l);
+                    return longsMap;
+                },
+                this::benchmarkStd,
+                (Map<Long, Long> hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
         );
     }
 
     /*
-     * 5000000: {50.0%=0.28us, 90.0%=0.64us, 95.0%=2.18us, 99.0%=3.0us, 99.9%=114us, 99.99%=286us, W=335us}
-6000000: {50.0%=0.28us, 90.0%=0.58us, 95.0%=0.94us, 99.0%=2.68us, 99.9%=3.4us, 99.99%=12.5us, W=34us}
-7000000: {50.0%=0.29us, 90.0%=0.61us, 95.0%=1.0us, 99.0%=2.68us, 99.9%=3.2us, 99.99%=10.6us, W=20.2us}
-8000000: {50.0%=0.33us, 90.0%=0.63us, 95.0%=1.07us, 99.0%=2.68us, 99.9%=3.3us, 99.99%=6.9us, W=17.6us}
-9000000: {50.0%=0.36us, 90.0%=0.65us, 95.0%=1.17us, 99.0%=2.73us, 99.9%=3.5us, 99.99%=15.9us, W=60us}
-10000000: {50.0%=0.38us, 90.0%=2.12us, 95.0%=10.5us, 99.0%=160us, 99.9%=230us, 99.99%=246us, W=543us}
-11000000: {50.0%=0.4us, 90.0%=2.64us, 95.0%=52us, 99.0%=190us, 99.9%=239us, 99.99%=255us, W=516us}
-12000000: {50.0%=0.42us, 90.0%=2.68us, 95.0%=56us, 99.0%=195us, 99.9%=244us, 99.99%=260us, W=513us}
-13000000: {50.0%=0.43us, 90.0%=2.73us, 95.0%=59us, 99.0%=200us, 99.9%=249us, 99.99%=267us, W=509us}
-14000000: {50.0%=0.45us, 90.0%=2.81us, 95.0%=63us, 99.0%=206us, 99.9%=256us, 99.99%=271us, W=513us}
-15000000: {50.0%=0.46us, 90.0%=2.87us, 95.0%=66us, 99.0%=208us, 99.9%=259us, 99.99%=276us, W=510us}
-16000000: {50.0%=0.47us, 90.0%=3.0us, 95.0%=70us, 99.0%=213us, 99.9%=264us, 99.99%=281us, W=510us}
-17000000: {50.0%=0.47us, 90.0%=3.2us, 95.0%=72us, 99.0%=215us, 99.9%=267us, 99.99%=286us, W=526us}
-18000000: {50.0%=0.48us, 90.0%=4.1us, 95.0%=75us, 99.0%=219us, 99.9%=272us, 99.99%=290us, W=527us}
-19000000: {50.0%=0.49us, 90.0%=5.6us, 95.0%=77us, 99.0%=222us, 99.9%=276us, 99.99%=295us, W=531us}
-20000000: {50.0%=0.49us, 90.0%=7.1us, 95.0%=79us, 99.0%=225us, 99.9%=280us, 99.99%=335us, W=577us}
-21000000: {50.0%=0.5us, 90.0%=8.3us, 95.0%=82us, 99.0%=228us, 99.9%=282us, 99.99%=409us, W=706us}
-22000000: {50.0%=0.51us, 90.0%=9.6us, 95.0%=84us, 99.0%=230us, 99.9%=285us, 99.99%=304us, W=529us}
-23000000: {50.0%=0.51us, 90.0%=10.6us, 95.0%=85us, 99.0%=231us, 99.9%=287us, 99.99%=302us, W=516us}
-24000000: {50.0%=0.52us, 90.0%=11.9us, 95.0%=88us, 99.0%=233us, 99.9%=290us, 99.99%=308us, W=522us}
-25000000: {50.0%=0.52us, 90.0%=13.2us, 95.0%=89us, 99.0%=236us, 99.9%=292us, 99.99%=309us, W=527us}
+8800000: {50.0%=0.36us, 90.0%=0.65us, 95.0%=1.14us, 99.0%=2.73us, 99.9%=3.4us, 99.99%=5.4us, W=15.9us}
+8900000: {50.0%=0.37us, 90.0%=0.66us, 95.0%=1.17us, 99.0%=2.76us, 99.9%=3.4us, 99.99%=6.8us, W=17.2us}
+9000000: {50.0%=0.37us, 90.0%=0.66us, 95.0%=1.19us, 99.0%=2.75us, 99.9%=3.4us, 99.99%=6.2us, W=15.6us}
+9100000: {50.0%=0.38us, 90.0%=2.35us, 95.0%=28.1us, 99.0%=183us, 99.9%=295us, 99.99%=334us, W=736us} <-- ???
+9200000: {50.0%=0.39us, 90.0%=2.51us, 95.0%=44us, 99.0%=180us, 99.9%=227us, 99.99%=240us, W=506us}
+9300000: {50.0%=0.39us, 90.0%=2.53us, 95.0%=44us, 99.0%=181us, 99.9%=226us, 99.99%=241us, W=513us}
+9400000: {50.0%=0.39us, 90.0%=2.52us, 95.0%=43us, 99.0%=179us, 99.9%=225us, 99.99%=239us, W=505us}
+
+8800000: {50.0%=0.36us, 90.0%=0.65us, 95.0%=1.14us, 99.0%=2.73us, 99.9%=3.4us, 99.99%=5.4us, W=15.9us}
+8900000: {50.0%=0.37us, 90.0%=0.66us, 95.0%=1.17us, 99.0%=2.76us, 99.9%=3.4us, 99.99%=6.8us, W=17.2us}
+9000000: {50.0%=0.37us, 90.0%=0.66us, 95.0%=1.19us, 99.0%=2.75us, 99.9%=3.4us, 99.99%=6.2us, W=15.6us}
+9100000: {50.0%=0.38us, 90.0%=2.35us, 95.0%=28.1us, 99.0%=183us, 99.9%=295us, 99.99%=334us, W=736us}
+9200000: {50.0%=0.39us, 90.0%=2.51us, 95.0%=44us, 99.0%=180us, 99.9%=227us, 99.99%=240us, W=506us}
+9300000: {50.0%=0.39us, 90.0%=2.53us, 95.0%=44us, 99.0%=181us, 99.9%=226us, 99.99%=241us, W=513us}
+9400000: {50.0%=0.39us, 90.0%=2.52us, 95.0%=43us, 99.0%=179us, 99.9%=225us, 99.99%=239us, W=505us}
+
+9580000: {50.0%=0.44us, 90.0%=0.81us, 95.0%=2.46us, 99.0%=2.95us, 99.9%=8.6us, 99.99%=15.2us, W=28.4us}
+9590000: {50.0%=0.44us, 90.0%=0.77us, 95.0%=2.19us, 99.0%=2.66us, 99.9%=3.9us, 99.99%=6.0us, W=13.7us}
+9600000: {50.0%=0.44us, 90.0%=0.81us, 95.0%=2.35us, 99.0%=2.96us, 99.9%=13.7us, 99.99%=17.3us, W=37us}
+9610000: {50.0%=0.44us, 90.0%=0.81us, 95.0%=2.33us, 99.0%=2.98us, 99.9%=14.5us, 99.99%=18.7us, W=37us}
+9620000: {50.0%=0.44us, 90.0%=0.8us, 95.0%=2.31us, 99.0%=3.0us, 99.9%=23.3us, 99.99%=27.7us, W=51us}
+9630000: {50.0%=0.45us, 90.0%=0.79us, 95.0%=1.85us, 99.0%=2.9us, 99.9%=3.3us, 99.99%=4.1us, W=6.9us}
+9640000: {50.0%=0.46us, 90.0%=2.7us, 95.0%=98us, 99.0%=251us, 99.9%=297us, 99.99%=301us, W=554us}
+9650000: {50.0%=0.47us, 90.0%=9.1us, 95.0%=87us, 99.0%=236us, 99.9%=282us, 99.99%=287us, W=554us}
+9660000: {50.0%=0.46us, 90.0%=22.1us, 95.0%=107us, 99.0%=260us, 99.9%=308us, 99.99%=311us, W=586us}
+9670000: {50.0%=0.47us, 90.0%=11.3us, 95.0%=88us, 99.0%=238us, 99.9%=286us, 99.99%=292us, W=549us}
+
+9326545 key:1027623903240713662 539us   9345961 key:9129473633326920723 542us   9343403 key:6065692588195673607 537us
+9336868 key:4416923504898494645 567us   9356320 key:8890802933896864210 570us   9353747 key:5107564459190322205 573us
+9347234 key:7235054717363363748 557us   9366697 key:5400682859551526268 548us   9364118 key:8675308830211681394 550us
+9357614 key:3943891682241345834 575us   9377026 key:2123519765354319616 568us   9374472 key:6968378013590755945 574us
+9367973 key:7145959465475420632 558us   9387391 key:4301889698958266197 551us   9384809 key:8905877330913798330 555us
+9378325 key:1385113687655370295 568us   9397744 key:5392935020395276205 573us   9395163 key:7223794007344703419 566us
+9388667 key:1176352272854631336 554us   9408155 key:6510479881137795515 551us   9405557 key:7863179558527002671 557us
+9399036 key:5084834937235382480 568us   9418501 key:6598539166119980086 567us   9415917 key:6999183723713115538 570us
+9409436 key:5059108639392986416 560us   9428831 key:3246164340044166244 560us   9426263 key:7617832941085106540 554us
+9419776 key:1899824854663588134 575us   9439170 key:3423176286826230858 571us   9436582 key:7274240727423089066 567us
+9430097 key:538311559260012073  554us   9449539 key:8724795075925713368 554us   9446943 key:8142057178622955341 553us
+9440444 key:6086020483593091844 566us   9459914 key:1289709319742862050 572us   9457342 key:8407013349499479481 570us
+9450819 key:7023040670827289088 554us   9470298 key:3063972627405884320 554us   9467698 key:2775067617260675650 553us
+9461181 key:30664051870008882   569us   9480664 key:133626026275649927  576us   9478058 key:7137368447492300044 571us
+9471576 key:3309636465177693903 557us   9491026 key:9077647392892200622 550us   9488453 key:6566851634364018389 556us
+9481922 key:2346373704659386085 571us   9501371 key:7543219644227126432 570us   9498793 key:1632385868056868683 568us
+9492308 key:8515596136673253816 563us   9511744 key:5924573648990770648 563us   9509179 key:4568531061017625289 565us
+9502661 key:3443140793473460048 569us   9522079 key:4987297296671083713 571us   9519521 key:2873365072131442653 572us
+9513016 key:8035873034791428808 553us   9532397 key:2654934307505778311 555us   9529847 key:5936057624094807771 556us
+9523369 key:2363646880018643921 569us   9542757 key:1413438886614145219 572us   9540194 key:989783314919453928  571us
+9533684 key:1299975589204679345 560us   9553124 key:6715630322513339673 566us   9550548 key:6013211876755659555 563us
+
+ -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC
+
+
      */
     @Test
     public void benchmarkAdaptiveRadixTree() {
         benchmarkAbstract(
-            (long[] kv) -> {
-                final LongAdaptiveRadixTreeMap<Long> map = new LongAdaptiveRadixTreeMap<>();
-                for (long l : kv) map.put(l, l);
-                return map;
-            },
-            this::benchmark,
-            (LongAdaptiveRadixTreeMap<Long> hashtable, long[] kv) -> {
-                for (long l : kv) hashtable.put(l, l);
-            }
+                (long[] kv) -> {
+                    final LongAdaptiveRadixTreeMap<Long> map = new LongAdaptiveRadixTreeMap<>();
+                    for (long l : kv) map.put(l, l);
+                    return map;
+                },
+                this::benchmarkStd,
+                (LongAdaptiveRadixTreeMap<Long> hashtable, long[] kv) -> {
+                    for (long l : kv) hashtable.put(l, l);
+                }
         );
     }
 
@@ -432,14 +502,14 @@ public class PerfLatencyTests {
                                        BiFunction<T, long[], SingleResult> singleTest,
                                        BiConsumer<T, long[]> extraLoader) {
         int n = 4_000_000;
-        long seed = 2918723469278364978L;
+        long seed = 1918723469278364978L;
 
-        try (AffinityLock ignore = AffinityLock.acquireLock()) {
+        try (AffinityLock ignore = AffinityLock.acquireCore()) {
 
             log.debug("Pre-filling {} random k/v pairs...", n);
             Random rand = new Random(seed);
             final long[] prefillKeys = new long[n];
-            for (int i = 0; i < n; i++) prefillKeys[i] = rand.nextLong();
+            for (int i = 0; i < n; i++) prefillKeys[i] = rand.nextLong() & Long.MAX_VALUE;
 //
 //
 //        for (int i = 0; i < n; i++) {
@@ -457,10 +527,11 @@ public class PerfLatencyTests {
 
             // TODO make continuous test (non-stop)
 
-            for (int j = 0; j < 178; j++) {
-                for (int i = 0; i < n2; i++) keys[i] = rand.nextLong();
+
+            for (int j = 0; j < 1780; j++) {
+                for (int i = 0; i < n2; i++) keys[i] = rand.nextLong() & Long.MAX_VALUE;
                 final SingleResult benchmark = singleTest.apply(hashtable, keys);
-                log.info("{}: {}", benchmark.size, LatencyTools.createLatencyReportFast(benchmark.avgGet));
+                log.info("{}: {}", n + n2 * (j + 1), LatencyTools.createLatencyReportFast(benchmark.avgGet));
                 extraLoader.accept(hashtable, keys);
             }
         }
@@ -531,9 +602,9 @@ public class PerfLatencyTests {
 
      */
 
-    private SingleResult benchmark(ILongLongHashtable hashtable, long[] keys) {
+    private SingleResult benchmarkExchangeHashtable(ILongLongHashtable hashtable, long[] keys) {
 
-        int tps = 1_000_000;
+        int tps = 3_000_000;
 
 
         final Histogram histogramPut = new Histogram(60_000_000_000L, 3);
@@ -643,7 +714,7 @@ public class PerfLatencyTests {
     }
 
 
-    private SingleResult benchmark(Map<Long, Long> hashtable, long[] keys) {
+    private SingleResult benchmarkStd(Map<Long, Long> hashtable, long[] keys) {
 
         int tps = 1_000_000;
 
@@ -675,7 +746,7 @@ public class PerfLatencyTests {
     }
 
 
-    private SingleResult benchmark(LongAdaptiveRadixTreeMap<Long> hashtable, long[] keys) {
+    private SingleResult benchmarkFair(LongAdaptiveRadixTreeMap<Long> hashtable, long[] keys) {
 
         int tps = 1_000_000;
 
@@ -701,10 +772,144 @@ public class PerfLatencyTests {
             hashtable.put(key, key);
             final long putNs = System.nanoTime() - startTimeNs - (lastKnownTimeOffsetPs >> 10);
             histogramPut.recordValue(putNs);
+            if (putNs > 300_000) {
+                log.debug("key:{} {}us", key, putNs / 1000);
+            }
         }
 
-        return new SingleResult(hashtable.size(Integer.MAX_VALUE), histogramPut, histogramPut, histogramPut);
+        return new SingleResult(0, histogramPut, histogramPut, histogramPut);
     }
+
+
+    private SingleResult benchmarkStd(LongAdaptiveRadixTreeMap<Long> hashtable, long[] keys) {
+
+        final Histogram histogramPut = new Histogram(60_000_000_000L, 3);
+
+        for (int i = 0; i < keys.length; i++) {
+            final long key = keys[i];
+            long startTimeNs = System.nanoTime();
+            hashtable.put(key, key);
+            final long putNs = System.nanoTime() - startTimeNs;
+            histogramPut.recordValue(putNs);
+            if (putNs > 300_000) {
+                log.debug("{} key:{} {}us", hashtable.size(Integer.MAX_VALUE), key, putNs / 1000);
+            }
+        }
+
+        return new SingleResult(0, histogramPut, histogramPut, histogramPut);
+    }
+
+
+    @Test
+    public void nonStopPutBenchmarkStdHashtable() {
+
+
+        final BlockingQueue<long[]> randBuffer = new LinkedBlockingQueue<>(2);
+
+        final int bufSize = 1000_000;
+
+
+        Runnable randomGenerator = () -> {
+
+            try (AffinityLock affinityLock = AffinityLock.acquireCore()) {
+                log.debug("Core for random generator: {}", affinityLock);
+
+                Random rand = new Random();
+
+                do {
+//                    log.debug("Allocating array...");
+                    final long[] keys = new long[bufSize]; // TODO take from pool
+//                    log.debug("Generating {} randoms", n);
+                    for (int i = 0; i < bufSize; i++) keys[i] = rand.nextLong();
+//                    log.debug("Generated, inserting..");
+                    randBuffer.put(keys);
+                } while (true);
+            } catch (InterruptedException ex) {
+                throw new RuntimeException(ex);
+            }
+
+
+        };
+
+        for (int i = 0; i < 2; i++) {
+            Thread randomSupplier = new Thread(randomGenerator);
+            randomSupplier.start();
+        }
+
+
+        //try {
+        try (AffinityLock ignore = AffinityLock.acquireCore()) {
+
+
+            final int prefills = 5;
+
+            ILongLongHashtable map = new LongLongLL2Hashtable(1000000, CORE_LOCK_EXECUTOR);
+            //ILongLongHashtable map = new LongLongHashtable();
+            //Long2LongHashMap map = new Long2LongHashMap(0L);
+            //final LongAdaptiveRadixTreeMap<Long> map = new LongAdaptiveRadixTreeMap<>();
+
+            log.debug("Prefilling {} entries..", bufSize * prefills);
+            for (int i = 0; i < prefills; i++) {
+                long[] buf = randBuffer.take();
+                for (long key : buf) {
+                    map.put(key, key);
+                }
+                //map = new LongLongLL2Hashtable(CORE_LOCK_EXECUTOR);
+            }
+            log.debug("Prefilling done");
+
+
+            int tps = 100_000;
+
+
+            final Histogram histogramPut = new Histogram(60_000_000_000L, 3);
+
+            final long picosPerCmd = (1024L * 1_000_000_000L) / tps;
+            final long startTimeNs = System.nanoTime();
+            long nextPublishTimeNs = startTimeNs + 1_000_000_000L;
+
+            long planneTimeOffsetPs = 0L;
+            long lastKnownTimeOffsetPs = 0L;
+
+            int pos = 0;
+            long[] buf = randBuffer.take();
+
+            for (int i = 0; i < 500_000_000; i++) {
+
+                if (pos == buf.length) {
+                    buf = randBuffer.take();
+                    pos = 0;
+                }
+
+                final long key = buf[pos++];
+                planneTimeOffsetPs += picosPerCmd;
+                while (planneTimeOffsetPs > lastKnownTimeOffsetPs) {
+                    lastKnownTimeOffsetPs = (System.nanoTime() - startTimeNs) << 10;
+                    // spin until its time to send next command
+                    Thread.onSpinWait(); // 1us-26  max34
+                    // LockSupport.parkNanos(2000L); // 1us-25 max29
+                    //Thread.yield();   // 1us-28  max32
+                }
+
+                map.put(key, key);
+
+                final long nanoTime = System.nanoTime();
+                final long putNs = nanoTime - startTimeNs - (lastKnownTimeOffsetPs >> 10);
+                histogramPut.recordValue(putNs);
+
+                if (nanoTime > nextPublishTimeNs) {
+                    nextPublishTimeNs = nanoTime + 1_000_000_000L;
+                    log.info("{} {}", i, LatencyTools.createLatencyReportFast(histogramPut));
+                    //histogramPut.reset();
+                }
+
+            }
+
+        } catch (InterruptedException ex) {
+            throw new RuntimeException(ex);
+        }
+    }
+
 
     record SingleResult(long size, Histogram avgPut, Histogram avgGet, Histogram avgRemove) {
 

@@ -1,6 +1,5 @@
 package exchange.core2.collections.hashtable;
 
-import net.openhft.affinity.AffinityLock;
 import org.agrona.BitUtil;
 import org.agrona.collections.Hashing;
 import org.agrona.collections.LongLongConsumer;
@@ -8,6 +7,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.locks.LockSupport;
 import java.util.stream.LongStream;
 
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
@@ -16,10 +17,12 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
 
     private static final Logger log = LoggerFactory.getLogger(LongLongLL2Hashtable.class);
 
-    public static final int DEFAULT_ARRAY_SIZE = 16;
+    public static final int DEFAULT_ARRAY_SIZE = 32;
 
     private final float upsizeThresholdPerc;
     private final float blockThresholdPerc;
+
+    private final Executor executor;
 
     private long[] data;
     private long size = 0;
@@ -27,6 +30,8 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
     private long upsizeThreshold;
     private long blockThreshold;
     private CompletableFuture<long[]> arrayFeature = null;
+    private CompletableFuture<Void> copyingProcess = null;
+
     private HashtableAsync2Resizer resizer = null;
 
     private int allowedPosition = -1;
@@ -37,7 +42,15 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
     }
 
     public LongLongLL2Hashtable(int size) {
+        this(size, job -> new Thread(job).start());
+    }
 
+    public LongLongLL2Hashtable(Executor executor) {
+        this(DEFAULT_ARRAY_SIZE, executor);
+    }
+
+    public LongLongLL2Hashtable(int size, Executor executor) {
+        this.executor = executor;
         this.upsizeThresholdPerc = 0.65f;
         final int arraySize = BitUtil.findNextPositivePowerOfTwo((int) (size / upsizeThresholdPerc));
 
@@ -52,10 +65,6 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
     @Override
     public long put(long key, long value) {
 
-//        if(key == 2854607146246727579L){
-//            log.debug("#### PUT {}", key);
-//        }
-
         if (arrayFeature != null) {
             startAsyncCopying();
         }
@@ -64,29 +73,31 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
 //            log.warn("size={} blockThreshold={}", size, blockThreshold);
 //        }
 
-        if (resizer != null && size >= blockThreshold) {
-
-            log.warn("BLOCKED: blockThreshold={} allow copy till {}", blockThreshold, resizer.getStartingPosition());
-            allowedPosition = resizer.getStartingPosition();
-            resizer.setAllowedPosition(allowedPosition);
-            log.debug("A knownProgressCached = {} (allowedPosition={})", knownProgressCached, allowedPosition);
-            while (knownProgressCached != allowedPosition) {
-                knownProgressCached = resizer.getProcessedPosition();
-                // log.debug("B knownProgressCached = {} (allowedPosition={})", knownProgressCached,allowedPosition);
-                Thread.onSpinWait();
-            }
-
-            switchToNewArray();
-            log.warn("UNBLOCKED");
-        }
 
         if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
 
-
         if (resizer != null) {
+
             // TODO slow ?
             knownProgressCached = resizer.getProcessedPosition();
-            if (knownProgressCached == allowedPosition) {
+
+            if (size >= blockThreshold) {
+
+                log.warn("BLOCKED: blockThreshold={} allow copy till {}", blockThreshold, resizer.getStartingPosition());
+                allowedPosition = resizer.getStartingPosition();
+                resizer.setAllowedPosition(allowedPosition);
+                log.debug("A knownProgressCached = {} (allowedPosition={})", knownProgressCached, allowedPosition);
+                while (knownProgressCached != allowedPosition) {
+                    knownProgressCached = resizer.getProcessedPosition();
+                    // log.debug("B knownProgressCached = {} (allowedPosition={})", knownProgressCached,allowedPosition);
+                    Thread.onSpinWait();
+                }
+
+                switchToNewArray();
+                log.warn("UNBLOCKED");
+
+            } else if (knownProgressCached == allowedPosition) {
+
                 enableNextMigrationSegmentOrFinishMigration();
             }
         }
@@ -114,36 +125,103 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
             return prevValue;
         }
 
-//        if(key == 2854607146246727579L){
-//            log.debug("#### PUT {}: A", key);
-//        }
 
-        if (resizer.isInOldData(pos, allowedPosition) || pos == resizer.getStartingPosition()) {
+        int g0 = resizer.getStartingPosition();
 
-//            if(key == 2854607146246727579L){
-//                log.debug("#### PUT {}: in old data - B  pos={} allowedPosition={} resizer.getStartingPosition()={}",
-//                    key, pos, allowedPosition, resizer.getStartingPosition());
-//            }
+        if (resizer.isInOldData(pos, allowedPosition) || pos == g0) {
+
+            // TODO check ??
+            if(g0 == allowedPosition){
+                /*
+22:55:55.614 [main] INFO  e.c.c.h.LongLongHashtableAbstractTest - DONE iteration: 92
+22:55:55.731 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[65536] ...
+22:55:55.731 [Thread-1116] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - (Allocating array: long[65536] ...)
+22:55:55.731 [Thread-1117] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 16384->32768 -----------------
+22:55:55.731 [Thread-1117] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
+22:55:55.735 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[131072] ...
+22:55:55.735 [Thread-1118] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - (Allocating array: long[131072] ...)
+22:55:55.735 [Thread-1119] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 32768->65536 -----------------
+22:55:55.736 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT -689037631452771687: RARE Extending backwards section g0=4
+22:55:55.736 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - Found new g0=65450, migrating from old g0=4
+22:55:55.736 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - DONE RARE: offsetFinal=131028 prevVal=0
+22:55:55.736 [Thread-1119] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
+22:55:55.742 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[262144] ...
+22:55:55.742 [Thread-1120] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - (Allocating array: long[262144] ...)
+22:55:55.743 [Thread-1121] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 65536->131072 -----------------
+22:55:55.745 [Thread-1121] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
+22:55:55.757 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[524288] ...
+22:55:55.757 [Thread-1122] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - (Allocating array: long[524288] ...)
+22:55:55.760 [Thread-1123] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 131072->262144 -----------------
+
+java.lang.IllegalStateException: should be migrated
+
+
+23:20:36.587 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[524288] ...
+23:20:36.587 [Thread-1122] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - (Allocating array: long[524288] ...)
+23:20:36.589 [Thread-1123] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 131072->262144 -----------------
+23:20:36.592 [main] ERROR e.c.c.hashtable.LongLongLL2Hashtable - ########## should be migrated !!! pos=0 A=S=0
+23:20:36.592 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT -1268289157630876716: RARE Extending backwards section g0=0
+23:20:36.592 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - Found new g0=262142, migrating from old g0=0
+23:20:36.592 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - DONE RARE: offsetFinal=262144 prevVal=0
+23:20:36.593 [Thread-1123] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
+
+21:34:29.849 [Thread-5916] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - (Allocating array: long[65536] ...)
+21:34:29.850 [Thread-5917] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 16384->32768 -----------------
+21:34:29.850 [main] ERROR e.c.c.hashtable.LongLongLL2Hashtable - ########## should be migrated !!! pos=4 A=S=4
+21:34:29.850 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT 8112868677862138312: RARE Extending backwards section g0=4
+21:34:29.850 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - Found new g0=32766, migrating from old g0=4
+21:34:29.850 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - DONE RARE: offsetFinal=4 prevVal=0
+21:34:29.850 [Thread-5917] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
+
+21:35:45.631 [Thread-8685] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 262144->524288 -----------------
+21:35:45.635 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT 8353484598072239349: RARE Extending backwards section g0=16
+21:35:45.635 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - Found new g0=524284, migrating from old g0=16
+21:35:45.635 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - DONE RARE: offsetFinal=524296 prevVal=0
+21:35:45.637 [main] ERROR e.c.c.hashtable.LongLongLL2Hashtable - ########## should be migrated !!! pos=524284 A=S=524284
+21:35:45.637 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT 4163035467544519845: RARE Extending backwards section g0=524284
+21:35:45.637 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - Found new g0=524274, migrating from old g0=524284
+21:35:45.637 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - DONE RARE: offsetFinal=524284 prevVal=0
+21:35:45.639 [Thread-8685] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
+
+                 */
+                //throw new IllegalStateException("should be migrated");
+                log.error("########## should be migrated !!! pos={} A=S={}", pos, g0);
+                LockSupport.parkNanos(111);
+            }
+
 
 
             // is in old data (or at starting position)
-            int g0 = resizer.getStartingPosition();
             final int offset = HashingUtils.findFreeOffset(key, pos, data);
             if (offset != g0) {
 
-//                if(key == 2854607146246727579L){
-//                    log.debug("#### PUT {}: B1 offset={}", key, offset);
-//                }
-
-
                 // is in old data - can safely insert
-                final long prevVal = putInternalInsert(data, offset, key, value);
-                return prevVal;
+                return putInternalInsert(data, offset, key, value);
+
             } else {
+
+
+                if(g0 == allowedPosition){
+                    log.debug("PUT {}: SUPER_RARE can not extend migrated cluster backwards, have to wait for completion" +
+                            " pos={} offset={} A=S={}", key, pos, offset, g0);
+
+                    // can not extend backwards, need to wait for completion (TODO extract method)
+                    while (knownProgressCached != allowedPosition) {
+                        knownProgressCached = resizer.getProcessedPosition();
+                        // log.debug("B knownProgressCached = {} (allowedPosition={})", knownProgressCached,allowedPosition);
+                        Thread.onSpinWait();
+                    }
+                    switchToNewArray();
+                    // can safely insert
+                    int pos2 = (hash & mask) << 1;
+                    final int offset2 = HashingUtils.findFreeOffset(key, pos2, data);
+                    log.debug("SUPER_RARE pos={} pos2={} offset={}, offset2={}", pos, pos2, offset, offset2);
+                    return putInternalInsert(data, offset2, key, value);
+                }
 
                 // rare scenario: offset reached startPos, which always stay empty (gap)
                 // have to extend migrated area and shift starting position back
-                // assuming it can not reach only allowedPosition, but not before
+                // assuming it can only reach allowedPosition, but not before
 
                 log.debug("PUT {}: RARE Extending backwards section g0={}", key, g0);
                 do {
@@ -182,11 +260,6 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
                 return prevVal;
             }
         }
-
-//        if(key == 2854607146246727579L){
-//            log.debug("#### PUT {}: C", key);
-//        }
-
 
         // not in old data - either migrated already or still under processing
         if (knownProgressCached == -1) {
@@ -423,7 +496,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
             return;
         }
 
-        final boolean useSync = size < 20000;
+        final boolean useSync = size < 8200;
 
         if (useSync) {
             final HashtableResizer hashtableResizer = new HashtableResizer(data);
@@ -436,22 +509,37 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         } else {
             //printLayout("BEFORE async RESIZE");
             log.info("(A) Allocating array: long[{}] ...", data.length * 2);
-            arrayFeature = CompletableFuture.supplyAsync(() -> {
-                try (AffinityLock ignore = AffinityLock.acquireLock()) { // TODO use threads factory
-                    return new long[data.length * 2];
-                }
-            });
+            arrayFeature = CompletableFuture.supplyAsync(
+                    () -> {
+                        log.debug("(Allocating array: long[{}] ...)", data.length * 2);
+                        return new long[data.length * 2];
+                    },
+                    executor);
+
         }
     }
 
 
     private void startAsyncCopying() {
         if (arrayFeature.isDone()) {
+
             final int initialPos = HashtableAsync2Resizer.findNextGapPos(data, 0);
-            allowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (initialPos + 3114) & (data.length - 1)); // TODO fix
-            resizer = new HashtableAsync2Resizer(data, arrayFeature.join(), initialPos, allowedPosition);
+
+            knownProgressCached = HashtableAsync2Resizer.findNextGapPos(data, (initialPos + 32) & (data.length - 1)); // TODO fix
+
+            allowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (knownProgressCached + 1234) & (data.length - 1)); // TODO fix
+            resizer = new HashtableAsync2Resizer(data, arrayFeature.join(), initialPos, knownProgressCached, allowedPosition);
             arrayFeature = null;
-            resizer.resizeAsync();
+
+            resizer.copyInterval(initialPos, knownProgressCached);
+
+            //final String threadName = Thread.currentThread().getName();
+            copyingProcess = CompletableFuture.runAsync(
+                    () -> {
+                        //Thread.currentThread().setName(threadName);
+                        resizer.copy();
+                    },
+                    executor);
         }
     }
 
@@ -462,13 +550,14 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         //log.debug("enableNextMigrationSegmentOrFinishMigration: allowedPosition={} startingPosition={}", allowedPosition, startingPosition);
 
         if (allowedPosition == startingPosition) {
+            // migration completed
             switchToNewArray();
         } else {
 
 
             //log.debug("findNextGapPos after {}", (allowedPosition + 3114) & (data.length - 1));
 
-            int newAllowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (allowedPosition + 3114) & (data.length - 1));
+            int newAllowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (allowedPosition + 2114) & (data.length - 1));
 
             if (!resizer.isInOldData(newAllowedPosition, allowedPosition)) {
                 //log.debug("Override newAllowedPosition={} with startingPosition={}", newAllowedPosition, startingPosition);
@@ -483,14 +572,15 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
     }
 
     private void blockOnResizing() {
-        if (resizer != null) {
-            log.debug("Active resizing found");
-
-            resizer.waitCompletion();
-            switchToNewArray();
-            log.debug("ASYNC RESIZE done, upsizeThreshold=" + upsizeThreshold);
-            // printLayout("AFTER async RESIZE");
-        }
+        throw new UnsupportedOperationException();
+        // TODO will not work
+//        if (resizer != null) {
+//            log.debug("Active resizing found");
+//            copyingProcess.join();
+//            switchToNewArray();
+//            log.debug("ASYNC RESIZE done, upsizeThreshold=" + upsizeThreshold);
+//            // printLayout("AFTER async RESIZE");
+//        }
     }
 
 
@@ -506,6 +596,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         upsizeThreshold = calculateUpsizeThreshold();
         blockThreshold = calculateBlockThreshold();
         resizer = null;
+        copyingProcess = null;
     }
 
     private long calculateUpsizeThreshold() {

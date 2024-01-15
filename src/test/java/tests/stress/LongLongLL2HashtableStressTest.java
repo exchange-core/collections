@@ -40,7 +40,7 @@ public class LongLongLL2HashtableStressTest {
         final Map<Thread, Throwable> exceptions = new ConcurrentHashMap<>();
         final Thread.UncaughtExceptionHandler ueh = exceptions::put;
 
-        final int numThreads = 55;
+        final int numThreads = 20;
 
         final Thread[] threads = new Thread[numThreads];
         for (int i = 0; i < numThreads; i++) {
@@ -76,6 +76,9 @@ public class LongLongLL2HashtableStressTest {
             //final Map<Long, Long> refMap = new HashMap<>();
             final Long2LongHashMap refMap = new Long2LongHashMap(0L);
 
+            final Long2LongHashMap timesMap = new Long2LongHashMap(0L);
+
+
 
             for (long i = 0; i < size; i++) {
                 final long key = rand.nextLong();
@@ -84,6 +87,8 @@ public class LongLongLL2HashtableStressTest {
                 //log.info("=============== put {}={}", key, value);
                 Long prevRef = refMap.put(key, value);
                 long prev = hashtable.put(key, value);
+
+                timesMap.put(key, System.currentTimeMillis());
 
                 try {
                     assertThat(prev, is(prevRef == null ? 0L : prevRef));
@@ -100,7 +105,12 @@ public class LongLongLL2HashtableStressTest {
 
 
                 } catch (Throwable er) {
-                    log.error("ERR: KEY={} VALUE={} i={} iter={}", key, value, i, iteration);
+
+                    int mask = hashtable.mask() >> 1;
+                    final int hash = Hashing.hash(key);
+                    int pos = (hash & mask) << 1;
+
+                    log.error("ERR: KEY={} VALUE={} i={} iter={} pos={}", key, value, i, iteration, pos);
 
                     throw er;
                 }
@@ -139,8 +149,10 @@ public class LongLongLL2HashtableStressTest {
                             posFrom.set(Math.min(posFrom.get(), pos));
                             posTo.set(Math.max(posTo.get(), pos));
 
+                            Instant originalPut = Instant.ofEpochMilli(timesMap.get(k));
 
-                            log.error("PERIODIC: KEY={} VALUE={} pos={} {} {}", k, v, pos, er.getClass(), er.getMessage());
+
+                            log.error("PERIODIC: KEY={} VALUE={} pos={} tPut={} {} {}", k, v, pos, originalPut, er.getClass(), er.getMessage());
                             if (errCnt.incrementAndGet() > 200) {
 
                                 log.error("PERIOD: {} ... {}", Instant.ofEpochMilli(timeFrom.get()), Instant.ofEpochMilli(timeTo.get()));

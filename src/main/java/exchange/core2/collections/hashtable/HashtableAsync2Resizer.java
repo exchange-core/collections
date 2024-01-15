@@ -1,10 +1,7 @@
 package exchange.core2.collections.hashtable;
 
-import net.openhft.affinity.AffinityLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.util.concurrent.CompletableFuture;
 
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
 
@@ -17,35 +14,21 @@ public class HashtableAsync2Resizer {
     private final int newMask;
 
     private int startingPosition;
+    private int asyncInitPosition;
+
     private volatile int processedPosition = -1;
     private volatile int allowedPosition;
 
-    private CompletableFuture<Void> copyingProcess;
 
-    public HashtableAsync2Resizer(long[] srcData, long[] dstData, int initialOffset, int allowedPosition) {
+
+    public HashtableAsync2Resizer(long[] srcData, long[] dstData, int startingPosition, int asyncInitPosition, int allowedPosition) {
         this.srcData = srcData;
         this.dstData = dstData;
         this.newMask = srcData.length - 1;
-        this.startingPosition = initialOffset;
+        this.startingPosition = startingPosition;
+        this.asyncInitPosition = asyncInitPosition;
         this.allowedPosition = allowedPosition;
     }
-
-    public void resizeAsync() {
-        log.info("(A) ----------- starting async migration capacity: {}->{} -----------------", srcData.length / 2, srcData.length);
-        final String threadName = Thread.currentThread().getName();
-        copyingProcess = CompletableFuture.runAsync(() -> doMigration(threadName + "-M"));
-    }
-
-    public boolean isFinished() {
-        return copyingProcess.isDone();
-    }
-
-    public long[] waitCompletion() {
-        copyingProcess.join();
-        return dstData;
-    }
-
-
 
     /**
      * Check if position is surely non migrated
@@ -68,7 +51,7 @@ public class HashtableAsync2Resizer {
      */
     public boolean notInNewData(int pos, int lasKnownProgress) { // TODO looks the same ^^^^
 
-        if(startingPosition == lasKnownProgress){
+        if (startingPosition == lasKnownProgress) {
             return false;
         }
 
@@ -106,48 +89,45 @@ public class HashtableAsync2Resizer {
         this.startingPosition = startingPosition;
     }
 
-    private void doMigration(String threadName) {
+    public void copy() {
+        log.info("(A) ----------- starting async migration capacity: {}->{} -----------------", srcData.length / 2, srcData.length);
 
-        try (AffinityLock ignore = AffinityLock.acquireLock()) { // TODO use threads factory
-            Thread.currentThread().setName(threadName); // TODO remove
+     //   log.info("(A) Allocated new array, startingPosition={}, copying initial...", startingPosition);
 
-            log.info("(A) Allocated new array, startingPosition={}, copying initial...", startingPosition);
+        int allowedLocal = allowedPosition;
 
-            int allowedLocal = allowedPosition;
+        if (allowedLocal == -1) {
+            log.error("Unexpected -1 here");
+            throw new IllegalStateException();
+        }
+
+        copyInterval(asyncInitPosition, allowedLocal);
+        int processedTill = allowedLocal;
+        processedPosition = allowedLocal;
+
+        while (true) {
+
+            allowedLocal = allowedPosition;
 
             if (allowedLocal == -1) {
-                log.error("Unexpected -1 here");
-                throw new IllegalStateException();
+                // signalled to finish
+                log.info("(A) Copying completed ----------------------");
+                return;
             }
 
-            copyInterval(startingPosition, allowedLocal);
-            int processedTill = allowedLocal;
-            processedPosition = allowedLocal;
-
-            while (true) {
-
-                allowedLocal = allowedPosition;
-
-                if (allowedLocal == -1) {
-                    // signalled to finish
-                    log.info("(A) Copying completed ----------------------");
-                    return;
-                }
-
-                if (processedTill != allowedLocal) {
-                    copyInterval(processedTill, allowedLocal);
-                    processedTill = allowedLocal;
-                    processedPosition = allowedLocal;
+            if (processedTill != allowedLocal) {
+                copyInterval(processedTill, allowedLocal);
+                processedTill = allowedLocal;
+                processedPosition = allowedLocal;
 //                log.debug("processedPosition = {} , allowedPosition={}", processedPosition, allowedPosition);
-                } else {
-                    Thread.onSpinWait();
-                }
+            } else {
+                Thread.onSpinWait();
             }
         }
     }
 
-    private void copyInterval(final int from, int to) {
-//        log.debug("(A) Copying segment {}..{} ...", from, to);
+    public void copyInterval(final int from, int to) {
+       // log.debug("(A) Copying range {}..{} ...", from, to);
         int pos = from;
         do {
             pos += 2;
@@ -161,7 +141,7 @@ public class HashtableAsync2Resizer {
                 dstData[offset + 1] = srcData[pos + 1];
             }
         } while (pos != to);
-//        log.debug("(A) Copied segment {}..{}", from, to);
+       // log.debug("(A) Copied range {}..{}", from, to);
     }
 
 

@@ -4,11 +4,13 @@ import exchange.core2.collections.hashtable.HashingUtils;
 import net.openhft.affinity.AffinityLock;
 import org.HdrHistogram.Histogram;
 import org.agrona.collections.Hashing;
+import org.agrona.collections.MutableInteger;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Random;
+import java.util.concurrent.Executor;
 import java.util.concurrent.locks.LockSupport;
 
 public class HiccupCalibrationTest {
@@ -45,20 +47,79 @@ public class HiccupCalibrationTest {
 {50.0%=0.03us, 90.0%=0.03us, 95.0%=0.03us, 99.0%=0.03us, 99.9%=0.03us, 99.99%=6.7us, W=10.5us} (0)
      */
     @Test
-    public void benchmarkAdaptiveRadixTree() {
+    public void hiccupCalibrationTest() {
+
+        Thread thread = new Thread(() -> {
+//            int size = 1024 * 1024 * 1;
+            try (AffinityLock ignore = AffinityLock.acquireCore()) {
+                int size = 1024;
+                while (true) {
+                    try {
+                        Thread.sleep(1000);
+                        long t = System.currentTimeMillis();
+                        log.debug("allocating size: {} ...", size);
+                        long[] array = new long[size];
+//                    log.debug("allocated: {} in {}ms", array.length, System.currentTimeMillis() - t);
+                       //size = (size * 2) > 0 ? size * 2 : size;
+                        size = (size * 2) < 300_000_000 ? size * 2 : size;
+                    } catch (InterruptedException ex) {
+                        throw new RuntimeException(ex);
+                    }
+                }
+            }
+        });
+
+        Thread thread2 = new Thread(() -> {
+
+            final Executor CORE_LOCK_EXECUTOR = task -> {
+                Thread thread3 = new Thread(() -> {
+                    try (AffinityLock affinityLock = AffinityLock.acquireCore()) {
+                        Thread.currentThread().setName("AFC" + affinityLock.cpuId());
+                        task.run();
+                    }
+                });
+                thread3.start();
+            };
+
+//            int size = 1024 * 1024 * 1;
+            try (AffinityLock ignore = AffinityLock.acquireCore()) {
+                MutableInteger size = new MutableInteger(1024);
+                while (true) {
+                    try {
+                        Thread.sleep(1000);
+
+                        CORE_LOCK_EXECUTOR.execute(()->{
+
+                            long t = System.currentTimeMillis();
+                            log.debug("allocating size: {} ...", size.value);
+                            long[] array = new long[size.value];
+//                    log.debug("allocated: {} in {}ms", array.length, System.currentTimeMillis() - t);
+                            //size = (size * 2) > 0 ? size * 2 : size;
+                            size.set( (size.value * 2) < 300_000_000 ? size.value * 2 : size.value);
+
+                        });
+
+                    } catch (InterruptedException ex) {
+                        throw new RuntimeException(ex);
+                    }
+                }
+            }
+        });
+
 
 
         int n = 100_000_000;
+        int resetNums = 10;
 
-        try (AffinityLock ignore = AffinityLock.acquireLock()) {
+        try (AffinityLock ignore = AffinityLock.acquireCore()) {
 
             Random rand = new Random(1L);
             final long[] keys = new long[n];
             for (int i = 0; i < n; i++) keys[i] = rand.nextLong();
 
+            thread.start();
 
             int tps = 1000_000;
-
 
             final Histogram histogramPut = new Histogram(60_000_000_000L, 3);
 
@@ -92,7 +153,9 @@ public class HiccupCalibrationTest {
                 if (nanoTime > nextPublishTimeNs) {
                     nextPublishTimeNs = nanoTime + 1_000_000_000L;
                     log.info("{} ({})", LatencyTools.createLatencyReportFast(histogramPut), accum % 2);
-                    histogramPut.reset();
+                    if (resetNums-- > 0) {
+                        histogramPut.reset();
+                    }
                 }
 
 
@@ -101,4 +164,6 @@ public class HiccupCalibrationTest {
 
         }
     }
+
+
 }
