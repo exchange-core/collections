@@ -30,7 +30,7 @@ public class LongLongLL2HashtableStressTest {
     @Test
     public void should_upsize_single_thread() {
 
-        final long seed = Integer.hashCode(21);
+        final long seed = Integer.hashCode(441);
         runTestSingleThread(seed, 1000, 500000);
     }
 
@@ -40,7 +40,7 @@ public class LongLongLL2HashtableStressTest {
         final Map<Thread, Throwable> exceptions = new ConcurrentHashMap<>();
         final Thread.UncaughtExceptionHandler ueh = exceptions::put;
 
-        final int numThreads = 20;
+        final int numThreads = 30;
 
         final Thread[] threads = new Thread[numThreads];
         for (int i = 0; i < numThreads; i++) {
@@ -54,7 +54,8 @@ public class LongLongLL2HashtableStressTest {
         }
 
         while (Arrays.stream(threads).anyMatch(Thread::isAlive) && exceptions.isEmpty()) {
-            Thread.sleep(100);
+            Thread.sleep(1000);
+            log.debug("Waiting {} threads", Arrays.stream(threads).filter(Thread::isAlive).count());
         }
 
         exceptions.forEach((t, ex) -> {
@@ -91,6 +92,7 @@ public class LongLongLL2HashtableStressTest {
                 timesMap.put(key, System.currentTimeMillis());
 
                 try {
+                    // check previous value (GET function)
                     assertThat(prev, is(prevRef == null ? 0L : prevRef));
 
                     //log.info("--------------- get {} expected {}", key, value);
@@ -110,7 +112,9 @@ public class LongLongLL2HashtableStressTest {
                     final int hash = Hashing.hash(key);
                     int pos = (hash & mask) << 1;
 
-                    log.error("ERR: KEY={} VALUE={} i={} iter={} pos={}", key, value, i, iteration, pos);
+                    // String actions = hashtable.getActions(key);
+
+                    log.error("ERR INSTANT: KEY={} VALUE={} i={} iter={} pos={} act={}", key, value, i, iteration, pos, "");
 
                     throw er;
                 }

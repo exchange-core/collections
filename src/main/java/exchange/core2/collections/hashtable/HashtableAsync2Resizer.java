@@ -14,19 +14,17 @@ public class HashtableAsync2Resizer {
     private final int newMask;
 
     private int startingPosition;
-    private int asyncInitPosition;
 
-    private volatile int processedPosition = -1;
+    private volatile int toProcessPosition;
     private volatile int allowedPosition;
 
 
-
-    public HashtableAsync2Resizer(long[] srcData, long[] dstData, int startingPosition, int asyncInitPosition, int allowedPosition) {
+    public HashtableAsync2Resizer(long[] srcData, long[] dstData, int startingPosition, int allowedPosition) {
         this.srcData = srcData;
         this.dstData = dstData;
         this.newMask = srcData.length - 1;
         this.startingPosition = startingPosition;
-        this.asyncInitPosition = asyncInitPosition;
+        this.toProcessPosition = startingPosition + 2; // TODO not always correct
         this.allowedPosition = allowedPosition;
     }
 
@@ -47,12 +45,17 @@ public class HashtableAsync2Resizer {
     }
 
     /**
+     * Check follows after confirmed that not is not in old data yet.
+     * This method would return true if data is not migrated yet, but will be soon.
+     * If it returns false - migrated data can be accessed safely (unless it requires put-extension).
+     *
      * (new data also includes 0=A=P)
      */
     public boolean notInNewData(int pos, int lasKnownProgress) { // TODO looks the same ^^^^
 
         if (startingPosition == lasKnownProgress) {
-            return false;
+            return true;
+            //return false;
         }
 
         if (startingPosition <= lasKnownProgress) {
@@ -78,7 +81,7 @@ public class HashtableAsync2Resizer {
 
     // only gaps
     public int getProcessedPosition() {
-        return processedPosition;
+        return toProcessPosition;
     }
 
     public int getStartingPosition() {
@@ -90,36 +93,30 @@ public class HashtableAsync2Resizer {
     }
 
     public void copy() {
-        log.info("(A) ----------- starting async migration capacity: {}->{} -----------------", srcData.length / 2, srcData.length);
+  //      log.info("(A) ----------- starting async migration capacity: {}->{} -----------------", srcData.length / 2, srcData.length);
 
-     //   log.info("(A) Allocated new array, startingPosition={}, copying initial...", startingPosition);
+        //   log.info("(A) Allocated new array, startingPosition={}, copying initial...", startingPosition);
 
-        int allowedLocal = allowedPosition;
+        int allowedLocal;
+        int processedLocal = toProcessPosition;
 
-        if (allowedLocal == -1) {
-            log.error("Unexpected -1 here");
-            throw new IllegalStateException();
-        }
-
-        copyInterval(asyncInitPosition, allowedLocal);
-        int processedTill = allowedLocal;
-        processedPosition = allowedLocal;
+      //  log.info("allowedPosition={} toProcessPosition={}", allowedPosition, toProcessPosition);
 
         while (true) {
 
             allowedLocal = allowedPosition;
 
-            if (allowedLocal == -1) {
-                // signalled to finish
-                log.info("(A) Copying completed ----------------------");
-                return;
-            }
 
-            if (processedTill != allowedLocal) {
-                copyInterval(processedTill, allowedLocal);
-                processedTill = allowedLocal;
-                processedPosition = allowedLocal;
+            if (processedLocal != allowedLocal) {
+                copyInterval(processedLocal, allowedLocal);
+                processedLocal = allowedLocal;
+                toProcessPosition = allowedLocal;
 //                log.debug("processedPosition = {} , allowedPosition={}", processedPosition, allowedPosition);
+                if (processedLocal == startingPosition) {
+             //       log.debug("(A) Completed async processing at {}", startingPosition);
+                    return;
+                }
+
             } else {
                 Thread.onSpinWait();
             }
@@ -130,18 +127,21 @@ public class HashtableAsync2Resizer {
        // log.debug("(A) Copying range {}..{} ...", from, to);
         int pos = from;
         do {
+            final long key = srcData[pos];
+            if (key != NOT_ALLOWED_KEY) {
+                final int offset = HashingUtils.findFreeOffset(key, dstData, newMask);
+                // TODO // TODO non epmty gp piblem - should not put anything into FROM ??
+
+                dstData[offset] = key;
+                dstData[offset + 1] = srcData[pos + 1];
+            }
+
             pos += 2;
             if (pos == srcData.length) {
                 pos = 0;
             }
-            final long key = srcData[pos];
-            if (key != NOT_ALLOWED_KEY) {
-                final int offset = HashingUtils.findFreeOffset(key, dstData, newMask);
-                dstData[offset] = key;
-                dstData[offset + 1] = srcData[pos + 1];
-            }
         } while (pos != to);
-       // log.debug("(A) Copied range {}..{}", from, to);
+        // log.debug("(A) Copied range {}..{}", from, to);
     }
 
 

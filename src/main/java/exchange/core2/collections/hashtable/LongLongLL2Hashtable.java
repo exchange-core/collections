@@ -8,12 +8,31 @@ import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
-import java.util.concurrent.locks.LockSupport;
 import java.util.stream.LongStream;
 
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
 
 public class LongLongLL2Hashtable implements ILongLongHashtable {
+
+
+    // TODO remove
+    // private final Long2LongHashMap actions = new Long2LongHashMap(0L);
+
+
+//    private void setAction(long key, int flag) {
+//        actions.put(key, actions.get(key) | (1L << flag));
+//    }
+//
+//    public String getActions(long key) {
+//        String res = "";
+//        final long a = actions.get(key);
+//        for (int i = 0; i < 63; i++) {
+//            if ((a & (1L << i)) != 0) {
+//                res += (" " + i);
+//            }
+//        }
+//        return res;
+//    }
 
     private static final Logger log = LoggerFactory.getLogger(LongLongLL2Hashtable.class);
 
@@ -65,8 +84,16 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
     @Override
     public long put(long key, long value) {
 
+
+//        setAction(key, 1);
+
         if (arrayFeature != null) {
-            startAsyncCopying();
+            if (size >= blockThreshold) {
+                log.warn("BLOCKED: blockThreshold={} wait initialization of array...", blockThreshold);
+                arrayFeature.join();
+                log.warn("UNBLOCKED");
+            }
+            startAsyncCopyingIfDone(key, 2);
         }
 
 //        if (resizer != null){
@@ -78,6 +105,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
 
         if (resizer != null) {
 
+//            setAction(key, 3);
             // TODO slow ?
             knownProgressCached = resizer.getProcessedPosition();
 
@@ -86,17 +114,21 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
                 log.warn("BLOCKED: blockThreshold={} allow copy till {}", blockThreshold, resizer.getStartingPosition());
                 allowedPosition = resizer.getStartingPosition();
                 resizer.setAllowedPosition(allowedPosition);
-                log.debug("A knownProgressCached = {} (allowedPosition={})", knownProgressCached, allowedPosition);
-                while (knownProgressCached != allowedPosition) {
-                    knownProgressCached = resizer.getProcessedPosition();
-                    // log.debug("B knownProgressCached = {} (allowedPosition={})", knownProgressCached,allowedPosition);
-                    Thread.onSpinWait();
-                }
+                // log.debug("A knownProgressCached = {} (allowedPosition={})", knownProgressCached, allowedPosition);
+
+                copyingProcess.join();
+//                while (knownProgressCached != allowedPosition) {
+//                    knownProgressCached = resizer.getProcessedPosition();
+//                    // log.debug("B knownProgressCached = {} (allowedPosition={})", knownProgressCached,allowedPosition);
+//                    Thread.onSpinWait();
+//                }
 
                 switchToNewArray();
                 log.warn("UNBLOCKED");
 
             } else if (knownProgressCached == allowedPosition) {
+
+//                setAction(key, 4);
 
                 enableNextMigrationSegmentOrFinishMigration();
             }
@@ -107,6 +139,11 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         int pos = (hash & mask) << 1;
 
         if (resizer == null) {
+
+            // no resizing in progress, default behavior - always put into "data"
+
+//            setAction(key, 6);
+
             //        log.debug("PUT key:{} val:{}", key, value);
             final int offset = HashingUtils.findFreeOffset(key, pos, data);
 
@@ -130,78 +167,33 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
 
         if (resizer.isInOldData(pos, allowedPosition) || pos == g0) {
 
+//            setAction(key, 8);
+
+
             // TODO check ??
-            if(g0 == allowedPosition){
-                /*
-22:55:55.614 [main] INFO  e.c.c.h.LongLongHashtableAbstractTest - DONE iteration: 92
-22:55:55.731 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[65536] ...
-22:55:55.731 [Thread-1116] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - (Allocating array: long[65536] ...)
-22:55:55.731 [Thread-1117] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 16384->32768 -----------------
-22:55:55.731 [Thread-1117] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
-22:55:55.735 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[131072] ...
-22:55:55.735 [Thread-1118] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - (Allocating array: long[131072] ...)
-22:55:55.735 [Thread-1119] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 32768->65536 -----------------
-22:55:55.736 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT -689037631452771687: RARE Extending backwards section g0=4
-22:55:55.736 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - Found new g0=65450, migrating from old g0=4
-22:55:55.736 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - DONE RARE: offsetFinal=131028 prevVal=0
-22:55:55.736 [Thread-1119] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
-22:55:55.742 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[262144] ...
-22:55:55.742 [Thread-1120] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - (Allocating array: long[262144] ...)
-22:55:55.743 [Thread-1121] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 65536->131072 -----------------
-22:55:55.745 [Thread-1121] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
-22:55:55.757 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[524288] ...
-22:55:55.757 [Thread-1122] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - (Allocating array: long[524288] ...)
-22:55:55.760 [Thread-1123] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 131072->262144 -----------------
-
-java.lang.IllegalStateException: should be migrated
-
-
-23:20:36.587 [main] INFO  e.c.c.hashtable.LongLongLL2Hashtable - (A) Allocating array: long[524288] ...
-23:20:36.587 [Thread-1122] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - (Allocating array: long[524288] ...)
-23:20:36.589 [Thread-1123] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 131072->262144 -----------------
-23:20:36.592 [main] ERROR e.c.c.hashtable.LongLongLL2Hashtable - ########## should be migrated !!! pos=0 A=S=0
-23:20:36.592 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT -1268289157630876716: RARE Extending backwards section g0=0
-23:20:36.592 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - Found new g0=262142, migrating from old g0=0
-23:20:36.592 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - DONE RARE: offsetFinal=262144 prevVal=0
-23:20:36.593 [Thread-1123] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
-
-21:34:29.849 [Thread-5916] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - (Allocating array: long[65536] ...)
-21:34:29.850 [Thread-5917] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 16384->32768 -----------------
-21:34:29.850 [main] ERROR e.c.c.hashtable.LongLongLL2Hashtable - ########## should be migrated !!! pos=4 A=S=4
-21:34:29.850 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT 8112868677862138312: RARE Extending backwards section g0=4
-21:34:29.850 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - Found new g0=32766, migrating from old g0=4
-21:34:29.850 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - DONE RARE: offsetFinal=4 prevVal=0
-21:34:29.850 [Thread-5917] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
-
-21:35:45.631 [Thread-8685] INFO  e.c.c.h.HashtableAsync2Resizer - (A) ----------- starting async migration capacity: 262144->524288 -----------------
-21:35:45.635 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT 8353484598072239349: RARE Extending backwards section g0=16
-21:35:45.635 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - Found new g0=524284, migrating from old g0=16
-21:35:45.635 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - DONE RARE: offsetFinal=524296 prevVal=0
-21:35:45.637 [main] ERROR e.c.c.hashtable.LongLongLL2Hashtable - ########## should be migrated !!! pos=524284 A=S=524284
-21:35:45.637 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - PUT 4163035467544519845: RARE Extending backwards section g0=524284
-21:35:45.637 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - Found new g0=524274, migrating from old g0=524284
-21:35:45.637 [main] DEBUG e.c.c.hashtable.LongLongLL2Hashtable - DONE RARE: offsetFinal=524284 prevVal=0
-21:35:45.639 [Thread-8685] INFO  e.c.c.h.HashtableAsync2Resizer - (A) Copying completed ----------------------
-
-                 */
-                //throw new IllegalStateException("should be migrated");
-                log.error("########## should be migrated !!! pos={} A=S={}", pos, g0);
-                LockSupport.parkNanos(111);
-            }
-
+//            if (g0 == allowedPosition) {
+//                //throw new IllegalStateException("should be migrated");
+//                log.error("########## should be migrated !!! pos={} A=S={}", pos, g0);
+//                LockSupport.parkNanos(111);
+//            }
 
 
             // is in old data (or at starting position)
             final int offset = HashingUtils.findFreeOffset(key, pos, data);
             if (offset != g0) {
 
+//                setAction(key, 10);
+
+
                 // is in old data - can safely insert
                 return putInternalInsert(data, offset, key, value);
 
             } else {
 
+//                setAction(key, 13);
 
-                if(g0 == allowedPosition){
+
+                if (g0 == allowedPosition) {
                     log.debug("PUT {}: SUPER_RARE can not extend migrated cluster backwards, have to wait for completion" +
                             " pos={} offset={} A=S={}", key, pos, offset, g0);
 
@@ -223,7 +215,7 @@ java.lang.IllegalStateException: should be migrated
                 // have to extend migrated area and shift starting position back
                 // assuming it can only reach allowedPosition, but not before
 
-                log.debug("PUT {}: RARE Extending backwards section g0={}", key, g0);
+                //log.debug("PUT {}: RARE Extending backwards section g0={}", key, g0);
                 do {
                     if (g0 == 0) {
                         g0 = data.length;
@@ -233,7 +225,7 @@ java.lang.IllegalStateException: should be migrated
                 } while (data[g0] != NOT_ALLOWED_KEY);
 
                 // note: it is possible g0=allowedPosition now
-                log.debug("Found new g0={}, migrating from old g0={}", g0, offset);
+                //log.debug("Found new g0={}, migrating from old g0={}", g0, offset);
                 final long[] data2 = resizer.getNewDataArray();
                 int pos2 = (g0 + 2);
                 pos2 = pos2 == data.length ? 0 : pos2;
@@ -256,42 +248,78 @@ java.lang.IllegalStateException: should be migrated
 
                 resizer.setStartingPosition(g0);
                 final long prevVal = putInternalInsert(data2, offsetFinal, key, value);
-                log.debug("DONE RARE: offsetFinal={} prevVal={}", offsetFinal, prevVal);
+                //log.debug("DONE RARE: offsetFinal={} prevVal={}", offsetFinal, prevVal);
                 return prevVal;
             }
         }
 
         // not in old data - either migrated already or still under processing
         if (knownProgressCached == -1) {
+
+//            setAction(key, 15);
+
+
             knownProgressCached = resizer.getProcessedPosition();
         }
+
+
         while (resizer.notInNewData(pos, knownProgressCached)) {
             knownProgressCached = resizer.getProcessedPosition();
+            if (knownProgressCached == allowedPosition) {
+                break;
+            }
             Thread.onSpinWait();
         }
 
+        // pos is not applicable for migrated array (2x larger), calculating offsetNew
         final long[] dataNew = resizer.getNewDataArray();
         final int offsetNew = HashingUtils.findFreeOffset(key, dataNew, resizer.getNewMask());
 
-        // rare scenario: offset reached gp (stays always empty)
+
+   //     boolean logLastRes = false;
+
+        // rare scenario: offset reached gp - can not just put there -  must stay always empty
         // just re-read gp
         // assume nothing can be inserted at gp offsets
-        while ((offsetNew & mask) == knownProgressCached) { // TODO incorrect ??? check assumption (mask)
-            Thread.yield();
+//        while ((offsetNew & mask) == knownProgressCached) { // TODO incorrect ??? check assumption (mask)
+//            logLastRes = true;
+//            log.debug("PUT {}: RARE offset offsetNew ({}) & mask == knownProgressCached ({})", key, offsetNew, knownProgressCached);
+//            Thread.yield();
+//            knownProgressCached = resizer.getProcessedPosition();
+//
+//            if (knownProgressCached == allowedPosition) {
+//                log.debug("PUT {}: RARE knownProgressCached {} = allowedPosition = {}", key, knownProgressCached, allowedPosition);
+//
+//                enableNextMigrationSegmentOrFinishMigration();
+//                if (resizer == null) {
+//                    final int offset1 = HashingUtils.findFreeOffset(key, data, mask);
+//                    long prevVal = putInternalInsert(data, offset1, key, value);
+//                    log.debug("PUT {}: RARE migration finished, put normally offset1={}, prevVal={}", key, offset1, prevVal);
+//                    return prevVal;
+//                    //break;
+//                }
+//
+//                // TODO this case more complicated???
+//            }
+//            // log.debug("PUT {}: RARE finished resizer={}", key, resizer);
+//        }
 
-            log.debug("PUT {}: RARE offset & mask == knownProgressCached ({})", key, knownProgressCached);
-            knownProgressCached = resizer.getProcessedPosition();
+//        if ((offsetNew & mask) == knownProgressCached) {
+//            try {
+//                Thread.sleep(10000000000L);
+//            } catch (InterruptedException e) {
+//                throw new RuntimeException(e);
+//            }
+//        }
 
-            if (knownProgressCached == allowedPosition) {
-                enableNextMigrationSegmentOrFinishMigration();
-                if (resizer == null) {
-                    break;
-                }
-            }
-            log.debug("PUT {}: RARE finished resizer={}", key, resizer);
-        }
+//        setAction(key, 17);
 
-        return putInternalInsert(dataNew, offsetNew, key, value);
+
+        long prevVal = putInternalInsert(dataNew, offsetNew, key, value);
+
+        // TODO how is it possible to read non 0 value from GP ?
+      //  if (logLastRes) log.debug("PUT {}: RARE proceeded normally offsetNew={}, prevVal={} newVal={}", key, offsetNew, prevVal, value);
+        return prevVal;
     }
 
 
@@ -310,8 +338,9 @@ java.lang.IllegalStateException: should be migrated
     @Override
     public long get(long key) {
 
+      //  boolean migStated = false;
         if (arrayFeature != null) {
-            startAsyncCopying();
+           startAsyncCopyingIfDone(key, 34);
         }
 
 //        if (resizer != null) {
@@ -325,21 +354,32 @@ java.lang.IllegalStateException: should be migrated
         int pos = (hash & mask) << 1;
 
         if (resizer == null || resizer.isInOldData(pos, allowedPosition)) {
+            // in old data
+//            setAction(key, 36);
+
             final int offset = HashingUtils.findFreeOffset(key, pos, data);
             return data[offset + 1];
         }
 
         // not in old data - either migrated already or still under processing
         if (knownProgressCached == -1) {
+//            setAction(key, 37);
             knownProgressCached = resizer.getProcessedPosition();
         }
+
+
         while (resizer.notInNewData(pos, knownProgressCached)) {
+//            setAction(key, 39);
             knownProgressCached = resizer.getProcessedPosition();
+            if (knownProgressCached == allowedPosition) {
+                break;
+            }
             Thread.onSpinWait();
         }
 
         //      log.debug("GET {}: migrated, get from new array", key);
 
+//        setAction(key, 42);
 
         final long[] newData = resizer.getNewDataArray();
         pos = (hash & resizer.getNewMask()) << 1;
@@ -367,10 +407,14 @@ java.lang.IllegalStateException: should be migrated
     public long remove(long key, int hash) {
 
         if (arrayFeature != null) {
-            startAsyncCopying();
+            startAsyncCopyingIfDone(key, 52);
         }
 
         if (resizer == null) {
+
+            // in old data
+//            setAction(key, 54);
+
             return removeInternal(key, hash, data, mask);
         }
 
@@ -379,6 +423,10 @@ java.lang.IllegalStateException: should be migrated
         int pos = (hash & mask) << 1;
 
         if (resizer.isInOldData(pos, allowedPosition)) {
+
+            // in old data 34
+//            setAction(key, 56);
+
             return removeInternal(key, hash, data, mask);
         }
 
@@ -388,9 +436,13 @@ java.lang.IllegalStateException: should be migrated
         }
         while (resizer.notInNewData(pos, knownProgressCached)) {
             knownProgressCached = resizer.getProcessedPosition();
+            if (knownProgressCached == allowedPosition) {
+                break;
+            }
             Thread.onSpinWait();
         }
 
+//        setAction(key, 59);
 
         // log.debug("REMOVE {}: migrated, removing from new", key);
         final long val = removeInternal(key, hash, resizer.getNewDataArray(), resizer.getNewMask());
@@ -412,6 +464,10 @@ java.lang.IllegalStateException: should be migrated
         long existingKey = datax[lastPos << 1];
         int gapPos = -1;
         long oldValue = 0L;
+
+        int iteration = 0;
+        boolean found = false;
+
         while (true) {
 
             if (existingKey == key) {
@@ -419,6 +475,7 @@ java.lang.IllegalStateException: should be migrated
                 gapPos = lastPos;
                 oldValue = datax[(lastPos << 1) + 1];
                 size--;
+                found = true;
             }
 
             // try next element
@@ -429,6 +486,13 @@ java.lang.IllegalStateException: should be migrated
                 existingKey = datax[posNext << 1];
                 lastPos = posNext;
             }
+
+//            // TODO remove?
+//            if (iteration++ > 10000) {
+//                throw new IllegalStateException("TMP: 10000 iterations to remove element "
+//                        + " key=" + key + " found=" + found + " size=" + size + " capaciy=" + data.length / 2
+//                        + " blockThreshold=" + blockThreshold);
+//            }
         }
 
         if (gapPos == -1) {
@@ -508,10 +572,11 @@ java.lang.IllegalStateException: should be migrated
             //log.debug("SYNC RESIZE done, upsizeThreshold=" + upsizeThreshold);
         } else {
             //printLayout("BEFORE async RESIZE");
-            log.info("(A) Allocating array: long[{}] ...", data.length * 2);
+          //  log.info("(A) Allocating array async: long[{}] ...", data.length * 2);
+            final String threadName = Thread.currentThread().getName();
             arrayFeature = CompletableFuture.supplyAsync(
                     () -> {
-                        log.debug("(Allocating array: long[{}] ...)", data.length * 2);
+                      //  log.debug("(Allocating array for {}: long[{}] ...)", threadName, data.length * 2);
                         return new long[data.length * 2];
                     },
                     executor);
@@ -520,27 +585,33 @@ java.lang.IllegalStateException: should be migrated
     }
 
 
-    private void startAsyncCopying() {
+    private boolean startAsyncCopyingIfDone(long key, int action) {
         if (arrayFeature.isDone()) {
+
+//            setAction(key, action);
 
             final int initialPos = HashtableAsync2Resizer.findNextGapPos(data, 0);
 
-            knownProgressCached = HashtableAsync2Resizer.findNextGapPos(data, (initialPos + 32) & (data.length - 1)); // TODO fix
+            knownProgressCached = initialPos;
 
-            allowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (knownProgressCached + 1234) & (data.length - 1)); // TODO fix
-            resizer = new HashtableAsync2Resizer(data, arrayFeature.join(), initialPos, knownProgressCached, allowedPosition);
+            allowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (initialPos + 1234) & (data.length - 1)); // TODO fix
+          //  log.debug("initialPos={} allowedPosition={}", initialPos, allowedPosition);
+            resizer = new HashtableAsync2Resizer(data, arrayFeature.join(), initialPos, allowedPosition);
             arrayFeature = null;
 
-            resizer.copyInterval(initialPos, knownProgressCached);
-
-            //final String threadName = Thread.currentThread().getName();
+            final String threadName = Thread.currentThread().getName();
             copyingProcess = CompletableFuture.runAsync(
                     () -> {
-                        //Thread.currentThread().setName(threadName);
+                        final String prevThreadName = Thread.currentThread().getName(); // TODO remove
+                        Thread.currentThread().setName(threadName + "COPY");
                         resizer.copy();
+                        Thread.currentThread().setName(prevThreadName);
                     },
                     executor);
+            return true;
         }
+
+        return false;
     }
 
 
@@ -559,7 +630,7 @@ java.lang.IllegalStateException: should be migrated
 
             int newAllowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (allowedPosition + 2114) & (data.length - 1));
 
-            if (!resizer.isInOldData(newAllowedPosition, allowedPosition)) {
+            if (!resizer.isInOldData(newAllowedPosition, allowedPosition)) { // TODO check correctness
                 //log.debug("Override newAllowedPosition={} with startingPosition={}", newAllowedPosition, startingPosition);
                 newAllowedPosition = startingPosition;
             }
