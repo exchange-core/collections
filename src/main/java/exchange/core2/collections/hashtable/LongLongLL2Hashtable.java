@@ -67,13 +67,31 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
     private static final long HANG_DETECT_NANOS = 10_000_000_000L;
     private static final long HANG_CHECK_SPIN_MASK = 0xFFFFF; // check the clock every ~1M spins
 
+    /**
+     * Runs {@link #integrityCheck()} right after every completed migration. Enable with
+     * -Dexchange.hashtable.verify=true when hunting migration corruption; being a static final
+     * read of a system property, the branch folds away when it is off.
+     */
+    private static final boolean VERIFY_AFTER_MIGRATION = Boolean.getBoolean("exchange.hashtable.verify");
+
     public LongLongLL2Hashtable() {
         this(DEFAULT_ARRAY_SIZE);
     }
 
     public LongLongLL2Hashtable(int size) {
-        this(size, job -> new Thread(job).start());
+        this(size, DAEMON_EXECUTOR);
     }
+
+    /**
+     * Migration threads must be daemons: {@link HashtableAsync2Resizer#copy()} spins until the
+     * table authorizes the next segment, so a table abandoned mid-migration leaves a thread that
+     * never terminates. As a non-daemon thread it also prevents the JVM from shutting down.
+     */
+    private static final Executor DAEMON_EXECUTOR = job -> {
+        final Thread thread = new Thread(job);
+        thread.setDaemon(true);
+        thread.start();
+    };
 
     public LongLongLL2Hashtable(Executor executor) {
         this(DEFAULT_ARRAY_SIZE, executor);
@@ -477,12 +495,13 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
                 lastPos = posNext;
             }
 
-//            // TODO remove?
-//            if (iteration++ > 10000) {
-//                throw new IllegalStateException("TMP: 10000 iterations to remove element "
-//                        + " key=" + key + " found=" + found + " size=" + size + " capaciy=" + data.length / 2
-//                        + " blockThreshold=" + blockThreshold);
-//            }
+            // the cluster walk only ends on a gap - without a bound a full (or corrupted) array
+            // hangs here exactly like findFreeOffset did
+            if (++iteration > maskx) {
+                throw new IllegalStateException("removeInternal: no gap found for key=" + key
+                        + " found=" + found + " size=" + size + " capacity=" + (maskx + 1)
+                        + " blockThreshold=" + blockThreshold);
+            }
         }
 
         if (gapPos == -1) {
@@ -640,6 +659,10 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         long spins = 0;
         long deadline = 0;
 
+        // refresh first - a stale cached value could otherwise match the freshly published
+        // allowedPosition and skip the wait entirely
+        knownProgressCached = resizer.getProcessedPosition();
+
         while (knownProgressCached != allowedPosition) {
             knownProgressCached = resizer.getProcessedPosition();
             Thread.onSpinWait();
@@ -711,16 +734,34 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         }
     }
 
+    /**
+     * Drives an in-flight migration to completion and switches to the new array, so that callers
+     * can work with a single consistent array.
+     * <p>
+     * Note the order: the migrator only stops once it has copied everything up to startingPosition,
+     * so the remaining work has to be authorized FIRST and awaited, and only then can the table
+     * switch. Waiting for the copying task before authorizing it is a self-deadlock.
+     */
     private void blockOnResizing() {
-        throw new UnsupportedOperationException();
-        // TODO will not work
-//        if (resizer != null) {
-//            log.debug("Active resizing found");
-//            copyingProcess.join();
-//            switchToNewArray();
-//            log.debug("ASYNC RESIZE done, upsizeThreshold=" + upsizeThreshold);
-//            // printLayout("AFTER async RESIZE");
-//        }
+
+        if (arrayFeature != null) {
+            // allocation queued but no migration started yet - just drop it, resize() will be
+            // re-triggered by the next put once the threshold is crossed again
+            awaitFuture(arrayFeature, "array allocation");
+            arrayFeature = null;
+        }
+
+        if (resizer != null) {
+            log.debug("Active resizing found");
+
+            allowedPosition = resizer.getStartingPosition();
+            resizer.setAllowedPosition(allowedPosition);
+            awaitAllowedPositionReached();
+            switchToNewArray();
+
+            log.debug("ASYNC RESIZE done, upsizeThreshold=" + upsizeThreshold);
+            // printLayout("AFTER async RESIZE");
+        }
     }
 
 
@@ -737,6 +778,10 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         blockThreshold = calculateBlockThreshold();
         resizer = null;
         copyingProcess = null;
+
+        if (VERIFY_AFTER_MIGRATION) {
+            integrityCheck();
+        }
     }
 
     private long calculateUpsizeThreshold() {
@@ -836,12 +881,48 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         log.info("Gaps removal completed");
     }
 
+    /**
+     * Verifies the linear-probing invariants of the current array. Must not be called while a
+     * migration is in flight - the two arrays are only consistent as a whole in between.
+     * <p>
+     * The single check {@code findFreeOffset(key) == storedPosition} covers both failure modes a
+     * broken concurrent migration produces: a duplicated key (the probe stops at the earlier copy)
+     * and an unreachable key (the probe stops at a gap that appeared in the middle of its cluster).
+     */
     void integrityCheck() {
-        // TODO check all keys are reachable
-        // TODO check size is correct
-        // TODO check load factor is correct
 
+        if (resizer != null) {
+            throw new IllegalStateException("integrityCheck: migration in progress, " + migrationState());
+        }
 
+        final int capacity = data.length >> 1;
+        long occupied = 0;
+
+        for (int i = 0; i < data.length; i += 2) {
+            final long key = data[i];
+            if (key == NOT_ALLOWED_KEY) {
+                continue;
+            }
+            occupied++;
+
+            final int reachableAt = HashingUtils.findFreeOffset(key, data, mask);
+            if (reachableAt != i) {
+                throw new IllegalStateException("integrityCheck: key=" + key + " stored at " + i
+                        + " but probing from its home reaches " + reachableAt
+                        + " (" + (data[reachableAt] == key ? "duplicate" : "unreachable")
+                        + ", capacity=" + capacity + " size=" + size + ")");
+            }
+        }
+
+        if (occupied != size) {
+            throw new IllegalStateException("integrityCheck: size=" + size
+                    + " but " + occupied + " occupied cells (capacity=" + capacity + ")");
+        }
+
+        if (size >= capacity) {
+            throw new IllegalStateException("integrityCheck: no gap left, size=" + size
+                    + " capacity=" + capacity);
+        }
     }
 
     public void printLayout(String comment) {
