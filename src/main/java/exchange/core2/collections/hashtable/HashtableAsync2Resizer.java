@@ -9,11 +9,21 @@ public class HashtableAsync2Resizer {
 
     private static final Logger log = LoggerFactory.getLogger(HashtableAsync2Resizer.class);
 
+    /**
+     * allowedPosition value meaning "stop now" - published by the hashtable in switchToNewArray().
+     */
+    public static final int FINISH_SIGNAL = -1;
+
     private final long[] srcData;
     private final long[] dstData;
     private final int newMask;
 
-    private int startingPosition;
+    /**
+     * Written by the application (backwards cluster extension), read by the migrator - it is the
+     * termination condition of {@link #copy()}, so a non-published write means the migrator would
+     * never stop.
+     */
+    private volatile int startingPosition;
 
     private volatile int toProcessPosition;
     private volatile int allowedPosition;
@@ -24,7 +34,8 @@ public class HashtableAsync2Resizer {
         this.dstData = dstData;
         this.newMask = srcData.length - 1;
         this.startingPosition = startingPosition;
-        this.toProcessPosition = startingPosition + 2; // TODO not always correct
+        // startingPosition is a gap and is never copied - start right after it (wrapping around)
+        this.toProcessPosition = (startingPosition + 2) & (srcData.length - 1);
         this.allowedPosition = allowedPosition;
     }
 
@@ -106,6 +117,12 @@ public class HashtableAsync2Resizer {
 
             allowedLocal = allowedPosition;
 
+            if (allowedLocal == FINISH_SIGNAL) {
+                // switchToNewArray() gave up on us - the table no longer reads dstData through
+                // this resizer, so stop immediately instead of copying into a detached array
+                log.debug("(A) Finish signalled at {} (startingPosition={})", processedLocal, startingPosition);
+                return;
+            }
 
             if (processedLocal != allowedLocal) {
                 copyInterval(processedLocal, allowedLocal);
@@ -125,6 +142,14 @@ public class HashtableAsync2Resizer {
 
     public void copyInterval(final int from, int to) {
        // log.debug("(A) Copying range {}..{} ...", from, to);
+
+        // 'to' is only ever reached by even wrapping increments - anything else (notably the
+        // FINISH_SIGNAL) would make the loop below run forever
+        if (to < 0 || to >= srcData.length || (to & 1) != 0) {
+            throw new IllegalStateException("copyInterval: unreachable 'to'=" + to
+                    + " (from=" + from + " srcData.length=" + srcData.length + ")");
+        }
+
         int pos = from;
         do {
             final long key = srcData[pos];

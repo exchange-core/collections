@@ -7,7 +7,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.LongStream;
 
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
@@ -56,6 +59,14 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
     private int allowedPosition = -1;
     private int knownProgressCached = -1;
 
+    /**
+     * Every wait in here is a spin on progress published by the migrator. A migration segment is
+     * copied in microseconds, so anything past this bound means the migrator is stuck or dead -
+     * fail with the full state instead of hanging, which is what makes these bugs debuggable.
+     */
+    private static final long HANG_DETECT_NANOS = 10_000_000_000L;
+    private static final long HANG_CHECK_SPIN_MASK = 0xFFFFF; // check the clock every ~1M spins
+
     public LongLongLL2Hashtable() {
         this(DEFAULT_ARRAY_SIZE);
     }
@@ -68,6 +79,13 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         this(DEFAULT_ARRAY_SIZE, executor);
     }
 
+    /**
+     * WARNING: the executor runs both the destination array allocation and the copying task, and
+     * the copying task spins ({@link HashtableAsync2Resizer#copy()}) while waiting for the
+     * application to authorize the next segment. A bounded executor therefore deadlocks as soon as
+     * every thread in it is occupied by a spinning migrator - the allocation never gets scheduled.
+     * Pass an unbounded / thread-per-task executor, or two separate ones.
+     */
     public LongLongLL2Hashtable(int size, Executor executor) {
         this.executor = executor;
         this.upsizeThresholdPerc = 0.65f;
@@ -90,7 +108,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         if (arrayFeature != null) {
             if (size >= blockThreshold) {
                 log.warn("BLOCKED: blockThreshold={} wait initialization of array...", blockThreshold);
-                arrayFeature.join();
+                awaitFuture(arrayFeature, "array allocation");
                 log.warn("UNBLOCKED");
             }
             startAsyncCopyingIfDone(key, 2);
@@ -116,12 +134,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
                 resizer.setAllowedPosition(allowedPosition);
                 // log.debug("A knownProgressCached = {} (allowedPosition={})", knownProgressCached, allowedPosition);
 
-                copyingProcess.join();
-//                while (knownProgressCached != allowedPosition) {
-//                    knownProgressCached = resizer.getProcessedPosition();
-//                    // log.debug("B knownProgressCached = {} (allowedPosition={})", knownProgressCached,allowedPosition);
-//                    Thread.onSpinWait();
-//                }
+                awaitFuture(copyingProcess, "migration");
 
                 switchToNewArray();
                 log.warn("UNBLOCKED");
@@ -197,12 +210,8 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
                     log.debug("PUT {}: SUPER_RARE can not extend migrated cluster backwards, have to wait for completion" +
                             " pos={} offset={} A=S={}", key, pos, offset, g0);
 
-                    // can not extend backwards, need to wait for completion (TODO extract method)
-                    while (knownProgressCached != allowedPosition) {
-                        knownProgressCached = resizer.getProcessedPosition();
-                        // log.debug("B knownProgressCached = {} (allowedPosition={})", knownProgressCached,allowedPosition);
-                        Thread.onSpinWait();
-                    }
+                    // can not extend backwards, need to wait for completion
+                    awaitAllowedPositionReached();
                     switchToNewArray();
                     // can safely insert
                     int pos2 = (hash & mask) << 1;
@@ -263,13 +272,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         }
 
 
-        while (resizer.notInNewData(pos, knownProgressCached)) {
-            knownProgressCached = resizer.getProcessedPosition();
-            if (knownProgressCached == allowedPosition) {
-                break;
-            }
-            Thread.onSpinWait();
-        }
+        awaitMigrated(pos);
 
         // pos is not applicable for migrated array (2x larger), calculating offsetNew
         final long[] dataNew = resizer.getNewDataArray();
@@ -368,14 +371,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         }
 
 
-        while (resizer.notInNewData(pos, knownProgressCached)) {
-//            setAction(key, 39);
-            knownProgressCached = resizer.getProcessedPosition();
-            if (knownProgressCached == allowedPosition) {
-                break;
-            }
-            Thread.onSpinWait();
-        }
+        awaitMigrated(pos);
 
         //      log.debug("GET {}: migrated, get from new array", key);
 
@@ -434,13 +430,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         if (knownProgressCached == -1) {
             knownProgressCached = resizer.getProcessedPosition();
         }
-        while (resizer.notInNewData(pos, knownProgressCached)) {
-            knownProgressCached = resizer.getProcessedPosition();
-            if (knownProgressCached == allowedPosition) {
-                break;
-            }
-            Thread.onSpinWait();
-        }
+        awaitMigrated(pos);
 
 //        setAction(key, 59);
 
@@ -615,6 +605,85 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
     }
 
 
+    /**
+     * Waits until the migrator has copied the segment covering pos, updating knownProgressCached.
+     */
+    private void awaitMigrated(int pos) {
+
+        long spins = 0;
+        long deadline = 0;
+
+        while (resizer.notInNewData(pos, knownProgressCached)) {
+            knownProgressCached = resizer.getProcessedPosition();
+            if (knownProgressCached == allowedPosition) {
+                break;
+            }
+            Thread.onSpinWait();
+
+            if ((++spins & HANG_CHECK_SPIN_MASK) == 0) {
+                final long now = System.nanoTime();
+                if (deadline == 0) {
+                    deadline = now + HANG_DETECT_NANOS;
+                } else if (now - deadline > 0) {
+                    throw new IllegalStateException("stuck waiting for migration of pos=" + pos
+                            + " after " + spins + " spins, " + migrationState());
+                }
+            }
+        }
+    }
+
+    /**
+     * Waits until the migrator has copied everything up to the currently allowed position.
+     */
+    private void awaitAllowedPositionReached() {
+
+        long spins = 0;
+        long deadline = 0;
+
+        while (knownProgressCached != allowedPosition) {
+            knownProgressCached = resizer.getProcessedPosition();
+            Thread.onSpinWait();
+
+            if ((++spins & HANG_CHECK_SPIN_MASK) == 0) {
+                final long now = System.nanoTime();
+                if (deadline == 0) {
+                    deadline = now + HANG_DETECT_NANOS;
+                } else if (now - deadline > 0) {
+                    throw new IllegalStateException("stuck waiting for allowedPosition after "
+                            + spins + " spins, " + migrationState());
+                }
+            }
+        }
+    }
+
+    /**
+     * Same idea as the spin waits: a blocking join hides both a stuck migrator and an executor
+     * that never scheduled the task (which is what happens when the same bounded Executor is used
+     * for the allocation and for the copying). Time it out and report the state.
+     */
+    private void awaitFuture(CompletableFuture<?> future, String what) {
+        try {
+            future.get(HANG_DETECT_NANOS, TimeUnit.NANOSECONDS);
+        } catch (TimeoutException e) {
+            throw new IllegalStateException("stuck waiting for " + what + ", " + migrationState(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted waiting for " + what, e);
+        } catch (ExecutionException e) {
+            throw new IllegalStateException(what + " failed, " + migrationState(), e.getCause());
+        }
+    }
+
+    private String migrationState() {
+        final HashtableAsync2Resizer r = resizer;
+        return "size=" + size + " mask=" + mask + " capacity=" + (data.length >> 1)
+                + " allowedPosition=" + allowedPosition + " knownProgressCached=" + knownProgressCached
+                + (r == null
+                ? " resizer=null"
+                : " startingPosition=" + r.getStartingPosition() + " processedPosition=" + r.getProcessedPosition())
+                + " copyingProcessDone=" + (copyingProcess != null && copyingProcess.isDone());
+    }
+
     private void enableNextMigrationSegmentOrFinishMigration() {
         final int startingPosition = resizer.getStartingPosition();
 
@@ -659,7 +728,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         //log.debug("switchToNewArray");
 
         // can finalize migration
-        resizer.setAllowedPosition(-1);
+        resizer.setAllowedPosition(HashtableAsync2Resizer.FINISH_SIGNAL);
         knownProgressCached = -1;
 
         this.data = resizer.getNewDataArray();

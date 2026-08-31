@@ -10,8 +10,6 @@ public class HashingUtils {
 
     private static final Logger log = LoggerFactory.getLogger(HashingUtils.class);
 
-    public static int threshold = 512; // TODO not threadsafe!!
-
     /**
      * Finds free offset where key cell either empty or the same as provided
      * @param key - key provided
@@ -26,8 +24,14 @@ public class HashingUtils {
         return findFreeOffset(key, pos, data);
     }
 
+    /**
+     * The probe loop terminates only if the array has at least one gap. If the array is full (or
+     * its gap invariant was broken by a concurrent migration) it would otherwise spin forever,
+     * which is indistinguishable from a deadlock. Bound it and fail loudly instead.
+     */
     public static int findFreeOffset(long key, int pos, long[] data) {
-        long i = 0;
+        final int startPos = pos;
+        int i = 0;
 
         long existingKey = data[pos];
         while (existingKey != NOT_ALLOWED_KEY && existingKey != key) {
@@ -36,15 +40,15 @@ public class HashingUtils {
             if (pos == data.length) {
                 pos = 0;
             }
+
+            if (++i >= (data.length >> 1)) {
+                throw new IllegalStateException("findFreeOffset: no gap found for key=" + key
+                        + " startPos=" + startPos + " lastPos=" + pos + " capacity=" + (data.length >> 1));
+            }
+
             existingKey = data[pos];
 
 //            log.debug("try next pos={}", pos);
-            i++;
-        }
-
-        if (i > threshold) {
-            log.warn("findFreeOffset took {} iterations", i);
-            threshold *= 2;
         }
 
         return pos;
