@@ -3,6 +3,8 @@ package exchange.core2.collections.hashtable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.concurrent.locks.LockSupport;
+
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
 
 public class HashtableAsync2Resizer {
@@ -13,6 +15,15 @@ public class HashtableAsync2Resizer {
      * allowedPosition value meaning "stop now" - published by the hashtable in switchToNewArray().
      */
     public static final int FINISH_SIGNAL = -1;
+
+    /**
+     * Spin budget before the migrator starts backing off. Long enough to cover the usual gap
+     * between two consecutive setAllowedPosition() calls, so a busy table never parks.
+     */
+    private static final int SPINS_BEFORE_PARK = 64 * 1024;
+    private static final long PARK_INITIAL_NANOS = 1_000L;
+    private static final long PARK_BACKOFF_FACTOR = 100L;
+    private static final long PARK_MAX_NANOS = 1_000_000L; // 1ms - migration progress only
 
     private final long[] srcData;
     private final long[] dstData;
@@ -27,6 +38,9 @@ public class HashtableAsync2Resizer {
 
     private volatile int toProcessPosition;
     private volatile int allowedPosition;
+
+    /** the thread currently running {@link #copy()}, null before it starts and after it returns */
+    private volatile Thread migratorThread;
 
 
     public HashtableAsync2Resizer(long[] srcData, long[] dstData, int startingPosition, int allowedPosition) {
@@ -108,10 +122,23 @@ public class HashtableAsync2Resizer {
 
         //   log.info("(A) Allocated new array, startingPosition={}, copying initial...", startingPosition);
 
+        migratorThread = Thread.currentThread();
+        try {
+            doCopy();
+        } finally {
+            migratorThread = null;
+        }
+    }
+
+    private void doCopy() {
+
         int allowedLocal;
         int processedLocal = toProcessPosition;
 
       //  log.info("allowedPosition={} toProcessPosition={}", allowedPosition, toProcessPosition);
+
+        int spins = 0;
+        long parkNanos = 0;
 
         while (true) {
 
@@ -134,9 +161,44 @@ public class HashtableAsync2Resizer {
                     return;
                 }
 
-            } else {
-                Thread.onSpinWait();
+                spins = 0;
+                parkNanos = 0;
+                continue;
             }
+
+            // Nothing authorized yet. Spin first - the hand-over is normally sub-microsecond, and
+            // the migrator usually runs on its own pinned core, so spinning is the cheap case.
+            if (spins < SPINS_BEFORE_PARK) {
+                spins++;
+                Thread.onSpinWait();
+                continue;
+            }
+
+            // The application went quiet. Back off instead of holding a core forever: a live but
+            // idle table used to pin its migrator (and, with an affinity-locked executor, its core)
+            // for as long as the table existed.
+            //
+            // Deliberately parkNanos and not park+unpark-from-setAllowedPosition: the latter would
+            // put a syscall on the latency-critical thread once per migration segment. The wake-up
+            // delay costs nothing here - the migrator only sleeps once the authorized segment is
+            // fully copied, so the application is not waiting on it at that point.
+            parkNanos = (parkNanos == 0)
+                    ? PARK_INITIAL_NANOS
+                    : Math.min(parkNanos * PARK_BACKOFF_FACTOR, PARK_MAX_NANOS);
+
+            LockSupport.parkNanos(this, parkNanos);
+        }
+    }
+
+    /**
+     * Tells the migrator to stop and wakes it if it is backing off, so a shutdown does not have to
+     * wait out the current park interval. Safe to call repeatedly and after the migrator finished.
+     */
+    public void signalFinish() {
+        allowedPosition = FINISH_SIGNAL;
+        final Thread thread = migratorThread;
+        if (thread != null) {
+            LockSupport.unpark(thread);
         }
     }
 

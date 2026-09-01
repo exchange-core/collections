@@ -6,6 +6,7 @@ import org.agrona.collections.LongLongConsumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.lang.ref.Cleaner;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
@@ -15,7 +16,7 @@ import java.util.stream.LongStream;
 
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
 
-public class LongLongLL2Hashtable implements ILongLongHashtable {
+public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
 
     // TODO remove
@@ -55,6 +56,27 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
     private CompletableFuture<Void> copyingProcess = null;
 
     private HashtableAsync2Resizer resizer = null;
+    private Cleaner.Cleanable resizerCleanable = null;
+
+    private static final Cleaner CLEANER = Cleaner.create();
+
+    /**
+     * Must not hold a reference to the hashtable - only to the resizer - otherwise the table stays
+     * reachable and the cleanup never runs.
+     */
+    private static final class MigratorShutdown implements Runnable {
+
+        private final HashtableAsync2Resizer resizer;
+
+        private MigratorShutdown(HashtableAsync2Resizer resizer) {
+            this.resizer = resizer;
+        }
+
+        @Override
+        public void run() {
+            resizer.signalFinish();
+        }
+    }
 
     private int allowedPosition = -1;
     private int knownProgressCached = -1;
@@ -605,7 +627,13 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
 
             allowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (initialPos + 1234) & (data.length - 1)); // TODO fix
           //  log.debug("initialPos={} allowedPosition={}", initialPos, allowedPosition);
-            resizer = new HashtableAsync2Resizer(data, arrayFeature.join(), initialPos, allowedPosition);
+            // NOTE: keep this in a local and never touch the 'resizer' field from the lambda below.
+            // Reading the field would capture 'this', and the migrator thread would then keep the
+            // whole hashtable (and both arrays) reachable - an abandoned table could never be
+            // collected, and the Cleaner safety net below would never fire.
+            final HashtableAsync2Resizer newResizer =
+                    new HashtableAsync2Resizer(data, arrayFeature.join(), initialPos, allowedPosition);
+            resizer = newResizer;
             arrayFeature = null;
 
             final String threadName = Thread.currentThread().getName();
@@ -613,10 +641,13 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
                     () -> {
                         final String prevThreadName = Thread.currentThread().getName(); // TODO remove
                         Thread.currentThread().setName(threadName + "COPY");
-                        resizer.copy();
+                        newResizer.copy();
                         Thread.currentThread().setName(prevThreadName);
                     },
                     executor);
+
+            // safety net for a forgotten close(): stop the migrator once the table is unreachable
+            resizerCleanable = CLEANER.register(this, new MigratorShutdown(newResizer));
             return true;
         }
 
@@ -754,23 +785,53 @@ public class LongLongLL2Hashtable implements ILongLongHashtable {
         if (resizer != null) {
             log.debug("Active resizing found");
 
+            // switchToNewArray() clears the field, so keep the task to join it afterwards
+            final CompletableFuture<Void> pendingCopy = copyingProcess;
+
             allowedPosition = resizer.getStartingPosition();
             resizer.setAllowedPosition(allowedPosition);
             awaitAllowedPositionReached();
             switchToNewArray();
+
+            // the migrator has been signalled and unparked - wait for it to actually leave copy()
+            awaitFuture(pendingCopy, "migrator shutdown");
 
             log.debug("ASYNC RESIZE done, upsizeThreshold=" + upsizeThreshold);
             // printLayout("AFTER async RESIZE");
         }
     }
 
+    /**
+     * Completes any in-flight migration and releases the migration thread.
+     * <p>
+     * The migration is finished rather than aborted on purpose: while it is running, entries are
+     * inserted into the NEW array for already-migrated positions, so those entries exist only
+     * there - dropping the new array would silently lose them. After close() the table is still a
+     * valid, usable hashtable, it simply has no background work attached.
+     * <p>
+     * A forgotten close() is not fatal - the Cleaner stops the migrator once the table becomes
+     * unreachable - but it leaves the thread (and, with an affinity-locked executor, its core)
+     * occupied until the next GC cycle notices.
+     */
+    @Override
+    public void close() {
+        blockOnResizing();
+    }
+
 
     private void switchToNewArray() {
         //log.debug("switchToNewArray");
 
-        // can finalize migration
-        resizer.setAllowedPosition(HashtableAsync2Resizer.FINISH_SIGNAL);
+        // can finalize migration - signalFinish also unparks a backing-off migrator so it does not
+        // linger for up to PARK_MAX_NANOS after the table already moved on
+        resizer.signalFinish();
         knownProgressCached = -1;
+
+        if (resizerCleanable != null) {
+            // deregister the safety net (running the action on a finished resizer is a no-op)
+            resizerCleanable.clean();
+            resizerCleanable = null;
+        }
 
         this.data = resizer.getNewDataArray();
         mask = mask * 2 + 1;
