@@ -728,6 +728,49 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         }
     }
 
+    /**
+     * Diagnostic: where a key physically is, and how each array is classified for it right now.
+     * Scans both arrays, so it is only for failure reporting.
+     */
+    public String debugLocate(long key) {
+
+        final HashtableAsync2Resizer r = resizer;
+        final int hash = Hashing.hash(key);
+        final int pos = (hash & mask) << 1;
+
+        final StringBuilder sb = new StringBuilder("key=").append(key)
+                .append(" homeOld=").append(pos)
+                .append(" mask=").append(mask)
+                .append(" oldLen=").append(data.length);
+
+        sb.append(" foundInOld=").append(scanFor(key, data));
+
+        if (r == null) {
+            sb.append(" resizer=null");
+        } else {
+            final long[] dn = r.getNewDataArray();
+            sb.append(" S=").append(r.getStartingPosition())
+                    .append(" A=").append(allowedPosition)
+                    .append(" P=").append(r.getProcessedPosition())
+                    .append(" isInOldData=").append(r.isInOldData(pos, allowedPosition))
+                    .append(" posEqS=").append(pos == r.getStartingPosition())
+                    .append(" notInNewData=").append(r.notInNewData(pos, r.getProcessedPosition()))
+                    .append(" homeNew=").append((hash & r.getNewMask()) << 1)
+                    .append(" foundInNew=").append(scanFor(key, dn))
+                    .append(" newLen=").append(dn.length);
+        }
+        return sb.toString();
+    }
+
+    private static int scanFor(long key, long[] arr) {
+        for (int i = 0; i < arr.length; i += 2) {
+            if (arr[i] == key) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
     private String migrationState() {
         final HashtableAsync2Resizer r = resizer;
         return "size=" + size + " mask=" + mask + " capacity=" + (data.length >> 1)

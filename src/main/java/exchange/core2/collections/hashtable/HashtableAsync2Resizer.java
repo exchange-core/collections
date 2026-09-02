@@ -76,17 +76,22 @@ public class HashtableAsync2Resizer {
      *
      * (new data also includes 0=A=P)
      */
-    public boolean notInNewData(int pos, int lasKnownProgress) { // TODO looks the same ^^^^
+    public boolean notInNewData(int pos, int lasKnownProgress) {
 
         if (startingPosition == lasKnownProgress) {
             return true;
             //return false;
         }
 
+        // toProcessPosition is the position that still has to be COPIED, not the last copied one:
+        // the migrator has copied [initial toProcessPosition, lasKnownProgress) exclusive. Treating
+        // the boundary as migrated sends lookups to the new array one position too early - at
+        // migration start that position is startingPosition+2, which holds a real entry, and every
+        // key hashing there reads 0 while its value still sits in the old array.
         if (startingPosition <= lasKnownProgress) {
-            return pos < startingPosition || pos > lasKnownProgress;
+            return pos < startingPosition || pos >= lasKnownProgress;
         } else {
-            return pos < startingPosition && pos > lasKnownProgress;
+            return pos < startingPosition && pos >= lasKnownProgress;
         }
     }
 
