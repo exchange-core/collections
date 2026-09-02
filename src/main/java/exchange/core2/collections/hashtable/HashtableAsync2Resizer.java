@@ -36,8 +36,23 @@ public class HashtableAsync2Resizer {
      */
     private volatile int startingPosition;
 
+    /**
+     * Exclusive upper bound of the copied range: everything in [initial toProcessPosition,
+     * toProcessPosition) is in the new array, and toProcessPosition itself is NOT yet copied.
+     * Note the name - this is the next position to process, not the last processed one.
+     */
     private volatile int toProcessPosition;
+
     private volatile int allowedPosition;
+
+    /**
+     * Explicit end-of-migration marker. Needed because {@code toProcessPosition == startingPosition}
+     * is ambiguous on its own - it reads as both "nothing copied yet" and "everything copied" - and
+     * relying on that coincidence made the range checks below silently wrong at the boundary.
+     * Published BEFORE the final toProcessPosition, so a reader that sees the final progress always
+     * sees this flag too.
+     */
+    private volatile boolean allMigrated = false;
 
     /** the thread currently running {@link #copy()}, null before it starts and after it returns */
     private volatile Thread migratorThread;
@@ -70,29 +85,32 @@ public class HashtableAsync2Resizer {
     }
 
     /**
-     * Check follows after confirmed that not is not in old data yet.
-     * This method would return true if data is not migrated yet, but will be soon.
-     * If it returns false - migrated data can be accessed safely (unless it requires put-extension).
-     *
-     * (new data also includes 0=A=P)
+     * Checked after {@link #isInOldData} has already ruled the old array out.
+     * Returns true while the position is still waiting to be copied, false once the new array can
+     * be accessed safely (unless it requires put-extension).
      */
     public boolean notInNewData(int pos, int lasKnownProgress) {
 
-        if (startingPosition == lasKnownProgress) {
-            return true;
-            //return false;
+        if (allMigrated) {
+            // whole table is in the new array - no position is pending any more
+            return false;
         }
 
-        // toProcessPosition is the position that still has to be COPIED, not the last copied one:
-        // the migrator has copied [initial toProcessPosition, lasKnownProgress) exclusive. Treating
-        // the boundary as migrated sends lookups to the new array one position too early - at
-        // migration start that position is startingPosition+2, which holds a real entry, and every
-        // key hashing there reads 0 while its value still sits in the old array.
+        // lasKnownProgress is an EXCLUSIVE bound: the migrator has copied
+        // [initial toProcessPosition, lasKnownProgress) and lasKnownProgress itself is still
+        // pending. Treating it as migrated sends lookups to the new array one position too early -
+        // at migration start that position is startingPosition+2, which holds a real entry, so
+        // every key hashing there reads 0 while its value still sits in the old array.
         if (startingPosition <= lasKnownProgress) {
             return pos < startingPosition || pos >= lasKnownProgress;
         } else {
             return pos < startingPosition && pos >= lasKnownProgress;
         }
+    }
+
+    /** true once the migrator has copied the whole table into the new array */
+    public boolean isAllMigrated() {
+        return allMigrated;
     }
 
 
@@ -159,12 +177,19 @@ public class HashtableAsync2Resizer {
             if (processedLocal != allowedLocal) {
                 copyInterval(processedLocal, allowedLocal);
                 processedLocal = allowedLocal;
-                toProcessPosition = allowedLocal;
-//                log.debug("processedPosition = {} , allowedPosition={}", processedPosition, allowedPosition);
+
                 if (processedLocal == startingPosition) {
+                    // wrapped back to the start - the whole table is copied. Publish the flag
+                    // BEFORE the progress, so nobody can observe the final (otherwise ambiguous)
+                    // toProcessPosition == startingPosition without also seeing allMigrated.
+                    allMigrated = true;
+                    toProcessPosition = allowedLocal;
              //       log.debug("(A) Completed async processing at {}", startingPosition);
                     return;
                 }
+
+                toProcessPosition = allowedLocal;
+//                log.debug("processedPosition = {} , allowedPosition={}", processedPosition, allowedPosition);
 
                 spins = 0;
                 parkNanos = 0;

@@ -666,6 +666,11 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         while (resizer.notInNewData(pos, knownProgressCached)) {
             knownProgressCached = resizer.getProcessedPosition();
             if (knownProgressCached == allowedPosition) {
+                // The migrator copied everything it was authorized to and is now waiting for the
+                // next authorization, which only this thread can give - so waiting further would
+                // deadlock. The only position that can still be pending here is allowedPosition
+                // itself, and that one is a gap in the old array (findNextGapPos picked it), so no
+                // entry with that home was ever stored there: the new array is safe to access.
                 break;
             }
             Thread.onSpinWait();
