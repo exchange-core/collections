@@ -31,7 +31,6 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
@@ -56,7 +55,7 @@ public class PerfLatencyTests {
     private static final float LOAD_FACTOR = 0.65f;
 
     /** Entries put into a throwaway instance at max rate before measuring, to warm up JIT. */
-    private static final int WARMUP_ENTRIES = 5_000_000;
+    private static final int WARMUP_ENTRIES = 20_000_000;
 
 
     final Executor CORE_LOCK_EXECUTOR = task -> {
@@ -77,10 +76,7 @@ public class PerfLatencyTests {
                     for (long l : kv) hashtable.put(l, l);
                     return hashtable;
                 },
-                this::benchmarkExchangeHashtable,
-                (ILongLongHashtable hashtable, long[] kv) -> {
-                    for (long l : kv) hashtable.put(l, l);
-                }
+                this::benchmarkExchangeHashtable
         );
     }
 
@@ -96,10 +92,7 @@ public class PerfLatencyTests {
                     for (long l : kv) hashtable.put(l, l);
                     return hashtable;
                 },
-                this::benchmarkExchangeHashtable,
-                (ILongLongHashtable hashtable, long[] kv) -> {
-                    for (long l : kv) hashtable.put(l, l);
-                }
+                this::benchmarkExchangeHashtable
         );
     }
 
@@ -111,10 +104,7 @@ public class PerfLatencyTests {
                     for (long l : kv) hashtable.put(l, l);
                     return hashtable;
                 },
-                this::benchmarkAgrona,
-                (Long2LongHashMap hashtable, long[] kv) -> {
-                    for (long l : kv) hashtable.put(l, l);
-                }
+                this::benchmarkAgrona
         );
     }
 
@@ -127,10 +117,7 @@ public class PerfLatencyTests {
                     for (long l : kv) hashtable.put(l, l);
                     return hashtable;
                 },
-                this::benchmarkStd,
-                (Map<Long, Long> hashtable, long[] kv) -> {
-                    for (long l : kv) hashtable.put(l, l);
-                }
+                this::benchmarkStd
         );
     }
 
@@ -143,10 +130,7 @@ public class PerfLatencyTests {
                     for (long l : kv) hashtable.put(l, l);
                     return hashtable;
                 },
-                this::benchmarkStd,
-                (Map<Long, Long> hashtable, long[] kv) -> {
-                    for (long l : kv) hashtable.put(l, l);
-                }
+                this::benchmarkStd
         );
     }
 
@@ -163,10 +147,7 @@ public class PerfLatencyTests {
                     for (long l : kv) hashtable.put(l, l);
                     return hashtable;
                 },
-                this::benchmarkKoloboke,
-                (HashLongLongMap hashtable, long[] kv) -> {
-                    for (long l : kv) hashtable.put(l, l);
-                }
+                this::benchmarkKoloboke
         );
     }
 
@@ -178,10 +159,7 @@ public class PerfLatencyTests {
                     for (long l : kv) hashtable.put(l, l);
                     return hashtable;
                 },
-                this::benchmarkStd,
-                (Map<Long, Long> hashtable, long[] kv) -> {
-                    for (long l : kv) hashtable.put(l, l);
-                }
+                this::benchmarkStd
         );
     }
 
@@ -194,10 +172,7 @@ public class PerfLatencyTests {
                     for (long l : kv) hashtable.put(l, l);
                     return hashtable;
                 },
-                this::benchmarkHppc,
-                (LongLongHashMap hashtable, long[] kv) -> {
-                    for (long l : kv) hashtable.put(l, l);
-                }
+                this::benchmarkHppc
         );
     }
 
@@ -210,10 +185,7 @@ public class PerfLatencyTests {
                     for (long l : kv) hashtable.put(l, l);
                     return hashtable;
                 },
-                this::benchmarkFastUtil,
-                (Long2LongOpenHashMap hashtable, long[] kv) -> {
-                    for (long l : kv) hashtable.put(l, l);
-                }
+                this::benchmarkFastUtil
         );
     }
 
@@ -225,10 +197,7 @@ public class PerfLatencyTests {
                     for (long l : kv) hashtable.put(l, l);
                     return hashtable;
                 },
-                this::benchmarkAndroidX,
-                (MutableLongLongMap hashtable, long[] kv) -> {
-                    for (long l : kv) hashtable.put(l, l);
-                }
+                this::benchmarkAndroidX
         );
     }
 
@@ -250,10 +219,7 @@ public class PerfLatencyTests {
                     for (long l : kv) hashtable.put(l, Long.valueOf(l));
                     return hashtable;
                 },
-                this::benchmarkNonBlockingHashMapLong,
-                (NonBlockingHashMapLong<Long> hashtable, long[] kv) -> {
-                    for (long l : kv) hashtable.put(l, Long.valueOf(l));
-                }
+                this::benchmarkNonBlockingHashMapLong
         );
     }
 
@@ -278,10 +244,7 @@ public class PerfLatencyTests {
                     for (long l : kv) longsMap.put(l, l);
                     return longsMap;
                 },
-                this::benchmarkStd,
-                (Map<Long, Long> hashtable, long[] kv) -> {
-                    for (long l : kv) hashtable.put(l, l);
-                }
+                this::benchmarkStd
         );
     }
 
@@ -294,21 +257,18 @@ public class PerfLatencyTests {
                     for (long l : kv) map.put(l, l);
                     return map;
                 },
-                this::benchmarkStd,
-                (LongAdaptiveRadixTreeMap<Long> hashtable, long[] kv) -> {
-                    for (long l : kv) hashtable.put(l, l);
-                }
+                this::benchmarkStd
         );
     }
 
 
     private <T> void benchmarkAbstract(Function<long[], T> factory,
-                                       BiFunction<T, long[], SingleResult> singleTest,
-                                       BiConsumer<T, long[]> extraLoader) {
+                                       BiFunction<T, long[], SingleResult> singleTest) {
 
         final int n2 = 1_000_000;
         final long seed = 1918723469278364978L;
-        final Random rand = new Random(seed);
+        final KeyGenerator keys0 = new KeyGenerator(seed);
+        log.info("Key profile: {}, offered rate: {} tps, load factor: {}", KEY_PROFILE, TPS, LOAD_FACTOR);
 
         try (AffinityLock ignore = AffinityLock.acquireCore()) {
 
@@ -318,7 +278,7 @@ public class PerfLatencyTests {
             // compilation of put() and of the whole resize path.
             log.debug("Warming up on a separate instance: {} entries at max rate...", WARMUP_ENTRIES);
             final long[] warmupKeys = new long[WARMUP_ENTRIES];
-            for (int i = 0; i < WARMUP_ENTRIES; i++) warmupKeys[i] = nextKey(rand);
+            for (int i = 0; i < WARMUP_ENTRIES; i++) warmupKeys[i] = keys0.next();
             final long warmupStartNs = System.nanoTime();
             final T warmup = factory.apply(warmupKeys);
             // one throttled pass too, so the measurement loop itself gets compiled
@@ -332,10 +292,9 @@ public class PerfLatencyTests {
             final long[] keys = new long[n2];
 
             for (int j = 0; j < 1780; j++) {
-                for (int i = 0; i < n2; i++) keys[i] = nextKey(rand);
+                for (int i = 0; i < n2; i++) keys[i] = keys0.next();
                 final SingleResult benchmark = singleTest.apply(hashtable, keys);
                 log.info("{}: {}", (long) n2 * (j + 1), LatencyTools.createLatencyReportFast(benchmark.avgGet));
-                extraLoader.accept(hashtable, keys);
             }
         }
     }
@@ -343,11 +302,66 @@ public class PerfLatencyTests {
     private static final long[] EMPTY_KEYS = new long[0];
 
     /**
-     * Key generator. Uniformly random positive longs - the easy case for a hash table and an
-     * unrealistic one for an exchange, where ids tend to be sequential.
+     * Key distribution. Uniformly random keys are the easy case for a hash table and an unrealistic
+     * one for an exchange, where ids are typically sequential - and they are the hard case for a
+     * radix tree, so comparing on random keys alone systematically flatters hash tables.
+     * <p>
+     * Select with -Dbenchmark.keys=SEQUENTIAL (default RANDOM).
      */
-    private static long nextKey(Random rand) {
-        return rand.nextLong() & Long.MAX_VALUE;
+    public enum KeyProfile {
+        /** uniformly random positive longs */
+        RANDOM,
+        /** 1, 2, 3, ... - plain order ids */
+        SEQUENTIAL,
+        /** 1*S, 2*S, 3*S ... - ids carrying a tag in the low bits, hostile to low-bit indexing */
+        SEQUENTIAL_SPARSE,
+        /** several sequential ranges interleaved - several instruments traded at once */
+        CLUSTERED
+    }
+
+    private static final KeyProfile KEY_PROFILE =
+            KeyProfile.valueOf(System.getProperty("benchmark.keys", "RANDOM").toUpperCase());
+
+    private static final long SPARSE_STRIDE = 256L;
+    private static final int CLUSTERS = 16;
+
+    /**
+     * Stateful so SEQUENTIAL can keep counting. One instance is shared by the warmup and the
+     * measured run, so the measured keys never collide with the warmed-up ones.
+     */
+    private static final class KeyGenerator {
+
+        private final Random rand;
+        private final long[] clusterBase = new long[CLUSTERS];
+        private final long[] clusterNext = new long[CLUSTERS];
+        private long counter = 0;
+
+        private KeyGenerator(long seed) {
+            this.rand = new Random(seed);
+            for (int c = 0; c < CLUSTERS; c++) {
+                // far apart so clusters do not merge into one range
+                clusterBase[c] = (rand.nextLong() & Long.MAX_VALUE) | 1L;
+            }
+        }
+
+        // never returns 0: it is the "missing" marker for LL2 and agrona
+        private long next() {
+            switch (KEY_PROFILE) {
+                case SEQUENTIAL:
+                    return ++counter;
+                case SEQUENTIAL_SPARSE:
+                    return ++counter * SPARSE_STRIDE;
+                case CLUSTERED: {
+                    final int c = rand.nextInt(CLUSTERS);
+                    return clusterBase[c] + (clusterNext[c]++);
+                }
+                case RANDOM:
+                default: {
+                    long k = rand.nextLong() & Long.MAX_VALUE;
+                    return k == 0 ? 1 : k;
+                }
+            }
+        }
     }
 
     private SingleResult benchmarkExchangeHashtable(ILongLongHashtable hashtable, long[] keys) {
@@ -626,8 +640,6 @@ public class PerfLatencyTests {
 
     private SingleResult benchmarkFair(LongAdaptiveRadixTreeMap<Long> hashtable, long[] keys) {
 
-
-
         final Histogram histogramPut = new Histogram(60_000_000_000L, 3);
 
         final long picosPerCmd = (1024L * 1_000_000_000L) / TPS;
@@ -680,19 +692,13 @@ public class PerfLatencyTests {
     @Test
     public void nonStopPutBenchmarkStdHashtable() {
 
-
         final BlockingQueue<long[]> randBuffer = new LinkedBlockingQueue<>(2);
-
         final int bufSize = 1000_000;
 
-
         Runnable randomGenerator = () -> {
-
             try (AffinityLock affinityLock = AffinityLock.acquireCore()) {
                 log.debug("Core for random generator: {}", affinityLock);
-
                 Random rand = new Random();
-
                 do {
 //                    log.debug("Allocating array...");
                     final long[] keys = new long[bufSize]; // TODO take from pool
@@ -704,8 +710,6 @@ public class PerfLatencyTests {
             } catch (InterruptedException ex) {
                 throw new RuntimeException(ex);
             }
-
-
         };
 
         for (int i = 0; i < 2; i++) {
@@ -713,29 +717,23 @@ public class PerfLatencyTests {
             randomSupplier.start();
         }
 
-
         //try {
         try (AffinityLock ignore = AffinityLock.acquireCore()) {
-
-
             final int prefills = 5;
-
-            ILongLongHashtable map = new LongLongLL2Hashtable(1000000, CORE_LOCK_EXECUTOR);
+            final ILongLongHashtable map = new LongLongLL2Hashtable(1000000, CORE_LOCK_EXECUTOR);
             //ILongLongHashtable map = new LongLongHashtable();
             //Long2LongHashMap map = new Long2LongHashMap(0L);
             //final LongAdaptiveRadixTreeMap<Long> map = new LongAdaptiveRadixTreeMap<>();
 
             log.debug("Prefilling {} entries..", bufSize * prefills);
             for (int i = 0; i < prefills; i++) {
-                long[] buf = randBuffer.take();
+                final long[] buf = randBuffer.take();
                 for (long key : buf) {
                     map.put(key, key);
                 }
                 //map = new LongLongLL2Hashtable(CORE_LOCK_EXECUTOR);
             }
             log.debug("Prefilling done");
-
-
 
 
             final Histogram histogramPut = new Histogram(60_000_000_000L, 3);
@@ -776,7 +774,7 @@ public class PerfLatencyTests {
                 if (nanoTime > nextPublishTimeNs) {
                     nextPublishTimeNs = nanoTime + 1_000_000_000L;
                     log.info("{} {}", i, LatencyTools.createLatencyReportFast(histogramPut));
-                    //histogramPut.reset();
+                    histogramPut.reset();
                 }
 
             }
