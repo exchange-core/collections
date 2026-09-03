@@ -36,9 +36,11 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
+                <!-- must be pinned: the Maven 3.6 super-POM default (3.1) does not support
+                     <release> and silently falls back to source/target 1.5 -->
+                <version>3.14.0</version>
                 <configuration>
-                    <source>21</source>
-                    <target>21</target>
+                    <release>${maven.compiler.release}</release>
                 </configuration>
             </plugin>
         </plugins>
@@ -53,26 +55,37 @@
         </developer>
     </developers>
 
+    <repositories>
+        <!-- androidx.collection is published by Google, not to Maven Central -->
+        <repository>
+            <id>google</id>
+            <url>https://dl.google.com/dl/android/maven2</url>
+        </repository>
+    </repositories>
+
     <properties>
         <skip.it>false</skip.it>
 
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <java.version>1.8</java.version>
-        <maven.compiler.target>1.8</maven.compiler.target>
-        <maven.compiler.source>1.8</maven.compiler.source>
+        <java.version>26</java.version>
+        <maven.compiler.release>26</maven.compiler.release>
 
-        <guava.version>28.2-jre</guava.version>
+        <guava.version>33.7.1-jre</guava.version>
         <commons-math3.version>3.6.1</commons-math3.version>
-        <commons-lang3.version>3.10</commons-lang3.version>
-        <eclipse.collections.version>12.0.0.M3</eclipse.collections.version>
-        <hdr.histogram.version>2.1.12</hdr.histogram.version>
-        <agrona.version>1.17.1</agrona.version>
+        <commons-lang3.version>3.20.0</commons-lang3.version>
+        <eclipse.collections.version>13.0.0</eclipse.collections.version>
+        <hdr.histogram.version>2.2.2</hdr.histogram.version>
+        <agrona.version>2.6.0</agrona.version>
+        <fastutil.version>8.5.19</fastutil.version>
+        <hppc.version>0.11.1</hppc.version>
+        <androidx.collection.version>1.6.0</androidx.collection.version>
+        <jctools.version>4.0.7</jctools.version>
         <slf4j.version>2.0.9</slf4j.version>
-        <logback.version>1.4.14</logback.version>
-        <jmh.version>1.23</jmh.version>
-        <junit.version>4.13</junit.version>
-        <mockito.version>3.3.3</mockito.version>
+        <logback.version>1.6.3</logback.version>
+        <jmh.version>1.37</jmh.version>
+        <junit.version>4.13.2</junit.version>
+        <mockito.version>5.23.0</mockito.version>
         <hamcrest.version>1.3</hamcrest.version>
 
         <openhft.chronicle.wire.version>2.19.1</openhft.chronicle.wire.version>
@@ -110,7 +123,7 @@
             <dependency>
                 <groupId>net.openhft</groupId>
                 <artifactId>chronicle-map</artifactId>
-                <version>3.25ea3</version>
+                <version>2026.1</version>
             </dependency>
 
             <!-- Eclipse (Goldman Sachs) collections -->
@@ -148,23 +161,36 @@
             </dependency>
 
             <!-- FastUtil -->
-            <!--
-                        <dependency>
-                            <groupId>it.unimi.dsi</groupId>
-                            <artifactId>fastutil</artifactId>
-                            <version>8.2.1</version>
-                        </dependency>
-            -->
-
+            <dependency>
+                <groupId>it.unimi.dsi</groupId>
+                <artifactId>fastutil</artifactId>
+                <version>${fastutil.version}</version>
+                <scope>test</scope>
+            </dependency>
 
             <!-- HPPC -->
-            <!--
-                        <dependency>
-                            <groupId>com.carrotsearch</groupId>
-                            <artifactId>hppc</artifactId>
-                            <version>0.8.1</version>
-                        </dependency>
-            -->
+            <dependency>
+                <groupId>com.carrotsearch</groupId>
+                <artifactId>hppc</artifactId>
+                <version>${hppc.version}</version>
+                <scope>test</scope>
+            </dependency>
+
+            <!-- JCTools - Cliff Click's lock-free NonBlockingHashMapLong (long -> Object) -->
+            <dependency>
+                <groupId>org.jctools</groupId>
+                <artifactId>jctools-core</artifactId>
+                <version>${jctools.version}</version>
+                <scope>test</scope>
+            </dependency>
+
+            <!-- AndroidX collections (primitive MutableLongLongMap) -->
+            <dependency>
+                <groupId>androidx.collection</groupId>
+                <artifactId>collection-jvm</artifactId>
+                <version>${androidx.collection.version}</version>
+                <scope>test</scope>
+            </dependency>
 
             <!-- logging -->
             <dependency>
@@ -234,7 +260,7 @@
         <dependency>
             <groupId>net.openhft</groupId>
             <artifactId>affinity</artifactId>
-            <version>3.23.3</version>
+            <version>2026.2</version>
         </dependency>
 
         <dependency>
@@ -301,6 +327,26 @@
         </dependency>
 
         <dependency>
+            <groupId>it.unimi.dsi</groupId>
+            <artifactId>fastutil</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.carrotsearch</groupId>
+            <artifactId>hppc</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.jctools</groupId>
+            <artifactId>jctools-core</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>androidx.collection</groupId>
+            <artifactId>collection-jvm</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>org.javolution</groupId>
             <artifactId>javolution-core-java</artifactId>
             <version>6.0.0</version>
@@ -338,6 +384,30 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-surefire-plugin</artifactId>
                         <version>3.0.0-M3</version>
+                        <configuration>
+                            <!-- benchmarks and stress tests are @Test without assertions and run
+                                 for hours - keep them out of a plain `mvn test`, run them with
+                                 -Pbenchmarks / -Pstress -->
+                            <excludes>
+                                <exclude>**/pref/**</exclude>
+                                <exclude>**/stress/**</exclude>
+                            </excludes>
+                            <!-- Chronicle products need these on Java 11+, otherwise
+                                 benchmarkChronicleMap dies with IllegalAccessException.
+                                 See https://chronicle.software/chronicle-support-java-17 -->
+                            <argLine>
+                                --add-exports=java.base/jdk.internal.ref=ALL-UNNAMED
+                                --add-exports=java.base/sun.nio.ch=ALL-UNNAMED
+                                --add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED
+                                --add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED
+                                --add-opens=jdk.compiler/com.sun.tools.javac=ALL-UNNAMED
+                                --add-opens=java.base/java.lang=ALL-UNNAMED
+                                --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+                                --add-opens=java.base/java.io=ALL-UNNAMED
+                                --add-opens=java.base/java.util=ALL-UNNAMED
+                                --enable-native-access=ALL-UNNAMED
+                            </argLine>
+                        </configuration>
                     </plugin>
 
                     <plugin>
@@ -419,6 +489,44 @@
         </profile>
 
         <profile>
+            <!-- mvn test -Pbenchmarks -Dtest=PerfLatencyTests#benchmarkLL2 -->
+            <id>benchmarks</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <excludes combine.self="override"/>
+                            <includes>
+                                <include>**/pref/*.java</include>
+                            </includes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <!-- mvn test -Pstress -->
+            <id>stress</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <excludes combine.self="override"/>
+                            <includes>
+                                <include>**/stress/*.java</include>
+                            </includes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
             <id>it</id>
             <build>
                 <plugins>
@@ -427,6 +535,21 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration combine.self="override">
                             <!--<argLine>-XX:+PrintApplicationStoppedTime</argLine>-->
+                            <!-- Chronicle products need these on Java 11+, otherwise
+                                 benchmarkChronicleMap dies with IllegalAccessException.
+                                 See https://chronicle.software/chronicle-support-java-17 -->
+                            <argLine>
+                                --add-exports=java.base/jdk.internal.ref=ALL-UNNAMED
+                                --add-exports=java.base/sun.nio.ch=ALL-UNNAMED
+                                --add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED
+                                --add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED
+                                --add-opens=jdk.compiler/com.sun.tools.javac=ALL-UNNAMED
+                                --add-opens=java.base/java.lang=ALL-UNNAMED
+                                --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+                                --add-opens=java.base/java.io=ALL-UNNAMED
+                                --add-opens=java.base/java.util=ALL-UNNAMED
+                                --enable-native-access=ALL-UNNAMED
+                            </argLine>
                             <redirectTestOutputToFile>true</redirectTestOutputToFile>
                             <includes>
                                 <include>**/IT*.java</include>

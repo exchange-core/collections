@@ -147,7 +147,7 @@ public class HiccupCalibrationTest {
                 accum += hash;
 
                 final long nanoTime = System.nanoTime();
-                final long putNs = nanoTime - startTimeNs - (lastKnownTimeOffsetPs >> 10);
+                final long putNs = nanoTime - startTimeNs - (planneTimeOffsetPs >> 10);
                 histogramPut.recordValue(putNs);
 
                 if (nanoTime > nextPublishTimeNs) {

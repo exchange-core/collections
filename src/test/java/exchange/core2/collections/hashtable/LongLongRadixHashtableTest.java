@@ -1,6 +1,7 @@
 package exchange.core2.collections.hashtable;
 
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,6 +33,7 @@ public class LongLongRadixHashtableTest {
     }
 
 
+    @Ignore("endurance benchmark: inserts up to 4e9 entries and OOMs by design - run manually")
     @Test
     public void should_upsize_throughput() {
 
