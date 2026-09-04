@@ -3,9 +3,17 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>exchange.core2</groupId>
-    <artifactId>collections</artifactId>
-    <version>0.5.2-SNAPSHOT</version>
-    <packaging>jar</packaging>
+    <artifactId>collections-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <modules>
+        <module>collections-core</module>
+        <module>collections-orderbook</module>
+        <module>tests-common</module>
+        <module>tests-perf</module>
+        <module>tests-stress</module>
+    </modules>
 
     <name>${project.groupId}:${project.artifactId}</name>
     <description>High performance Java collections</description>
@@ -81,6 +89,9 @@
         <hppc.version>0.11.1</hppc.version>
         <androidx.collection.version>1.6.0</androidx.collection.version>
         <jctools.version>4.0.7</jctools.version>
+        <koloboke.version>1.0.0</koloboke.version>
+        <javolution.version>6.0.0</javolution.version>
+        <affinity.version>2026.2</affinity.version>
         <slf4j.version>2.0.9</slf4j.version>
         <logback.version>1.6.3</logback.version>
         <jmh.version>1.37</jmh.version>
@@ -94,6 +105,46 @@
 
     <dependencyManagement>
         <dependencies>
+
+            <dependency>
+                <groupId>com.koloboke</groupId>
+                <artifactId>koloboke-api-jdk8</artifactId>
+                <version>${koloboke.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.koloboke</groupId>
+                <artifactId>koloboke-impl-jdk8</artifactId>
+                <version>${koloboke.version}</version>
+                <scope>runtime</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.javolution</groupId>
+                <artifactId>javolution-core-java</artifactId>
+                <version>${javolution.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>net.openhft</groupId>
+                <artifactId>affinity</artifactId>
+                <version>${affinity.version}</version>
+            </dependency>
+
+            <!-- own modules -->
+            <dependency>
+                <groupId>${project.groupId}</groupId>
+                <artifactId>collections-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>${project.groupId}</groupId>
+                <artifactId>collections-orderbook</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>${project.groupId}</groupId>
+                <artifactId>tests-common</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
 
             <!-- Real Logic Agrona -->
             <dependency>
@@ -197,7 +248,6 @@
                 <groupId>org.slf4j</groupId>
                 <artifactId>slf4j-api</artifactId>
                 <version>${slf4j.version}</version>
-                <scope>test</scope>
             </dependency>
             <dependency>
                 <groupId>ch.qos.logback</groupId>
@@ -243,134 +293,6 @@
         </dependencies>
     </dependencyManagement>
 
-    <dependencies>
-
-
-<!--        <dependency>
-            <groupId>net.openhft</groupId>
-            <artifactId>chronicle-wire</artifactId>
-        </dependency>-->
-
-        <dependency>
-            <groupId>net.openhft</groupId>
-            <artifactId>chronicle-map</artifactId>
-        </dependency>
-
-
-        <dependency>
-            <groupId>net.openhft</groupId>
-            <artifactId>affinity</artifactId>
-            <version>2026.2</version>
-        </dependency>
-
-        <dependency>
-            <groupId>org.agrona</groupId>
-            <artifactId>agrona</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.eclipse.collections</groupId>
-            <artifactId>eclipse-collections-api</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.eclipse.collections</groupId>
-            <artifactId>eclipse-collections</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
-            <scope>provided</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.hdrhistogram</groupId>
-            <artifactId>HdrHistogram</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>ch.qos.logback</groupId>
-            <artifactId>logback-classic</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>com.google.guava</groupId>
-            <artifactId>guava</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-lang3</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-math3</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <!-- Koloboke -->
-        <dependency>
-            <groupId>com.koloboke</groupId>
-            <artifactId>koloboke-api-jdk8</artifactId>
-            <version>1.0.0</version>
-        </dependency>
-        <dependency>
-            <groupId>com.koloboke</groupId>
-            <artifactId>koloboke-impl-jdk8</artifactId>
-            <version>1.0.0</version>
-            <scope>runtime</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>it.unimi.dsi</groupId>
-            <artifactId>fastutil</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>com.carrotsearch</groupId>
-            <artifactId>hppc</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.jctools</groupId>
-            <artifactId>jctools-core</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>androidx.collection</groupId>
-            <artifactId>collection-jvm</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.javolution</groupId>
-            <artifactId>javolution-core-java</artifactId>
-            <version>6.0.0</version>
-        </dependency>
-
-
-        <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.mockito</groupId>
-            <artifactId>mockito-core</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.hamcrest</groupId>
-            <artifactId>hamcrest-library</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-
-    </dependencies>
 
     <profiles>
         <profile>
