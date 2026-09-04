@@ -30,6 +30,9 @@ import java.util.Map;
  */
 public final class ArtNode4<V> implements IArtNode<V> {
 
+    /** highest possible key in the unsigned key space the nodes work in */
+    private static final long UNSIGNED_MAX_KEY = -1L;
+
     // keys are ordered
     final short[] keys = new short[4];
     final Object[] nodes = new Object[4];
@@ -61,10 +64,17 @@ public final class ArtNode4<V> implements IArtNode<V> {
 //        log.debug("new level={} key1={} key2={}", level, key1, key2);
         // create compact node
         this.numChildren = 2;
-        final short idx1 = (short) ((key1 >> level) & 0xFF);
-        final short idx2 = (short) ((key2 >> level) & 0xFF);
-        // ! smallest key first
-        if (key1 < key2) {
+        final short idx1 = (short) ((key1 >>> level) & 0xFF);
+        final short idx2 = (short) ((key2 >>> level) & 0xFF);
+        // The keys array is ordered by BRANCH INDEX, not by the full key - every lookup and
+        // traversal relies on that (getValue() gives up as soon as nodeIndex < keys[i]).
+        //
+        // Comparing the full keys here used to invert the two children whenever the branch was on
+        // the sign bit: for key1=-5, key2=1 the signed comparison says key1 < key2, but the indices
+        // are 0xFF and 0x00, so -5 has to go SECOND. The result was an unsorted node - wrong
+        // iteration order, and get() returning null for keys that were present.
+        // Branch indices are masked to 0..255, so an ordinary comparison is the unsigned one.
+        if (idx1 < idx2) {
             this.keys[0] = idx1;
             this.nodes[0] = value1;
             this.keys[1] = idx2;
@@ -285,7 +295,9 @@ public final class ArtNode4<V> implements IArtNode<V> {
 //                    String.format("%Xh", key & mask), String.format("%Xh", nodeKey & mask));
             final long keyWithMask = key & mask;
             final long nodeKeyWithMask = nodeKey & mask;
-            if (nodeKeyWithMask < keyWithMask) {
+            // unsigned: the node layer orders keys by their bytes, and the map flips the sign
+            // bit on the way in, so the top bit here is data - not a sign
+            if (Long.compareUnsigned(nodeKeyWithMask, keyWithMask) < 0) {
                 // compacted part is lower - no need to search for ceiling entry here
                 return null;
             } else if (keyWithMask != nodeKeyWithMask) {
@@ -334,12 +346,13 @@ public final class ArtNode4<V> implements IArtNode<V> {
 //                    String.format("%Xh", key & mask), String.format("%Xh", nodeKey & mask));
             final long keyWithMask = key & mask;
             final long nodeKeyWithMask = nodeKey & mask;
-            if (nodeKeyWithMask > keyWithMask) {
+            // unsigned - see the note in getCeilingValue
+            if (Long.compareUnsigned(nodeKeyWithMask, keyWithMask) > 0) {
                 // compacted part is higher - no need to search for floor entry here
                 return null;
             } else if (keyWithMask != nodeKeyWithMask) {
                 // find highest value, because compacted nodekey is lower
-                key = Long.MAX_VALUE;
+                key = UNSIGNED_MAX_KEY;
             }
         }
 
@@ -360,7 +373,7 @@ public final class ArtNode4<V> implements IArtNode<V> {
                 // exploring first lower key
                 return nodeLevel == 0
                         ? (V) nodes[i]
-                        : ((IArtNode<V>) nodes[i]).getFloorValue(Long.MAX_VALUE, nodeLevel - 8); // take highest existing key
+                        : ((IArtNode<V>) nodes[i]).getFloorValue(UNSIGNED_MAX_KEY, nodeLevel - 8); // take highest existing key
             }
         }
         return null;

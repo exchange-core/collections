@@ -32,6 +32,9 @@ import java.util.*;
  */
 public final class ArtNode48<V> implements IArtNode<V> {
 
+    /** highest possible key in the unsigned key space the nodes work in */
+    private static final long UNSIGNED_MAX_KEY = -1L;
+
     private static final int NODE16_SWITCH_THRESHOLD = 12;
 
     // just keep indexes
@@ -225,7 +228,9 @@ public final class ArtNode48<V> implements IArtNode<V> {
 //            log.debug("key & mask = {} > nodeKey & mask = {}", String.format("%Xh", key & mask), String.format("%Xh", nodeKey & mask));
             final long keyWithMask = key & mask;
             final long nodeKeyWithMask = nodeKey & mask;
-            if (nodeKeyWithMask < keyWithMask) {
+            // unsigned: the node layer orders keys by their bytes, and the map flips the sign
+            // bit on the way in, so the top bit here is data - not a sign
+            if (Long.compareUnsigned(nodeKeyWithMask, keyWithMask) < 0) {
                 // compacted part is lower - no need to search for ceiling entry here
                 return null;
             } else if (keyWithMask != nodeKeyWithMask) {
@@ -276,12 +281,13 @@ public final class ArtNode48<V> implements IArtNode<V> {
 //                    String.format("%Xh", key & mask), String.format("%Xh", nodeKey & mask));
             final long keyWithMask = key & mask;
             final long nodeKeyWithMask = nodeKey & mask;
-            if (nodeKeyWithMask > keyWithMask) {
+            // unsigned - see the note in getCeilingValue
+            if (Long.compareUnsigned(nodeKeyWithMask, keyWithMask) > 0) {
                 // compacted part is higher - no need to search for floor entry here
                 return null;
             } else if (keyWithMask != nodeKeyWithMask) {
                 // find highest value, because compacted nodekey is lower
-                key = Long.MAX_VALUE;
+                key = UNSIGNED_MAX_KEY;
             }
         }
 
@@ -306,7 +312,7 @@ public final class ArtNode48<V> implements IArtNode<V> {
                     return (V) nodes[index];
                 } else {
                     // find first highest key
-                    return ((IArtNode<V>) nodes[index]).getFloorValue(Long.MAX_VALUE, nodeLevel - 8);
+                    return ((IArtNode<V>) nodes[index]).getFloorValue(UNSIGNED_MAX_KEY, nodeLevel - 8);
                 }
             }
         }

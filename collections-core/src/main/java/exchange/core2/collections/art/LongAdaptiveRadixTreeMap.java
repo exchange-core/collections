@@ -17,6 +17,7 @@ package exchange.core2.collections.art;
 
 import exchange.core2.collections.objpool.ObjectsPool;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -61,20 +62,33 @@ public final class LongAdaptiveRadixTreeMap<V> {
         objectsPool = ObjectsPool.createDefaultTestPool();
     }
 
+    /**
+     * A radix tree walks keys byte by byte, so it inevitably orders them as UNSIGNED - which puts
+     * every negative key after every positive one. Flipping the sign bit maps the signed order onto
+     * the unsigned one (it is an order-isomorphism), so the nodes can keep working with plain
+     * unsigned bytes while the public API behaves like {@code TreeMap<Long, V>}.
+     * <p>
+     * The conversion is its own inverse, hence one method used in both directions.
+     */
+    private static long flipSignBit(final long key) {
+        return key ^ Long.MIN_VALUE;
+    }
+
     public V get(final long key) {
         return root != null
-                ? root.getValue(key, INITIAL_LEVEL)
+                ? root.getValue(flipSignBit(key), INITIAL_LEVEL)
                 : null;
     }
 
     public void put(final long key, final V value) {
+        final long internalKey = flipSignBit(key);
         if (root == null) {
             final ArtNode4<V> node = objectsPool.get(ObjectsPool.ART_NODE_4, ArtNode4::new);
-            node.initFirstKey(key, value);
+            node.initFirstKey(internalKey, value);
             root = node;
         } else {
 
-            final IArtNode<V> upSizedNode = root.put(key, INITIAL_LEVEL, value);
+            final IArtNode<V> upSizedNode = root.put(internalKey, INITIAL_LEVEL, value);
             if (upSizedNode != null) {
                 // TODO put old into the pool
                 root = upSizedNode;
@@ -93,7 +107,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
 
     public void remove(final long key) {
         if (root != null) {
-            final IArtNode<V> downSizeNode = root.remove(key, INITIAL_LEVEL);
+            final IArtNode<V> downSizeNode = root.remove(flipSignBit(key), INITIAL_LEVEL);
             // ignore null because can not remove root
             if (downSizeNode != root) {
                 // TODO put old into the pool
@@ -125,16 +139,19 @@ public final class LongAdaptiveRadixTreeMap<V> {
     // TODO moveToAnotherKey(long oldKey, long newKey) - throw exception if not found
 
     public V getHigherValue(long key) {
+        // Long.MAX_VALUE is the top of the signed range - nothing can be above it.
         if (root != null && key != Long.MAX_VALUE) {
-            return root.getCeilingValue(key + 1, INITIAL_LEVEL);
+            return root.getCeilingValue(flipSignBit(key) + 1, INITIAL_LEVEL);
         } else {
             return null;
         }
     }
 
     public V getLowerValue(long key) {
-        if (root != null && key != 0) {
-            return root.getFloorValue(key - 1, INITIAL_LEVEL);
+        // Long.MIN_VALUE is the bottom of the signed range. The guard used to be "key != 0", which
+        // was the bottom of the UNSIGNED range - correct for the old, unsigned-ordered map only.
+        if (root != null && key != Long.MIN_VALUE) {
+            return root.getFloorValue(flipSignBit(key) - 1, INITIAL_LEVEL);
         } else {
             return null;
         }
@@ -142,7 +159,8 @@ public final class LongAdaptiveRadixTreeMap<V> {
 
     public int forEach(LongObjConsumer<V> consumer, int limit) {
         if (root != null) {
-            return root.forEach(consumer, limit);
+            // nodes hand out internal keys - flip them back before they reach the caller
+            return root.forEach((key, value) -> consumer.accept(flipSignBit(key), value), limit);
         } else {
             return 0;
         }
@@ -150,7 +168,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
 
     public int forEachDesc(LongObjConsumer<V> consumer, int limit) {
         if (root != null) {
-            return root.forEachDesc(consumer, limit);
+            return root.forEachDesc((key, value) -> consumer.accept(flipSignBit(key), value), limit);
         } else {
             return 0;
         }
@@ -166,7 +184,12 @@ public final class LongAdaptiveRadixTreeMap<V> {
 
     public List<Map.Entry<Long, V>> entriesList() {
         if (root != null) {
-            return root.entries();
+            final List<Map.Entry<Long, V>> internal = root.entries();
+            final List<Map.Entry<Long, V>> result = new ArrayList<>(internal.size());
+            for (Map.Entry<Long, V> entry : internal) {
+                result.add(new Entry<>(flipSignBit(entry.getKey()), entry.getValue()));
+            }
+            return result;
         } else {
             return Collections.emptyList();
         }

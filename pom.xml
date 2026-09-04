@@ -96,6 +96,7 @@
         <logback.version>1.6.3</logback.version>
         <jmh.version>1.37</jmh.version>
         <junit.version>4.13.2</junit.version>
+        <junit-quickcheck.version>1.0</junit-quickcheck.version>
         <mockito.version>5.23.0</mockito.version>
         <hamcrest.version>1.3</hamcrest.version>
 
@@ -277,6 +278,20 @@
                 <version>${junit.version}</version>
                 <scope>test</scope>
             </dependency>
+            <!-- property-based test oracle, from PR #1 by mpawlucz -->
+            <dependency>
+                <groupId>com.pholser</groupId>
+                <artifactId>junit-quickcheck-core</artifactId>
+                <version>${junit-quickcheck.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.pholser</groupId>
+                <artifactId>junit-quickcheck-generators</artifactId>
+                <version>${junit-quickcheck.version}</version>
+                <scope>test</scope>
+            </dependency>
+
             <dependency>
                 <groupId>org.mockito</groupId>
                 <artifactId>mockito-core</artifactId>
