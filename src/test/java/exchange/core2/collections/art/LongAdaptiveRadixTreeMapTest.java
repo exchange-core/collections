@@ -654,7 +654,7 @@ public class LongAdaptiveRadixTreeMapTest {
     }
 
 
-    private static <K, V> void checkStreamsEqual(final Stream<Map.Entry<K, V>> entry, final Stream<Map.Entry<K, V>> origEntry) {
+    public static <K, V> void checkStreamsEqual(final Stream<Map.Entry<K, V>> entry, final Stream<Map.Entry<K, V>> origEntry) {
         final Iterator<Map.Entry<K, V>> iter = entry.iterator();
         final Iterator<Map.Entry<K, V>> origIter = origEntry.iterator();
         while (iter.hasNext() && origIter.hasNext()) {
