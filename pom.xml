@@ -51,7 +51,7 @@
 
         <guava.version>28.2-jre</guava.version>
         <commons-math3.version>3.6.1</commons-math3.version>
-        <commons-lang3.version>3.10</commons-lang3.version>
+        <commons-lang3.version>3.18.0</commons-lang3.version>
         <eclipse.collections.version>10.2.0</eclipse.collections.version>
         <hdr.histogram.version>2.1.12</hdr.histogram.version>
         <agrona.version>1.4.1</agrona.version>
