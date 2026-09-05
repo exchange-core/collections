@@ -1,27 +1,15 @@
 package tests.pref;
 
 import tests.common.LatencyTools;
-import com.koloboke.collect.map.hash.HashLongLongMaps;
-import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
-import exchange.core2.collections.hashtable.ILongLongHashtable;
-import exchange.core2.collections.hashtable.LongLongHashtable;
-import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
-import javolution.util.FastMap;
 import net.openhft.affinity.AffinityLock;
-import net.openhft.chronicle.map.ChronicleMap;
-import net.openhft.chronicle.map.ChronicleMapBuilder;
 import org.HdrHistogram.Histogram;
 import org.agrona.collections.Long2LongHashMap;
-import org.eclipse.collections.impl.map.mutable.primitive.LongLongHashMap;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
 import java.util.*;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.LinkedBlockingQueue;
 
 public class LatencySideChannelAttackTest {
 
@@ -63,9 +51,7 @@ public class LatencySideChannelAttackTest {
 --add-opens=java.base/java.io=ALL-UNNAMED
 --add-opens=java.base/java.util=ALL-UNNAMED
              */
-//            final ChronicleMapBuilder<Long, Long> longsMapBuilder = ChronicleMapBuilder.of(Long.class, Long.class)
 //                    .name("long-long-benchmark-map").entries(4_000_000);
-//            final ChronicleMap<Long, Long> map = longsMapBuilder.create();
 
 //            LongAdaptiveRadixTreeMap<Long> map = new LongAdaptiveRadixTreeMap<>();
 

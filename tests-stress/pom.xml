@@ -5,12 +5,22 @@
     <parent>
         <groupId>exchange.core2</groupId>
         <artifactId>collections-parent</artifactId>
-        <version>1.0.0-SNAPSHOT</version>
+        <version>0.6.0-SNAPSHOT</version>
     </parent>
 
     <artifactId>tests-stress</artifactId>
     <name>${project.groupId}:${project.artifactId}</name>
     <description>Long-running correctness stress tests - run with -Pstress</description>
+
+    <properties>
+        <!-- internal module: never goes to Maven Central -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <!-- nexus-staging REPLACES maven-deploy-plugin, so it needs its own flag:
+             maven.deploy.skip alone does not stop it -->
+        <skipNexusStagingDeployMojo>true</skipNexusStagingDeployMojo>
+        <maven.javadoc.skip>true</maven.javadoc.skip>
+        <maven.source.skip>true</maven.source.skip>
+    </properties>
 
     <dependencies>
         <dependency>

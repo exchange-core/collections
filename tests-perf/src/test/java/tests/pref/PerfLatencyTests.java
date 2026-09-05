@@ -14,12 +14,8 @@ import exchange.core2.collections.hashtable.LongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
 import javolution.util.FastMap;
 import net.openhft.affinity.AffinityLock;
-import net.openhft.chronicle.map.ChronicleMap;
-import net.openhft.chronicle.map.ChronicleMapBuilder;
 import org.HdrHistogram.Histogram;
-import org.agrona.collections.Hashing;
 import org.agrona.collections.Long2LongHashMap;
-import org.junit.Assume;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -223,32 +219,6 @@ public class PerfLatencyTests {
                 this::benchmarkNonBlockingHashMapLong
         );
     }
-
-    @Test
-    public void benchmarkChronicleMap() {
-
-        // Chronicle (still in 2026.1) reaches for jdk.internal.ref.Cleaner, which no longer exists
-        // in recent JDKs - no --add-exports can bring back a deleted class.
-        Assume.assumeTrue("ChronicleMap needs a JDK that still ships jdk.internal.ref.Cleaner",
-                Runtime.version().feature() < 24);
-
-        benchmarkAbstract(
-                (long[] kv) -> {
-
-                    final ChronicleMapBuilder<Long, Long> longsMapBuilder =
-                            ChronicleMapBuilder.of(Long.class, Long.class)
-                                    .name("long-long-benchmark-map")
-                                    .entries(100_000_000);
-                    final ChronicleMap<Long, Long> longsMap =
-                            longsMapBuilder.create();
-
-                    for (long l : kv) longsMap.put(l, l);
-                    return longsMap;
-                },
-                this::benchmarkStd
-        );
-    }
-
 
     @Test
     public void benchmarkAdaptiveRadixTree() {

@@ -4,7 +4,7 @@
 
     <groupId>exchange.core2</groupId>
     <artifactId>collections-parent</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>0.6.0-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <modules>
@@ -100,7 +100,6 @@
         <mockito.version>5.23.0</mockito.version>
         <hamcrest.version>1.3</hamcrest.version>
 
-        <openhft.chronicle.wire.version>2.19.1</openhft.chronicle.wire.version>
 
     </properties>
 
@@ -163,20 +162,6 @@
                 <scope>test</scope>
             </dependency>
 
-
-<!--
-            <dependency>
-                <groupId>net.openhft</groupId>
-                <artifactId>chronicle-wire</artifactId>
-                <version>${openhft.chronicle.wire.version}</version>
-            </dependency>
--->
-
-            <dependency>
-                <groupId>net.openhft</groupId>
-                <artifactId>chronicle-map</artifactId>
-                <version>2026.1</version>
-            </dependency>
 
             <!-- Eclipse (Goldman Sachs) collections -->
             <dependency>
@@ -329,21 +314,8 @@
                                 <exclude>**/pref/**</exclude>
                                 <exclude>**/stress/**</exclude>
                             </excludes>
-                            <!-- Chronicle products need these on Java 11+, otherwise
-                                 benchmarkChronicleMap dies with IllegalAccessException.
-                                 See https://chronicle.software/chronicle-support-java-17 -->
-                            <argLine>
-                                --add-exports=java.base/jdk.internal.ref=ALL-UNNAMED
-                                --add-exports=java.base/sun.nio.ch=ALL-UNNAMED
-                                --add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED
-                                --add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED
-                                --add-opens=jdk.compiler/com.sun.tools.javac=ALL-UNNAMED
-                                --add-opens=java.base/java.lang=ALL-UNNAMED
-                                --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
-                                --add-opens=java.base/java.io=ALL-UNNAMED
-                                --add-opens=java.base/java.util=ALL-UNNAMED
-                                --enable-native-access=ALL-UNNAMED
-                            </argLine>
+                            <!-- net.openhft:affinity calls native code to pin threads -->
+                            <argLine>--enable-native-access=ALL-UNNAMED</argLine>
                         </configuration>
                     </plugin>
 
@@ -472,21 +444,8 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration combine.self="override">
                             <!--<argLine>-XX:+PrintApplicationStoppedTime</argLine>-->
-                            <!-- Chronicle products need these on Java 11+, otherwise
-                                 benchmarkChronicleMap dies with IllegalAccessException.
-                                 See https://chronicle.software/chronicle-support-java-17 -->
-                            <argLine>
-                                --add-exports=java.base/jdk.internal.ref=ALL-UNNAMED
-                                --add-exports=java.base/sun.nio.ch=ALL-UNNAMED
-                                --add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED
-                                --add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED
-                                --add-opens=jdk.compiler/com.sun.tools.javac=ALL-UNNAMED
-                                --add-opens=java.base/java.lang=ALL-UNNAMED
-                                --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
-                                --add-opens=java.base/java.io=ALL-UNNAMED
-                                --add-opens=java.base/java.util=ALL-UNNAMED
-                                --enable-native-access=ALL-UNNAMED
-                            </argLine>
+                            <!-- net.openhft:affinity calls native code to pin threads -->
+                            <argLine>--enable-native-access=ALL-UNNAMED</argLine>
                             <redirectTestOutputToFile>true</redirectTestOutputToFile>
                             <includes>
                                 <include>**/IT*.java</include>
