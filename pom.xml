@@ -79,9 +79,6 @@
         <java.version>26</java.version>
         <maven.compiler.release>26</maven.compiler.release>
 
-        <guava.version>33.7.1-jre</guava.version>
-        <commons-math3.version>3.6.1</commons-math3.version>
-        <commons-lang3.version>3.20.0</commons-lang3.version>
         <eclipse.collections.version>13.0.0</eclipse.collections.version>
         <hdr.histogram.version>2.2.2</hdr.histogram.version>
         <agrona.version>2.6.0</agrona.version>
@@ -94,13 +91,11 @@
         <affinity.version>2026.2</affinity.version>
         <slf4j.version>2.0.9</slf4j.version>
         <logback.version>1.6.3</logback.version>
-        <jmh.version>1.37</jmh.version>
         <junit.version>4.13.2</junit.version>
         <junit-quickcheck.version>1.0</junit-quickcheck.version>
-        <mockito.version>5.23.0</mockito.version>
-        <hamcrest.version>1.3</hamcrest.version>
 
 
+        <central.publishing.plugin.version>0.11.0</central.publishing.plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -175,28 +170,6 @@
                 <version>${eclipse.collections.version}</version>
             </dependency>
 
-            <!-- Google Guava -->
-            <dependency>
-                <groupId>com.google.guava</groupId>
-                <artifactId>guava</artifactId>
-                <version>${guava.version}</version>
-                <scope>test</scope>
-            </dependency>
-
-            <!-- Apache Commons -->
-            <dependency>
-                <groupId>org.apache.commons</groupId>
-                <artifactId>commons-lang3</artifactId>
-                <version>${commons-lang3.version}</version>
-                <scope>test</scope>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.commons</groupId>
-                <artifactId>commons-math3</artifactId>
-                <version>${commons-math3.version}</version>
-                <scope>test</scope>
-            </dependency>
-
             <!-- FastUtil -->
             <dependency>
                 <groupId>it.unimi.dsi</groupId>
@@ -242,20 +215,6 @@
                 <scope>test</scope>
             </dependency>
 
-            <!-- JMH -->
-            <dependency>
-                <groupId>org.openjdk.jmh</groupId>
-                <artifactId>jmh-core</artifactId>
-                <version>${jmh.version}</version>
-                <scope>test</scope>
-            </dependency>
-            <dependency>
-                <groupId>org.openjdk.jmh</groupId>
-                <artifactId>jmh-generator-annprocess</artifactId>
-                <version>${jmh.version}</version>
-                <scope>test</scope>
-            </dependency>
-
             <!-- unit tests -->
             <dependency>
                 <groupId>junit</groupId>
@@ -274,19 +233,6 @@
                 <groupId>com.pholser</groupId>
                 <artifactId>junit-quickcheck-generators</artifactId>
                 <version>${junit-quickcheck.version}</version>
-                <scope>test</scope>
-            </dependency>
-
-            <dependency>
-                <groupId>org.mockito</groupId>
-                <artifactId>mockito-core</artifactId>
-                <version>${mockito.version}</version>
-                <scope>test</scope>
-            </dependency>
-            <dependency>
-                <groupId>org.hamcrest</groupId>
-                <artifactId>hamcrest-library</artifactId>
-                <version>${hamcrest.version}</version>
                 <scope>test</scope>
             </dependency>
 
@@ -321,21 +267,6 @@
 
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-deploy-plugin</artifactId>
-                        <version>3.0.0-M1</version>
-                        <executions>
-                            <execution>
-                                <id>default-deploy</id>
-                                <phase>deploy</phase>
-                                <goals>
-                                    <goal>deploy</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                    </plugin>
-
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-release-plugin</artifactId>
                         <version>2.5.3</version>
                         <configuration>
@@ -353,15 +284,31 @@
                         </dependencies>
                     </plugin>
 
+                    <!--
+                        Publishing goes through the Central Publisher Portal. The old route -
+                        nexus-staging-maven-plugin against oss.sonatype.org - stopped working when
+                        OSSRH was shut down on 2025-06-30.
+
+                        Needs a portal token in settings.xml under the matching server id:
+
+                            <server>
+                                <id>central</id>
+                                <username>TOKEN_USERNAME</username>
+                                <password>TOKEN_PASSWORD</password>
+                            </server>
+
+                        The old OSSRH credentials do not work - generate a new token in the portal.
+                    -->
                     <plugin>
-                        <groupId>org.sonatype.plugins</groupId>
-                        <artifactId>nexus-staging-maven-plugin</artifactId>
-                        <version>1.6.8</version>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>${central.publishing.plugin.version}</version>
                         <extensions>true</extensions>
                         <configuration>
-                            <serverId>ossrh</serverId>
-                            <nexusUrl>https://oss.sonatype.org/</nexusUrl>
-                            <autoReleaseAfterClose>true</autoReleaseAfterClose>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>true</autoPublish>
+                            <waitUntil>published</waitUntil>
+                            <deploymentName>${project.groupId}:${project.artifactId}</deploymentName>
                         </configuration>
                     </plugin>
 
@@ -477,7 +424,7 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-gpg-plugin</artifactId>
-                        <version>1.6</version>
+                        <version>3.2.7</version>
                         <executions>
                             <execution>
                                 <id>sign-artifacts</id>
@@ -485,6 +432,13 @@
                                 <goals>
                                     <goal>sign</goal>
                                 </goals>
+                                <configuration>
+                                    <!-- gpg 2.1+ will not take a passphrase on stdin without it -->
+                                    <gpgArguments>
+                                        <arg>--pinentry-mode</arg>
+                                        <arg>loopback</arg>
+                                    </gpgArguments>
+                                </configuration>
                             </execution>
                         </executions>
                     </plugin>
@@ -493,16 +447,9 @@
         </profile>
     </profiles>
 
-    <distributionManagement>
-        <snapshotRepository>
-            <id>ossrh</id>
-            <url>https://oss.sonatype.org/content/repositories/snapshots</url>
-        </snapshotRepository>
-        <repository>
-            <id>ossrh</id>
-            <url>https://oss.sonatype.org/service/local/staging/deploy/maven2/
-            </url>
-        </repository>
-    </distributionManagement>
+    <!--
+        No <distributionManagement>: central-publishing-maven-plugin knows where the Portal is and
+        would ignore it anyway. The old OSSRH URLs that used to live here are dead.
+    -->
 
 </project>

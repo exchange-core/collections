@@ -15,9 +15,9 @@
     <properties>
         <!-- internal module: never goes to Maven Central -->
         <maven.deploy.skip>true</maven.deploy.skip>
-        <!-- nexus-staging REPLACES maven-deploy-plugin, so it needs its own flag:
-             maven.deploy.skip alone does not stop it -->
-        <skipNexusStagingDeployMojo>true</skipNexusStagingDeployMojo>
+        <!-- central-publishing-maven-plugin REPLACES maven-deploy-plugin, so it needs
+             its own flag: maven.deploy.skip alone does not stop it -->
+        <skipPublishing>true</skipPublishing>
         <maven.javadoc.skip>true</maven.javadoc.skip>
         <maven.source.skip>true</maven.source.skip>
     </properties>
