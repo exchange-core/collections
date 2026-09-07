@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>exchange.core2</groupId>
+        <artifactId>collections-parent</artifactId>
+        <version>0.6.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tests-common</artifactId>
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>Shared helpers for the benchmark and stress modules (not published for users)</description>
+
+    <properties>
+        <!-- internal module: never goes to Maven Central -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <!-- central-publishing-maven-plugin REPLACES maven-deploy-plugin, so it needs
+             its own flag: maven.deploy.skip alone does not stop it -->
+        <skipPublishing>true</skipPublishing>
+        <maven.javadoc.skip>true</maven.javadoc.skip>
+        <maven.source.skip>true</maven.source.skip>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.hdrhistogram</groupId>
+            <artifactId>HdrHistogram</artifactId>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <scope>compile</scope>
+        </dependency>
+    </dependencies>
+
+</project>

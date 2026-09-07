@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>exchange.core2</groupId>
+        <artifactId>collections-parent</artifactId>
+        <version>0.6.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tests-perf</artifactId>
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>Latency and throughput benchmarks - run with -Pbenchmarks, never in a plain build</description>
+
+    <properties>
+        <!-- internal module: never goes to Maven Central -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <!-- central-publishing-maven-plugin REPLACES maven-deploy-plugin, so it needs
+             its own flag: maven.deploy.skip alone does not stop it -->
+        <skipPublishing>true</skipPublishing>
+        <maven.javadoc.skip>true</maven.javadoc.skip>
+        <maven.source.skip>true</maven.source.skip>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>collections-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>tests-common</artifactId>
+        </dependency>
+
+        <!-- maps under comparison -->
+        <dependency>
+            <groupId>org.agrona</groupId>
+            <artifactId>agrona</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>it.unimi.dsi</groupId>
+            <artifactId>fastutil</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.carrotsearch</groupId>
+            <artifactId>hppc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>androidx.collection</groupId>
+            <artifactId>collection-jvm</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.jctools</groupId>
+            <artifactId>jctools-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.koloboke</groupId>
+            <artifactId>koloboke-api-jdk8</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.koloboke</groupId>
+            <artifactId>koloboke-impl-jdk8</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.javolution</groupId>
+            <artifactId>javolution-core-java</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>net.openhft</groupId>
+            <artifactId>affinity</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.collections</groupId>
+            <artifactId>eclipse-collections</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+</project>
