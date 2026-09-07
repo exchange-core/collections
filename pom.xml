@@ -4,7 +4,7 @@
 
     <groupId>exchange.core2</groupId>
     <artifactId>collections-parent</artifactId>
-    <version>0.6.0-SNAPSHOT</version>
+    <version>0.6.0</version>
     <packaging>pom</packaging>
 
     <modules>
@@ -31,7 +31,7 @@
         <url>https://github.com/exchange-core/collections.git</url>
         <connection>scm:git:git://github.com/exchange-core/collections.git</connection>
         <developerConnection>scm:git:ssh://git@github.com:exchange-core/collections.git</developerConnection>
-        <tag>HEAD</tag>
+        <tag>collections-parent-0.6.0</tag>
     </scm>
 
     <issueManagement>
@@ -341,7 +341,7 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
-                            <excludes combine.self="override"/>
+                            <excludes combine.self="override" />
                             <includes>
                                 <include>**/pref/*.java</include>
                             </includes>
@@ -360,7 +360,7 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
-                            <excludes combine.self="override"/>
+                            <excludes combine.self="override" />
                             <includes>
                                 <include>**/stress/*.java</include>
                             </includes>
