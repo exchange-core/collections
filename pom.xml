@@ -76,6 +76,7 @@
                 <configuration>
                     <localCheckout>true</localCheckout>
                     <pushChanges>false</pushChanges>
+                    <tagNameFormat>collections-@{project.version}</tagNameFormat>
                     <arguments>-DperformRelease=true -Dgpg.passphrase=${gpg.passphrase}</arguments>
                 </configuration>
                 <dependencies>
@@ -102,7 +103,7 @@
                     <publishingServerId>central</publishingServerId>
                     <autoPublish>true</autoPublish>
                     <waitUntil>published</waitUntil>
-                    <deploymentName>${project.groupId}:${project.artifactId}</deploymentName>
+                    <deploymentName>${project.groupId}:collections:${project.version}</deploymentName>
                 </configuration>
             </plugin>
 
