@@ -76,7 +76,7 @@
                 <configuration>
                     <localCheckout>true</localCheckout>
                     <pushChanges>false</pushChanges>
-                    <arguments>-Dgpg.passphrase=${gpg.passphrase}</arguments>
+                    <arguments>-DperformRelease=true -Dgpg.passphrase=${gpg.passphrase}</arguments>
                 </configuration>
                 <dependencies>
                     <dependency>
