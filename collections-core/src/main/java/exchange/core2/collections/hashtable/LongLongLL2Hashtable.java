@@ -5,6 +5,8 @@ import java.lang.ref.Cleaner;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.LongStream;
@@ -13,33 +15,14 @@ import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
 
 public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
-
-    // TODO remove
-    // private final Long2LongHashMap actions = new Long2LongHashMap(0L);
-
-
-//    private void setAction(long key, int flag) {
-//        actions.put(key, actions.get(key) | (1L << flag));
-//    }
-//
-//    public String getActions(long key) {
-//        String res = "";
-//        final long a = actions.get(key);
-//        for (int i = 0; i < 63; i++) {
-//            if ((a & (1L << i)) != 0) {
-//                res += (" " + i);
-//            }
-//        }
-//        return res;
-//    }
-
-
     public static final int DEFAULT_ARRAY_SIZE = 32;
+    public static final int DEFAULT_SYNC_RESIZE_BELOW = 8200;
 
     private final float upsizeThresholdPerc;
     private final float blockThresholdPerc;
 
     private final Executor executor;
+    private final int syncResizeBelow;
 
     private long[] data;
     private long size = 0;
@@ -52,7 +35,8 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     private HashtableAsync2Resizer resizer = null;
     private Cleaner.Cleanable resizerCleanable = null;
 
-    private static final Cleaner CLEANER = Cleaner.create();
+    // started at class init - see newMigratorExecutor() for affinity-pinned callers
+    private static final Cleaner CLEANER = Cleaner.create(r -> daemon(r, "ll2-cleaner"));
 
     /**
      * Must not hold a reference to the hashtable - only to the resizer - otherwise the table stays
@@ -103,11 +87,27 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
      * table authorizes the next segment, so a table abandoned mid-migration leaves a thread that
      * never terminates. As a non-daemon thread it also prevents the JVM from shutting down.
      */
-    private static final Executor DAEMON_EXECUTOR = job -> {
-        final Thread thread = new Thread(job);
+    private static final Executor DAEMON_EXECUTOR = job -> daemon(job, "ll2-migrator").start();
+
+    /**
+     * Thread-per-task daemon executor for callers pinned to a CPU (AffinityLock, taskset): a thread
+     * inherits the affinity of its creator, so DAEMON_EXECUTOR started from a pinned thread puts the
+     * migrator on that same core, time-sliced with the application. Here the migrators are started
+     * by a helper thread created now - call this before pinning. Initializes the class (and its
+     * Cleaner thread) on the calling thread as well.
+     */
+    public static Executor newMigratorExecutor() {
+        final ThreadPoolExecutor spawner = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(), r -> daemon(r, "ll2-spawner"));
+        spawner.prestartAllCoreThreads(); // helper thread created here, not lazily by the first (pinned) caller
+        return job -> spawner.execute(() -> daemon(job, "ll2-migrator").start());
+    }
+
+    private static Thread daemon(Runnable job, String name) {
+        final Thread thread = new Thread(job, name);
         thread.setDaemon(true);
-        thread.start();
-    };
+        return thread;
+    }
 
     public LongLongLL2Hashtable(Executor executor) {
         this(DEFAULT_ARRAY_SIZE, executor);
@@ -121,7 +121,18 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
      * Pass an unbounded / thread-per-task executor, or two separate ones.
      */
     public LongLongLL2Hashtable(int size, Executor executor) {
+        this(size, executor, DEFAULT_SYNC_RESIZE_BELOW);
+    }
+
+    /**
+     * Tables with fewer entries resize synchronously on the caller (~7.5ns per slot, 62us at 8192 slots). An async
+     * resize must get its array allocated within the upsize-to-block window (25% of the capacity in puts), so
+     * keep the default unless the executor starts a task within microseconds (a dedicated spinning thread):
+     * a thread-per-task executor needs 50-100us, with an AffinityLock even milliseconds.
+     */
+    public LongLongLL2Hashtable(int size, Executor executor, int syncResizeBelow) {
         this.executor = executor;
+        this.syncResizeBelow = syncResizeBelow;
         this.upsizeThresholdPerc = 0.65f;
         final int arraySize = HashingUtils.nextPositivePowerOfTwo((int) (size / upsizeThresholdPerc));
 
@@ -577,7 +588,8 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
             return;
         }
 
-        final boolean useSync = size < 8200;
+        // synchronous copy on the calling thread: ~7.5ns per slot, 62us at 8192 slots
+        final boolean useSync = size < syncResizeBelow;
 
         if (useSync) {
             final HashtableResizer hashtableResizer = new HashtableResizer(data);
@@ -611,7 +623,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
             knownProgressCached = initialPos;
 
-            allowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (initialPos + 1234) & (data.length - 1)); // TODO fix
+            allowedPosition = nextSegmentEnd(initialPos, initialPos);
           //  log.debug("initialPos={} allowedPosition={}", initialPos, allowedPosition);
             // NOTE: keep this in a local and never touch the 'resizer' field from the lambda below.
             // Reading the field would capture 'this', and the migrator thread would then keep the
@@ -622,15 +634,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
             resizer = newResizer;
             arrayFeature = null;
 
-            final String threadName = Thread.currentThread().getName();
-            copyingProcess = CompletableFuture.runAsync(
-                    () -> {
-                        final String prevThreadName = Thread.currentThread().getName(); // TODO remove
-                        Thread.currentThread().setName(threadName + "COPY");
-                        newResizer.copy();
-                        Thread.currentThread().setName(prevThreadName);
-                    },
-                    executor);
+            copyingProcess = CompletableFuture.runAsync(newResizer::copy, executor);
 
             // safety net for a forgotten close(): stop the migrator once the table is unreachable
             resizerCleanable = CLEANER.register(this, new MigratorShutdown(newResizer));
@@ -772,6 +776,27 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
                 + " copyingProcessDone=" + (copyingProcess != null && copyingProcess.isDone());
     }
 
+    /**
+     * Segment = 1/16 of the table, clamped: small tables get small segments (async migration works for any size),
+     * large ones keep a bounded segment - an access to a position authorized but not yet copied waits for the
+     * migrator to copy up to it, so the segment size bounds that wait (~10-50us at 1024 slots).
+     */
+    private static final int SEGMENTS_PER_MIGRATION = 16;
+    private static final int MIN_SEGMENT_LONGS = 32;
+    private static final int MAX_SEGMENT_LONGS = 2048;
+
+    /**
+     * Next migration boundary: the first gap at least one segment after 'from' (boundaries must be gaps - no
+     * cluster crosses them). Returns the starting position (= last segment) if that gap would wrap past it.
+     */
+    private int nextSegmentEnd(int from, int startingPosition) {
+        final int len = data.length;
+        final int step = Math.min(MAX_SEGMENT_LONGS, Math.max(MIN_SEGMENT_LONGS, (len / SEGMENTS_PER_MIGRATION) & ~1));
+        final int gap = HashtableAsync2Resizer.findNextGapPos(data, (from + step) & (len - 1));
+        // ring distance from the start: a valid boundary lies further than 'from'
+        return ((gap - startingPosition) & (len - 1)) > ((from - startingPosition) & (len - 1)) ? gap : startingPosition;
+    }
+
     private void enableNextMigrationSegmentOrFinishMigration() {
         final int startingPosition = resizer.getStartingPosition();
 
@@ -783,14 +808,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         } else {
 
 
-            //log.debug("findNextGapPos after {}", (allowedPosition + 3114) & (data.length - 1));
-
-            int newAllowedPosition = HashtableAsync2Resizer.findNextGapPos(data, (allowedPosition + 2114) & (data.length - 1));
-
-            if (!resizer.isInOldData(newAllowedPosition, allowedPosition)) { // TODO check correctness
-                //log.debug("Override newAllowedPosition={} with startingPosition={}", newAllowedPosition, startingPosition);
-                newAllowedPosition = startingPosition;
-            }
+            final int newAllowedPosition = nextSegmentEnd(allowedPosition, startingPosition);
 
             //log.debug("new allowedPosition: {} (data_len={})", newAllowedPosition, data.length);
 

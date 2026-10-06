@@ -18,8 +18,10 @@ and designed for low-latency, single-threaded hot paths.
 
 ### Requirements
 
-- Java 26+
-- Maven 3.9+
+- **To use the published artifacts:** Java 26+ (0.6.0). The next release drops the published
+  bytecode level to Java 17.
+- **To build from source:** JDK 26 and Maven 3.9+ — the benchmark and stress modules use newer
+  language APIs than the published ones.
 
 ### Installation
 

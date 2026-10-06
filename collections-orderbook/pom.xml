@@ -12,6 +12,10 @@
     <name>${project.groupId}:${project.artifactId}</name>
     <description>Order book implementations built on exchange-core2 collections</description>
 
+    <properties>
+                <maven.compiler.release>${published.compiler.release}</maven.compiler.release>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>${project.groupId}</groupId>

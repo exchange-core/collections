@@ -161,7 +161,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <java.version>26</java.version>
-        <maven.compiler.release>26</maven.compiler.release>
+        <maven.compiler.release>${java.version}</maven.compiler.release>
+        <published.compiler.release>${java.version}</published.compiler.release>
 
         <eclipse.collections.version>13.0.0</eclipse.collections.version>
         <hdr.histogram.version>2.2.2</hdr.histogram.version>
@@ -397,6 +398,33 @@
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+
+        <!--
+            Published artifacts target an older, widely deployed JDK than the one we develop
+            against. The compiler's release option is a hard check against that JDK's API, so a
+            newer API sneaking into collections-core or collections-orderbook fails the RELEASE
+            build loudly - it can never end up in a jar that then refuses to load on the
+            consumer's JVM.
+
+            The trade-off is that the failure is late. To run the same check on demand:
+                mvn -DperformRelease=true clean verify
+
+            Floor is 17, set by agrona 2.x (Java 17 class files) in collections-orderbook.
+            collections-core has no compile-scope dependencies at all and would go as low as 9
+            (java.lang.ref.Cleaner, Thread.onSpinWait).
+        -->
+        <profile>
+            <id>release-bytecode</id>
+            <activation>
+                <property>
+                    <name>performRelease</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <properties>
+                <published.compiler.release>17</published.compiler.release>
+            </properties>
         </profile>
 
         <!-- GPG Signature on release -->
