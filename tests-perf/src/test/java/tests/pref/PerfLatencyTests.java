@@ -8,12 +8,12 @@ import com.koloboke.collect.map.hash.HashLongLongMap;
 import com.koloboke.collect.map.hash.HashLongLongMaps;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import org.jctools.maps.NonBlockingHashMapLong;
+import exchange.core2.collections.affinity.CpuAffinity;
 import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
 import exchange.core2.collections.hashtable.ILongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
 import javolution.util.FastMap;
-import net.openhft.affinity.AffinityLock;
 import org.HdrHistogram.Histogram;
 import org.agrona.collections.Long2LongHashMap;
 import org.junit.Test;
@@ -57,8 +57,8 @@ public class PerfLatencyTests {
 
     final Executor CORE_LOCK_EXECUTOR = task -> {
         Thread thread = new Thread(() -> {
-            try (AffinityLock affinityLock = AffinityLock.acquireCore()) {
-                Thread.currentThread().setName("AFC" + affinityLock.cpuId());
+            try (CpuAffinity affinity = CpuAffinity.acquireCore()) {
+                Thread.currentThread().setName("AFC" + affinity.cpu());
                 task.run();
             }
         });
@@ -241,7 +241,7 @@ public class PerfLatencyTests {
         final KeyGenerator keys0 = new KeyGenerator(seed);
         log.info("Key profile: {}, offered rate: {} tps, load factor: {}", KEY_PROFILE, TPS, LOAD_FACTOR);
 
-        try (AffinityLock ignore = AffinityLock.acquireCore()) {
+        try (CpuAffinity ignore = CpuAffinity.acquireCore()) {
 
             // ---- warm up on a THROWAWAY instance, unthrottled ----
             // The factory fills whatever keys it is handed, so handing it WARMUP_ENTRIES keys is a
@@ -667,8 +667,8 @@ public class PerfLatencyTests {
         final int bufSize = 1000_000;
 
         Runnable randomGenerator = () -> {
-            try (AffinityLock affinityLock = AffinityLock.acquireCore()) {
-                log.debug("Core for random generator: {}", affinityLock);
+            try (CpuAffinity affinity = CpuAffinity.acquireCore()) {
+                log.debug("Core for random generator: {}", affinity);
                 Random rand = new Random();
                 do {
 //                    log.debug("Allocating array...");
@@ -689,7 +689,7 @@ public class PerfLatencyTests {
         }
 
         //try {
-        try (AffinityLock ignore = AffinityLock.acquireCore()) {
+        try (CpuAffinity ignore = CpuAffinity.acquireCore()) {
             final int prefills = 5;
             final ILongLongHashtable map = new LongLongLL2Hashtable(1000000, CORE_LOCK_EXECUTOR);
             //ILongLongHashtable map = new LongLongHashtable();

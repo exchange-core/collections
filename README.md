@@ -13,13 +13,15 @@ and designed for low-latency, single-threaded hot paths.
 |-------------------------|-------------------------|---------------------------------------------------------------|
 | `collections-core`      | `collections-core`      | Adaptive Radix Tree, long-long hashtables, objects pool        |
 | `collections-orderbook` | `collections-orderbook` | Order book implementation built on top of the core collections |
+| `collections-affinity`  | `collections-affinity`  | Pinning threads to CPU cores (Linux, Windows), no dependencies |
 | `tests-perf`            | –                       | Latency / throughput benchmarks (not published)                |
 | `tests-stress`          | –                       | Long-running randomized stress tests (not published)           |
 
 ### Requirements
 
 - **To use the published artifacts:** Java 26+ (0.6.0). The next release drops the published
-  bytecode level to Java 17.
+  bytecode level to Java 17; `collections-affinity` (new) needs Java 22+, as it uses the Foreign
+  Function and Memory API.
 - **To build from source:** JDK 26 and Maven 3.9+ — the benchmark and stress modules use newer
   language APIs than the published ones.
 
@@ -251,6 +253,34 @@ Pool slots are identified by the `int` constants on `ObjectsPool`: `ORDER`, `DIR
 
 ---
 
+## Thread affinity
+
+`collections-affinity` pins a thread to one CPU and reserves its whole physical core (hyper-threading
+siblings included) — within the process and, through lock files, across processes on the same machine.
+Linux (`sched_setaffinity`) and Windows (`SetThreadAffinityMask`, processor group 0); elsewhere the handle
+reports that nothing was pinned. It calls the OS through the Foreign Function and Memory API: Java 22+, no
+native library, and it also works in a GraalVM native image.
+
+```java
+import exchange.core2.collections.affinity.CpuAffinity;
+
+try (CpuAffinity affinity = CpuAffinity.acquireCore()) {   // or acquireCore(cpu)
+    // hot loop on affinity.cpu()
+}
+```
+
+- `acquireCore()` takes the highest free core from the reserved CPUs: `-Daffinity.reserved=<hex mask>`
+  (e.g. `AAAA` = CPUs 1,3,…,15), otherwise the kernel's isolated CPUs (`isolcpus`). If none is free it
+  returns a handle that is not pinned (`isPinned()`), it never throws.
+- `acquireCore(int cpu)` pins to that CPU and throws `IllegalStateException` if its core is held.
+- `close()` restores the thread's previous mask and releases the core — call it from the pinned thread.
+- Run with `--enable-native-access=ALL-UNNAMED` to avoid the JDK's restricted-method warning.
+- Lock files: `exchange-core2-cpu-<n>.lock` in `-Daffinity.lockDir` (default `java.io.tmpdir`).
+- Threads started by a pinned thread inherit its single-CPU mask: start helper threads (e.g.
+  `LongLongLL2Hashtable.newMigratorExecutor()`) before pinning.
+
+---
+
 ## Order book
 
 `collections-orderbook` contains the `IOrderBook` interface and a naive reference implementation
@@ -289,8 +319,8 @@ mvn -pl tests-stress test
 mvn -pl tests-perf test
 ```
 
-Benchmarks are latency-sensitive: run them on an idle machine, ideally with CPU isolation and thread
-affinity enabled.
+Benchmarks are latency-sensitive: run them on an idle machine, ideally with CPU isolation — the
+measuring threads pin themselves to the isolated CPUs through `collections-affinity`.
 
 ### Contributing
 Exchange Collections is an open-source project and contributions are welcome!

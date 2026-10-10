@@ -9,6 +9,7 @@
 
     <modules>
         <module>collections-core</module>
+        <module>collections-affinity</module>
         <module>collections-orderbook</module>
         <module>tests-common</module>
         <module>tests-perf</module>
@@ -64,7 +65,7 @@
                         <exclude>**/pref/**</exclude>
                         <exclude>**/stress/**</exclude>
                     </excludes>
-                    <!-- net.openhft:affinity calls native code to pin threads -->
+                    <!-- collections-affinity pins threads through the FFM API (restricted methods) -->
                     <argLine>--enable-native-access=ALL-UNNAMED</argLine>
                 </configuration>
             </plugin>
@@ -173,7 +174,6 @@
         <jctools.version>4.0.7</jctools.version>
         <koloboke.version>1.0.0</koloboke.version>
         <javolution.version>6.0.0</javolution.version>
-        <affinity.version>2026.2</affinity.version>
         <slf4j.version>2.0.9</slf4j.version>
         <logback.version>1.6.3</logback.version>
         <junit.version>4.13.2</junit.version>
@@ -210,11 +210,6 @@
                 <artifactId>javolution-core-java</artifactId>
                 <version>${javolution.version}</version>
             </dependency>
-            <dependency>
-                <groupId>net.openhft</groupId>
-                <artifactId>affinity</artifactId>
-                <version>${affinity.version}</version>
-            </dependency>
 
             <!-- own modules -->
             <dependency>
@@ -225,6 +220,11 @@
             <dependency>
                 <groupId>${project.groupId}</groupId>
                 <artifactId>collections-orderbook</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>${project.groupId}</groupId>
+                <artifactId>collections-affinity</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -381,7 +381,7 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration combine.self="override">
                             <!--<argLine>-XX:+PrintApplicationStoppedTime</argLine>-->
-                            <!-- net.openhft:affinity calls native code to pin threads -->
+                            <!-- collections-affinity pins threads through the FFM API (restricted methods) -->
                             <argLine>--enable-native-access=ALL-UNNAMED</argLine>
                             <redirectTestOutputToFile>true</redirectTestOutputToFile>
                             <includes>

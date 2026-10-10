@@ -1,8 +1,8 @@
 package tests.pref;
 
 import tests.common.LatencyTools;
+import exchange.core2.collections.affinity.CpuAffinity;
 import exchange.core2.collections.hashtable.HashingUtils;
-import net.openhft.affinity.AffinityLock;
 import org.HdrHistogram.Histogram;
 import org.agrona.collections.Hashing;
 import org.agrona.collections.MutableInteger;
@@ -23,7 +23,7 @@ public class HiccupCalibrationTest {
 
         Thread thread = new Thread(() -> {
 //            int size = 1024 * 1024 * 1;
-            try (AffinityLock ignore = AffinityLock.acquireCore()) {
+            try (CpuAffinity ignore = CpuAffinity.acquireCore()) {
                 int size = 1024;
                 while (true) {
                     try {
@@ -43,7 +43,7 @@ public class HiccupCalibrationTest {
 
         int n = 100_000_000;
 
-        try (AffinityLock ignore = AffinityLock.acquireCore()) {
+        try (CpuAffinity ignore = CpuAffinity.acquireCore()) {
 
             Random rand = new Random(1L);
             final long[] keys = new long[n];

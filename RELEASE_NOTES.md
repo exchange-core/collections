@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- **`collections-affinity`: pinning threads to CPU cores.** `CpuAffinity.acquireCore()` pins the calling
+  thread to a free core of the reserved CPUs (`isolcpus` or `-Daffinity.reserved`), reserving all its
+  hyper-threading siblings, within the process and across processes (lock files). Linux and Windows,
+  through the Foreign Function and Memory API: Java 22+, no dependencies, no native library, works in a
+  GraalVM native image (reachability metadata included). Replaces OpenHFT Affinity (JNA) in the benchmarks;
+  `net.openhft:affinity` is no longer used anywhere in the build.
+
 ### Changed
 
 - **Published artifacts are now compiled for Java 17 instead of Java 26.** `collections-core` and

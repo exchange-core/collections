@@ -1,7 +1,7 @@
 package tests.pref;
 
 import tests.common.LatencyTools;
-import net.openhft.affinity.AffinityLock;
+import exchange.core2.collections.affinity.CpuAffinity;
 import org.HdrHistogram.Histogram;
 import org.agrona.collections.Long2LongHashMap;
 import org.junit.Test;
@@ -19,7 +19,7 @@ public class LatencySideChannelAttackTest {
     public void testLatencyAttach() {
 
 
-        try (AffinityLock ignore = AffinityLock.acquireCore()) {
+        try (CpuAffinity ignore = CpuAffinity.acquireCore()) {
 
             Random rand = new Random(-761253);
 

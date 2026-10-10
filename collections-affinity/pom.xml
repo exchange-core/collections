@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>exchange.core2</groupId>
+        <artifactId>collections-parent</artifactId>
+        <version>0.6.1-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>collections-affinity</artifactId>
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>Pinning threads to CPU cores (Linux, Windows) through the Foreign Function and Memory API - no runtime dependencies</description>
+
+    <properties>
+        <!-- the FFM API is final since Java 22: fixed here, independent of java.version and of the
+             release-bytecode profile, so every build checks the published floor -->
+        <maven.compiler.release>22</maven.compiler.release>
+    </properties>
+
+    <!-- DELIBERATELY EMPTY at compile scope, like collections-core -->
+    <dependencies>
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+</project>

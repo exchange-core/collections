@@ -90,7 +90,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     private static final Executor DAEMON_EXECUTOR = job -> daemon(job, "ll2-migrator").start();
 
     /**
-     * Thread-per-task daemon executor for callers pinned to a CPU (AffinityLock, taskset): a thread
+     * Thread-per-task daemon executor for callers pinned to a CPU (collections-affinity, taskset): a thread
      * inherits the affinity of its creator, so DAEMON_EXECUTOR started from a pinned thread puts the
      * migrator on that same core, time-sliced with the application. Here the migrators are started
      * by a helper thread created now - call this before pinning. Initializes the class (and its
@@ -128,7 +128,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
      * Tables with fewer entries resize synchronously on the caller (~7.5ns per slot, 62us at 8192 slots). An async
      * resize must get its array allocated within the upsize-to-block window (25% of the capacity in puts), so
      * keep the default unless the executor starts a task within microseconds (a dedicated spinning thread):
-     * a thread-per-task executor needs 50-100us, with an AffinityLock even milliseconds.
+     * a thread-per-task executor needs 50-100us, more if each new thread pins itself to a core.
      */
     public LongLongLL2Hashtable(int size, Executor executor, int syncResizeBelow) {
         this.executor = executor;
