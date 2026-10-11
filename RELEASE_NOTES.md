@@ -28,6 +28,18 @@
   zero-length table that failed on the first `put` with `ArrayIndexOutOfBoundsException`, and sizes from
   ~349 million up threw `NegativeArraySizeException`. Both tables now throw `IllegalArgumentException` for
   a negative size or one above the maximum capacity (2^29 slots).
+- **`LongLongLL2Hashtable` could lose keys during a migration.** Keys whose home is already migrated go
+  straight into the new array, while the migrator copies the next segment into the same array. When such a
+  key's cluster grew past the migration frontier, both threads wrote the same slots without synchronization:
+  the entry of one of them was lost, and `size()` no longer matched the contents. Inserts and removals that
+  reach the frontier now wait until the migrator finishes its segment (at most 1024 slots). Rare with random
+  keys and the default settings — about one write in 20 000 during a migration reaches the frontier — but in
+  a stress test that kept growing clusters across the frontier, 15% of the tables lost keys.
+- **`LongLongLL2Hashtable.put` could fail with `IllegalStateException` ("stuck waiting for migration")**
+  at the 90% block threshold. A put reaching the migration start extends the migrated area backwards; when
+  that moved the start onto the migrator's position, the migrator waited for an authorization that never
+  came, and the put waited for the migrator until the 10 s hang detection. Seen with small tables migrated
+  asynchronously (low `syncResizeBelow`).
 
 ### Removed
 

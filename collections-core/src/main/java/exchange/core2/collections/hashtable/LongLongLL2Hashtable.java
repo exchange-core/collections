@@ -172,12 +172,13 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
             if (size >= blockThreshold) {
 
+                // The application outran the migrator: authorize the rest and wait until it is copied. Not by
+                // joining the copy task - after a backward extension (below) the migrator can already sit at the
+                // starting position, waiting for an authorization, and then it never returns on its own.
+                // switchToNewArray() stops it.
                 allowedPosition = resizer.getStartingPosition();
                 resizer.setAllowedPosition(allowedPosition);
-                // log.debug("A knownProgressCached = {} (allowedPosition={})", knownProgressCached, allowedPosition);
-
-                awaitFuture(copyingProcess, "migration");
-
+                awaitAllowedPositionReached();
                 switchToNewArray();
 
             } else if (knownProgressCached == allowedPosition) {
@@ -262,6 +263,9 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
                 // have to extend migrated area and shift starting position back
                 // assuming it can only reach allowedPosition, but not before
 
+                // the entries are copied into the new array by this thread - not while the migrator writes there
+                awaitAllowedPositionReached();
+
                 //log.debug("PUT {}: RARE Extending backwards section g0={}", key, g0);
                 do {
                     if (g0 == 0) {
@@ -314,53 +318,30 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
         // pos is not applicable for migrated array (2x larger), calculating offsetNew
         final long[] dataNew = resizer.getNewDataArray();
-        final int offsetNew = HashingUtils.findFreeOffset(key, dataNew, resizer.getNewMask());
+        final int newHome = (hash & resizer.getNewMask()) << 1;
+        int offsetNew = HashingUtils.findFreeOffset(key, newHome, dataNew);
 
+        if (dataNew[offsetNew] != key && knownProgressCached != allowedPosition && reachesFrontier(newHome, offsetNew)) {
+            // a new entry past the frontier would go where the migrator is writing right now, and neither thread
+            // sees the other's writes - let it finish the segment first (bounded by the segment size)
+            awaitAllowedPositionReached();
+            offsetNew = HashingUtils.findFreeOffset(key, newHome, dataNew);
+        }
 
-   //     boolean logLastRes = false;
+        return putInternalInsert(dataNew, offsetNew, key, value);
+    }
 
-        // rare scenario: offset reached gp - can not just put there -  must stay always empty
-        // just re-read gp
-        // assume nothing can be inserted at gp offsets
-//        while ((offsetNew & mask) == knownProgressCached) { // TODO incorrect ??? check assumption (mask)
-//            logLastRes = true;
-//            log.debug("PUT {}: RARE offset offsetNew ({}) & mask == knownProgressCached ({})", key, offsetNew, knownProgressCached);
-//            Thread.yield();
-//            knownProgressCached = resizer.getProcessedPosition();
-//
-//            if (knownProgressCached == allowedPosition) {
-//                log.debug("PUT {}: RARE knownProgressCached {} = allowedPosition = {}", key, knownProgressCached, allowedPosition);
-//
-//                enableNextMigrationSegmentOrFinishMigration();
-//                if (resizer == null) {
-//                    final int offset1 = HashingUtils.findFreeOffset(key, data, mask);
-//                    long prevVal = putInternalInsert(data, offset1, key, value);
-//                    log.debug("PUT {}: RARE migration finished, put normally offset1={}, prevVal={}", key, offset1, prevVal);
-//                    return prevVal;
-//                    //break;
-//                }
-//
-//                // TODO this case more complicated???
-//            }
-//            // log.debug("PUT {}: RARE finished resizer={}", key, resizer);
-//        }
-
-//        if ((offsetNew & mask) == knownProgressCached) {
-//            try {
-//                Thread.sleep(10000000000L);
-//            } catch (InterruptedException e) {
-//                throw new RuntimeException(e);
-//            }
-//        }
-
-//        setAction(key, 17);
-
-
-        long prevVal = putInternalInsert(dataNew, offsetNew, key, value);
-
-        // TODO how is it possible to read non 0 value from GP ?
-      //  if (logLastRes) log.debug("PUT {}: RARE proceeded normally offsetNew={}, prevVal={} newVal={}", key, offsetNew, prevVal, value);
-        return prevVal;
+    /**
+     * While a segment is in flight the migrator writes the new array from the frontier on: its entries come from old
+     * positions past knownProgressCached, so in both halves of the new array their homes are at least frontier + 2.
+     * Everything before that belongs to the application. True if the probe from home to end (inclusive) gets there.
+     */
+    private boolean reachesFrontier(int home, int end) {
+        final int ringMask = (data.length << 1) - 1;
+        final int distance = (end - home) & ringMask;
+        final int frontier = knownProgressCached + 2;
+        return ((frontier - home) & ringMask) <= distance
+                || ((frontier + data.length - home) & ringMask) <= distance;
     }
 
 
@@ -487,8 +468,16 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
 //        setAction(key, 59);
 
+        final long[] dataNew = resizer.getNewDataArray();
+        final int newHome = (hash & resizer.getNewMask()) << 1;
+        if (knownProgressCached != allowedPosition
+                && reachesFrontier(newHome, HashtableAsync2Resizer.findNextGapPos(dataNew, newHome))) {
+            // the removal shifts entries back along the whole cluster - not while the migrator writes its end
+            awaitAllowedPositionReached();
+        }
+
         // log.debug("REMOVE {}: migrated, removing from new", key);
-        final long val = removeInternal(key, hash, resizer.getNewDataArray(), resizer.getNewMask());
+        final long val = removeInternal(key, hash, dataNew, resizer.getNewMask());
         //    log.debug("REMOVE {}: Returning val={}", key, val);
         // migrated now
 
@@ -709,6 +698,9 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
             Thread.onSpinWait();
 
             if ((++spins & HANG_CHECK_SPIN_MASK) == 0) {
+                if (copyingProcess != null && copyingProcess.isCompletedExceptionally()) {
+                    awaitFuture(copyingProcess, "migration"); // rethrows the migrator's failure
+                }
                 final long now = System.nanoTime();
                 if (deadline == 0) {
                     deadline = now + HANG_DETECT_NANOS;

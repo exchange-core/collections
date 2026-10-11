@@ -1,0 +1,348 @@
+package exchange.core2.collections.hashtable;
+
+import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
+import java.lang.reflect.Field;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+
+/**
+ * Interleavings of the application thread with the migrator, set up step by step: the copying task the table
+ * submits is held back, the test copies segments itself (as {@link HashtableAsync2Resizer#copyInterval} and doCopy
+ * would) and hands over to the real task when the scenario is set up. Where the migrator pauses, the real one can
+ * be preempted - or its stores can still sit in the store buffer.
+ * <p>
+ * The same interleavings with real threads: LongLongLL2HashtableFrontierRaceStressTest in tests-stress.
+ */
+public class LongLongLL2HashtableMigrationInterleavingTest {
+
+    private static final Logger log = LoggerFactory.getLogger(LongLongLL2HashtableMigrationInterleavingTest.class);
+
+    private static final Field RESIZER = field("resizer");
+    private static final Field ARRAY_FEATURE = field("arrayFeature");
+    private static final Field DATA = field("data");
+
+    private static final VarHandle TO_PROCESS = resizerField("toProcessPosition");
+    private static final VarHandle ALLOWED = resizerField("allowedPosition");
+
+    /** how long a paused migrator waits for the application before it carries on anyway */
+    private static final long MIGRATOR_PAUSE_MS = 100;
+
+    /**
+     * Keys whose home is migrated go straight into the new array. Inserted homed one slot below the frontier, they
+     * grow a cluster across it - up to the slot the migrator has already chosen for the first entry of its segment
+     * but not written yet. The migrator then overwrote the application's key.
+     */
+    @Test
+    public void app_insert_across_migration_frontier_must_not_be_lost() throws Exception {
+        int scenarios = 0;
+        int corrupted = 0;
+        for (long seed = 1; seed <= 20; seed++) {
+            final Boolean ok = insertAcrossFrontier(seed);
+            if (ok != null) {
+                scenarios++;
+                if (!ok) {
+                    corrupted++;
+                }
+            }
+        }
+        log.info("scenarios={} corrupted={}", scenarios, corrupted);
+        assertTrue("no seed produced the scenario", scenarios > 0);
+        assertEquals("keys lost in " + corrupted + " of " + scenarios + " scenarios", 0, corrupted);
+    }
+
+    /**
+     * A put reaching the starting position extends the migrated area backwards and moves the starting position -
+     * possibly onto the migrator's position, after the migrator checked it. That migrator now waits for an
+     * authorization, and a put at the block threshold used to join its task: it never ended, the put failed with
+     * IllegalStateException after the 10s hang detection.
+     * <p>
+     * 64 slots, upsize at 41 entries, block at 57. Old array: slot 0 = starting position and slot 16 = end of the
+     * first segment are gaps; slots 17..63 are filled into one cluster, so the next key homed there wraps to slot 0.
+     */
+    @Test(timeout = 60_000)
+    public void put_at_block_threshold_after_backward_extension_must_not_hang() throws Exception {
+
+        final Harness h = new Harness(41);
+        final Map<Long, Long> ref = new HashMap<>();
+        long nextKey = 1;
+
+        // 9 entries in slots 1..9, 32 in slots 17..48 - each home is its slot; the 41st put allocates the new array
+        for (int slot = 1; slot <= 48; slot++) {
+            if (slot <= 9 || slot >= 17) {
+                final long key = keyWithSlot(nextKey, slot, 63);
+                nextKey = key + 1;
+                h.table.put(key, slot);
+                ref.put(key, (long) slot);
+            }
+        }
+        assertNotNull(ARRAY_FEATURE.get(h.table));
+
+        // the first put starts the migration; 15 keys homed at slot 17 fill slots 49..63 of the old array
+        final long[] fill = new long[16];
+        for (int i = 0; i < fill.length; i++) {
+            fill[i] = keyWithSlot(nextKey, 17, 63);
+            nextKey = fill[i] + 1;
+        }
+        for (int i = 0; i < 15; i++) {
+            h.table.put(fill[i], 1000 + i);
+            ref.put(fill[i], 1000L + i);
+        }
+        final HashtableAsync2Resizer r = h.resizer();
+        assertEquals("starting position", 0, r.getStartingPosition());
+        assertEquals("end of the first segment", 32, (int) ALLOWED.getVolatile(r));
+        assertEquals(56, h.table.size());
+
+        // migrator: copies the first segment and checks the starting position (0, not done) - then publishes the
+        // progress only once the extension has happened, or after the pause
+        final CountDownLatch extended = new CountDownLatch(1);
+        final Thread migrator = h.startMigrator(() -> {
+            r.copyInterval(2, 32);
+            extended.await(MIGRATOR_PAUSE_MS, TimeUnit.MILLISECONDS);
+            TO_PROCESS.setVolatile(r, 32);
+        });
+
+        // homed at slot 17, wraps to the starting position: extension back to slot 16 - the migrator's position
+        h.table.put(fill[15], 2000);
+        ref.put(fill[15], 2000L);
+        extended.countDown();
+        assertEquals("starting position moved onto the migrator", 32, r.getStartingPosition());
+        assertEquals(57, h.table.size());
+
+        // at the block threshold
+        final long key = keyWithSlot(nextKey, 5, 63);
+        h.table.put(key, 3000);
+        ref.put(key, 3000L);
+
+        h.close(migrator);
+        assertEquals(0, h.verify(ref, "extension"));
+    }
+
+    /** @return null if the seed does not produce the scenario, otherwise whether no key was lost */
+    private static Boolean insertAcrossFrontier(long seed) throws Exception {
+
+        // 2048 slots, the first resize (at 1331 entries) is already asynchronous
+        final Harness h = new Harness(1000);
+        final Map<Long, Long> ref = new HashMap<>();
+        final Random rand = new Random(seed);
+
+        while (ARRAY_FEATURE.get(h.table) == null) {
+            final long key = rand.nextLong() | 1L;
+            final long value = rand.nextLong();
+            h.table.put(key, value);
+            ref.put(key, value);
+        }
+
+        final long[] old = (long[]) DATA.get(h.table);
+        final int len = old.length;              // longs in the old array
+        final int oldSlotMask = (len >> 1) - 1;
+        final int newSlotMask = len - 1;         // the new array has twice the slots
+
+        // keys homed in the last quarter stay in the old array for the first segments
+        long nextKey = seed * 1_000_000_007L;
+        final long farKey1 = keyWithSlot(nextKey, (len >> 1) * 3 / 4, oldSlotMask);
+        final long farKey2 = keyWithSlot(farKey1 + 1, (len >> 1) * 3 / 4 + 1, oldSlotMask);
+        nextKey = farKey2 + 1;
+
+        // a lookup starts the migration: resizer created, first segment authorized, copying task submitted
+        h.table.get(farKey1);
+        final HashtableAsync2Resizer r = h.resizer();
+        final int s = r.getStartingPosition();
+        final int a1 = (int) ALLOWED.getVolatile(r);
+        final long[] dst = r.getNewDataArray();
+
+        // migrator: the first segment, published like doCopy does
+        r.copyInterval((s + 2) & (len - 1), a1);
+        TO_PROCESS.setVolatile(r, a1);
+
+        // application: the next put sees the segment done and authorizes the second one (its key stays in old data)
+        h.table.put(farKey2, 22L);
+        ref.put(farKey2, 22L);
+        final int a2 = (int) ALLOWED.getVolatile(r);
+        if (a2 == s || a1 - 2 <= s) {
+            log.info("seed={} not applicable: s={} a1={} a2={}", seed, s, a1, a2);
+            h.close(null);
+            return null;
+        }
+
+        // first entry of the second segment
+        int q = a1;
+        while (q != a2 && old[q] == HashingUtils.NOT_ALLOWED_KEY) {
+            q = (q + 2) & (len - 1);
+        }
+        if (q == a2) {
+            log.info("seed={} not applicable: empty segment {}..{}", seed, a1, a2);
+            h.close(null);
+            return null;
+        }
+        final long mKey = old[q];
+        final long mValue = old[q + 1];
+        final int qFinal = q;
+
+        final AtomicInteger chosen = new AtomicInteger(-1);
+        final CountDownLatch paused = new CountDownLatch(1);
+        final CountDownLatch go = new CountDownLatch(1);
+        final Thread migrator = h.startMigrator(() -> {
+            // as in copyInterval: find a free slot ...
+            final int o = HashingUtils.findFreeOffset(mKey, dst, newSlotMask);
+            chosen.set(o);
+            paused.countDown();
+            go.await(MIGRATOR_PAUSE_MS, TimeUnit.MILLISECONDS);
+            // ... and write the entry there
+            dst[o] = mKey;
+            dst[o + 1] = mValue;
+            final int next = (qFinal + 2) & (len - 1);
+            if (next != a2) {
+                r.copyInterval(next, a2);
+            }
+            TO_PROCESS.setVolatile(r, a2);
+        });
+
+        paused.await();
+        final int o = chosen.get();
+
+        // application: keys homed one slot below the frontier, in the half of the new array where o is
+        final int half = o >= len ? len : 0;
+        final int homeSlot = (a1 - 2 + half) >> 1;
+        long placedAtO = 0;
+        int inserted = 0;
+        while ((int) TO_PROCESS.getVolatile(r) != a2 && inserted < 64) {
+            final long key = keyWithSlot(nextKey, homeSlot, newSlotMask);
+            nextKey = key + 1;
+            h.table.put(key, key * 31);
+            ref.put(key, key * 31);
+            inserted++;
+            if (dst[o] == key) {
+                placedAtO = key;
+                break;
+            }
+        }
+        go.countDown();
+
+        h.close(migrator);
+        final int lost = h.verify(ref, "seed=" + seed + " s=" + s + " a1=" + a1 + " a2=" + a2 + " q=" + qFinal
+                + " o=" + o + " appInserts=" + inserted + " appKeyAtMigratorSlot=" + (placedAtO != 0));
+        return lost == 0;
+    }
+
+    /** A table whose copying task is held back for the test, plus the helpers to drive and check it. */
+    private static final class Harness {
+
+        final AtomicReference<Runnable> copyTask = new AtomicReference<>();
+        final AtomicReference<Throwable> migratorError = new AtomicReference<>();
+        final LongLongLL2Hashtable table;
+
+        Harness(int expectedSize) {
+            // the first task allocates the new array (run here), the second one is the copying - held back
+            final AtomicInteger executions = new AtomicInteger();
+            final Executor executor = task -> {
+                if (executions.getAndIncrement() % 2 == 0) {
+                    task.run();
+                } else {
+                    copyTask.set(task);
+                }
+            };
+            table = new LongLongLL2Hashtable(expectedSize, executor, 0);
+        }
+
+        HashtableAsync2Resizer resizer() throws IllegalAccessException {
+            final HashtableAsync2Resizer r = (HashtableAsync2Resizer) RESIZER.get(table);
+            assertNotNull("migration not started", r);
+            assertNotNull("copying task not submitted", copyTask.get());
+            return r;
+        }
+
+        /** runs the steps, then the real copying task, which continues from the published progress */
+        Thread startMigrator(Steps steps) {
+            final Thread thread = new Thread(() -> {
+                try {
+                    steps.run();
+                    copyTask.get().run();
+                } catch (Throwable e) {
+                    migratorError.set(e);
+                }
+            }, "test-migrator");
+            thread.setDaemon(true);
+            thread.start();
+            return thread;
+        }
+
+        /** completes the migration; without a migrator thread the real task runs on a helper */
+        void close(Thread migrator) throws InterruptedException {
+            final Thread m = migrator != null ? migrator : startMigrator(() -> {
+            });
+            table.close();
+            m.join(TimeUnit.SECONDS.toMillis(20));
+            if (migratorError.get() != null) {
+                throw new AssertionError("migrator failed", migratorError.get());
+            }
+        }
+
+        /** @return number of keys missing or with a wrong value; integrity problems count as one */
+        int verify(Map<Long, Long> ref, String scenario) {
+            int lost = 0;
+            for (Map.Entry<Long, Long> e : ref.entrySet()) {
+                final long actual = table.get(e.getKey());
+                if (actual != e.getValue()) {
+                    lost++;
+                    log.warn("{}: key={} expected={} actual={}", scenario, e.getKey(), e.getValue(), actual);
+                }
+            }
+            String integrity = "ok";
+            try {
+                table.integrityCheck();
+            } catch (IllegalStateException e) {
+                integrity = e.getMessage();
+                lost = Math.max(lost, 1);
+            }
+            log.info("{}: lost={} integrity: {}", scenario, lost, integrity);
+            return lost;
+        }
+    }
+
+    @FunctionalInterface
+    private interface Steps {
+        void run() throws Exception;
+    }
+
+    private static long keyWithSlot(long from, int slot, int slotMask) {
+        long key = from;
+        while (key == 0 || (HashingUtils.hash(key) & slotMask) != slot) {
+            key++;
+        }
+        return key;
+    }
+
+    private static Field field(String name) {
+        try {
+            final Field f = LongLongLL2Hashtable.class.getDeclaredField(name);
+            f.setAccessible(true);
+            return f;
+        } catch (NoSuchFieldException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
+    private static VarHandle resizerField(String name) {
+        try {
+            return MethodHandles.privateLookupIn(HashtableAsync2Resizer.class, MethodHandles.lookup())
+                    .findVarHandle(HashtableAsync2Resizer.class, name, int.class);
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+}
