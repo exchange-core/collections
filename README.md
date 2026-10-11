@@ -62,7 +62,6 @@ mvn clean install
 | `LongAdaptiveRadixTreeMap` | Adaptive Radix Tree (ART) | `long` → object  | stable       |
 | `LongLongHashtable`        | open-addressing hashtable | `long` → `long`  | stable       |
 | `LongLongLL2Hashtable`     | hashtable, async resizing | `long` → `long`  | stable       |
-| `LongLongRadixHashtable`   | sharded hashtable         | `long` → `long`  | experimental |
 | `ObjectsPool`              | object pool               | –                | stable       |
 
 ---
@@ -160,16 +159,23 @@ table.size();               // 0
 Iteration:
 
 ```java
-table.forEach((key, value) -> System.out.println(key + " -> " + value));
+table.forEach((key, value) -> System.out.println(key + " -> " + value));   // no allocation
 
 final long sumOfValues = table.valuesStream().sum();
 final long maxKey = table.keysStream().max().orElse(0L);
+
+table.clear();              // removes all entries, keeps the capacity
 ```
 
+Do not modify the table from the `forEach` consumer or while a stream is being consumed.
+
 **Notes**
-- key `0` is reserved as the empty-slot marker: `put(0, v)` throws `IllegalArgumentException`
-- value `0` means "absent" — storing `0` as a value is indistinguishable from a missing key, and
-  `containsKey` reports `false` for such an entry
+- key `0` is reserved as the empty-slot marker: `put(0, v)` throws `IllegalArgumentException`, while
+  `get(0)` and `remove(0)` return `0` and `containsKey(0)` returns `false`
+- `get` returns `0` for a missing key, so through `get` a stored `0` looks the same as a missing key —
+  `containsKey` tells them apart
+- the constructor argument is the expected number of entries, up to ~349 million (2^29 slots); a
+  negative or larger value throws `IllegalArgumentException`
 - the table grows automatically at 65% load factor; that resize is synchronous and shows up as a
   latency spike — pre-size the table if this matters
 - not thread-safe
@@ -211,20 +217,11 @@ final LongLongLL2Hashtable table = new LongLongLL2Hashtable(1_000_000, myExecuto
 > pass an unbounded / thread-per-task executor. The default one is exactly that, with daemon threads.
 
 **Notes**
-- same key/value rules as `LongLongHashtable`: key `0` is reserved, value `0` means absent
+- same key/value rules as `LongLongHashtable`: key `0` is reserved, `get` returns `0` for a missing key
 - `clear()`, `forEach()`, `keysStream()` and `valuesStream()` throw `UnsupportedOperationException`
 - the public API is single-threaded: exactly one application thread, plus the internal migrator
 - `-Dexchange.hashtable.verify=true` runs a full integrity check after every migration —
   for debugging migration corruption only, it is expensive
-
----
-
-### LongLongRadixHashtable
-
-**Experimental — not usable yet.** Shards keys across several `LongLongHashtable` instances by the
-high bits of the hash, so that each shard can be resized independently. Currently only `put` and
-`size` are implemented; `get`, `remove`, `containsKey`, `clear` and the iteration methods are still
-stubs. It is present so that benchmarks can track the approach.
 
 ---
 

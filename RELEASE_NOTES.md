@@ -10,6 +10,30 @@
   through the Foreign Function and Memory API: Java 22+, no dependencies, no native library, works in a
   GraalVM native image (reachability metadata included). Replaces OpenHFT Affinity (JNA) in the benchmarks;
   `net.openhft:affinity` is no longer used anywhere in the build.
+- **`LongLongHashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`.** The README documented
+  them, but all four threw `UnsupportedOperationException`. `forEach` does not allocate. They stay
+  unsupported in `LongLongLL2Hashtable`.
+
+### Fixed
+
+- **`remove(0)` corrupted the size** of `LongLongHashtable` and `LongLongLL2Hashtable`. Key `0` marks
+  empty slots, and `hash(0)` is `0`: when slot 0 was empty, the removal took it for the key and
+  decremented the size, without removing anything. A negative size never reaches the resize threshold,
+  so the table then filled up completely and `put`/`get` failed with `IllegalStateException`.
+  `remove(0)` now returns `0` and changes nothing.
+- **`containsKey` returned `false` for a key stored with value `0`** (both tables) — it tested the
+  value instead of the key. It now reports any present key, whatever its value; `size()` already
+  counted such entries.
+- **Constructor sizes were not validated.** `new LongLongHashtable(Integer.MAX_VALUE)` silently built a
+  zero-length table that failed on the first `put` with `ArrayIndexOutOfBoundsException`, and sizes from
+  ~349 million up threw `NegativeArraySizeException`. Both tables now throw `IllegalArgumentException` for
+  a negative size or one above the maximum capacity (2^29 slots).
+
+### Removed
+
+- **`LongLongRadixHashtable` is no longer published.** It was an experiment with stubbed methods: `get`
+  returned `0`, `size()` was always `0`, `keysStream()` returned `null`. It moved next to its benchmark in
+  `tests-perf`.
 
 ### Changed
 
