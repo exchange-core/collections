@@ -32,6 +32,10 @@
             <artifactId>tests-common</artifactId>
         </dependency>
         <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>collections-affinity</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.agrona</groupId>
             <artifactId>agrona</artifactId>
         </dependency>
