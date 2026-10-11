@@ -144,9 +144,35 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         this.blockThreshold = calculateBlockThreshold();
     }
 
+    /*
+     * put, lookup and remove keep the path without a resize in flight small, so that it inlines into the caller
+     * (FreqInlineSize is 325 bytes of bytecode, put used to be 625); everything about migration is in *Resizing().
+     */
+
     @Override
     public long put(long key, long value) {
 
+        if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
+
+        if (arrayFeature != null || resizer != null) {
+            return putResizing(key, value);
+        }
+
+        final int offset = HashingUtils.findFreeOffset(key, data, mask);
+        final long prevValue = data[offset + 1];
+        if (data[offset] != key) {
+            data[offset] = key;
+            size++;
+        }
+        data[offset + 1] = value;
+
+        if (size >= upsizeThreshold) {
+            resize();
+        }
+        return prevValue;
+    }
+
+    private long putResizing(long key, long value) {
 
 //        setAction(key, 1);
 
@@ -160,9 +186,6 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 //        if (resizer != null){
 //            log.warn("size={} blockThreshold={}", size, blockThreshold);
 //        }
-
-
-        if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
 
         if (resizer != null) {
 
@@ -195,7 +218,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
         if (resizer == null) {
 
-            // no resizing in progress, default behavior - always put into "data"
+            // the new array is still being allocated (or the migration just finished) - put into "data"
 
 //            setAction(key, 6);
 
@@ -368,6 +391,13 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
      * gap), cell 1 is the value.
      */
     private long lookup(long key, int cell) {
+        if (arrayFeature != null || resizer != null) {
+            return lookupResizing(key, cell);
+        }
+        return data[HashingUtils.findFreeOffset(key, data, mask) + cell];
+    }
+
+    private long lookupResizing(long key, int cell) {
 
       //  boolean migStated = false;
         if (arrayFeature != null) {
@@ -432,9 +462,17 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     public long remove(long key, int hash) {
 
         if (key == NOT_ALLOWED_KEY) {
-            // never stored - and removeInternal would take the first gap it meets for this key
+            // never stored - and the probe would stop at the first gap, which holds key 0
             return 0L;
         }
+
+        if (arrayFeature != null || resizer != null) {
+            return removeResizing(key, hash);
+        }
+        return removeInternal(key, hash, data, mask);
+    }
+
+    private long removeResizing(long key, int hash) {
 
         if (arrayFeature != null) {
             startAsyncCopyingIfDone(key, 52);
@@ -490,97 +528,14 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     }
 
     private long removeInternal(long key, int hash, long[] datax, int maskx) {
-        int lastPos = (hash & maskx);
-
-        // try all keys until either gap (NOT_ALLOWED_KEY)
-        long existingKey = datax[lastPos << 1];
-        int gapPos = -1;
-        long oldValue = 0L;
-
-        int iteration = 0;
-        boolean found = false;
-
-        while (true) {
-
-            if (existingKey == key) {
-                // desired key found
-                gapPos = lastPos;
-                oldValue = datax[(lastPos << 1) + 1];
-                size--;
-                found = true;
-            }
-
-            // try next element
-            final int posNext = (lastPos + 1) & maskx;
-            if (datax[posNext << 1] == NOT_ALLOWED_KEY) {
-                break;
-            } else {
-                existingKey = datax[posNext << 1];
-                lastPos = posNext;
-            }
-
-            // the cluster walk only ends on a gap - without a bound a full (or corrupted) array
-            // hangs here exactly like findFreeOffset did
-            if (++iteration > maskx) {
-                throw new IllegalStateException("removeInternal: no gap found for key=" + key
-                        + " found=" + found + " size=" + size + " capacity=" + (maskx + 1)
-                        + " blockThreshold=" + blockThreshold);
-            }
-        }
-
-        if (gapPos == -1) {
-            // nothing to remove - can just return
+        final int offset = HashingUtils.findFreeOffset(key, (hash & maskx) << 1, datax);
+        if (datax[offset] != key) {
             return 0L;
-        } else {
-            // doing cleanup starting from last entry (pos)
-            moveGap(gapPos, lastPos, datax, maskx);
-            return oldValue;
         }
-    }
-
-
-    private static void moveGap(int gapPos, int lastPos, long[] data, int mask) {
-
-        // move gap to the right until it is at the last position
-        while (gapPos != lastPos) {
-
-            // find the greatest entry in a series that can fill the gap (hash < gap)
-            int p = lastPos;
-            while (true) {
-                int h = HashingUtils.hash(data[p << 1]) & mask;
-                boolean canFillGap = canFillGapAndFinish(p, h, gapPos, mask);
-//                log.debug("try p={} h={} gapPos={}, canFillGapAndFinish={} ", p, h, gapPos, canFillGap);
-                if (canFillGap) {
-                    break;
-                }
-
-                p = (p - 1) & mask;
-
-                if (p == gapPos) {
-                    // reached beginning of series (all entries has desired position after the gap)
-//                    log.debug("final x=lastPos={}", gapPos);
-                    data[gapPos << 1] = NOT_ALLOWED_KEY;
-                    data[(gapPos << 1) + 1] = 0;
-
-                    return;
-                }
-            }
-
-            // fill gap with movable entry
-            data[gapPos << 1] = data[p << 1];
-            data[(gapPos << 1) + 1] = data[(p << 1) + 1];
-
-            gapPos = p;
-
-//            log.debug("new gapPos={}", gapPos);
-        }
-
-//        log.debug("final gapPos=lastPos={}", gapPos);
-
-        // because gap is at a last position of the series - it is safe to mark gap as empty and finish
-        data[gapPos << 1] = NOT_ALLOWED_KEY;
-        data[(gapPos << 1) + 1] = 0;
-
+        final long value = datax[offset + 1];
+        LinearProbing.deleteAt(datax, offset);
+        size--;
+        return value;
     }
 
     private void resize() {
@@ -670,6 +625,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
             Thread.onSpinWait();
 
             if ((++spins & HANG_CHECK_SPIN_MASK) == 0) {
+                rethrowMigratorFailure();
                 final long now = System.nanoTime();
                 if (deadline == 0) {
                     deadline = now + HANG_DETECT_NANOS;
@@ -678,6 +634,15 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
                             + " after " + spins + " spins, " + migrationState());
                 }
             }
+        }
+    }
+
+    /**
+     * A migrator that died never makes progress: fail with its exception right away instead of at the hang detection.
+     */
+    private void rethrowMigratorFailure() {
+        if (copyingProcess != null && copyingProcess.isCompletedExceptionally()) {
+            awaitFuture(copyingProcess, "migration");
         }
     }
 
@@ -698,9 +663,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
             Thread.onSpinWait();
 
             if ((++spins & HANG_CHECK_SPIN_MASK) == 0) {
-                if (copyingProcess != null && copyingProcess.isCompletedExceptionally()) {
-                    awaitFuture(copyingProcess, "migration"); // rethrows the migrator's failure
-                }
+                rethrowMigratorFailure();
                 final long now = System.nanoTime();
                 if (deadline == 0) {
                     deadline = now + HANG_DETECT_NANOS;
@@ -1062,9 +1025,4 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 //        final int hash = HashingUtils.hash(key);
 //        return (hash & mask) << 1;
 //    }
-
-
-    static boolean canFillGapAndFinish(int k, int h, int g, int mask) {
-        return ((k - h) & mask) >= ((g - h) & mask);
-    }
 }

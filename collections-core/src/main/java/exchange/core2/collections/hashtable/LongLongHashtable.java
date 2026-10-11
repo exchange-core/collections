@@ -76,91 +76,17 @@ public class LongLongHashtable implements ILongLongHashtable {
 
     public long remove(long key, int hash) {
         if (key == NOT_ALLOWED_KEY) {
-            // never stored - and removeInternal would take the first gap it meets for this key
+            // never stored - and the probe would stop at the first gap, which holds key 0
             return 0L;
         }
-        return removeInternal(key, hash, data, mask);
-    }
-
-    private long removeInternal(long key, int hash, long[] datax, int maskx) {
-        int lastPos = (hash & maskx);
-
-        // try all keys until either gap (NOT_ALLOWED_KEY)
-        long existingKey = datax[lastPos << 1];
-        int gapPos = -1;
-        long oldValue = 0L;
-        while (true) {
-
-            if (existingKey == key) {
-                // desired key found
-                gapPos = lastPos;
-                oldValue = datax[(lastPos << 1) + 1];
-                size--;
-            }
-
-            // try next element
-            final int posNext = (lastPos + 1) & maskx;
-            if (datax[posNext << 1] == NOT_ALLOWED_KEY) {
-                break;
-            } else {
-                existingKey = datax[posNext << 1];
-                lastPos = posNext;
-            }
-        }
-
-        if (gapPos == -1) {
-            // nothing to remove - can just return
+        final int offset = HashingUtils.findFreeOffset(key, (hash & mask) << 1, data);
+        if (data[offset] != key) {
             return 0L;
-        } else {
-            // doing cleanup starting from last entry (pos)
-            moveGap(gapPos, lastPos, datax, maskx);
-            return oldValue;
         }
-    }
-
-
-    private static void moveGap(int gapPos, int lastPos, long[] data, int mask) {
-
-        // move gap to the right until it is at the last position
-        while (gapPos != lastPos) {
-
-            // find the greatest entry in a series that can fill the gap (hash < gap)
-            int p = lastPos;
-            while (true) {
-                int h = HashingUtils.hash(data[p << 1]) & mask;
-                boolean canFillGap = canFillGapAndFinish(p, h, gapPos, mask);
-//                log.debug("try p={} h={} gapPos={}, canFillGapAndFinish={} ", p, h, gapPos, canFillGap);
-                if (canFillGap) {
-                    break;
-                }
-
-                p = (p - 1) & mask;
-
-                if (p == gapPos) {
-                    // reached beginning of series (all entries has desired position after the gap)
-//                    log.debug("final x=lastPos={}", gapPos);
-                    data[gapPos << 1] = NOT_ALLOWED_KEY;
-                    data[(gapPos << 1) + 1] = 0;
-
-                    return;
-                }
-            }
-
-            // fill gap with movable entry
-            data[gapPos << 1] = data[p << 1];
-            data[(gapPos << 1) + 1] = data[(p << 1) + 1];
-
-            gapPos = p;
-
-//            log.debug("new gapPos={}", gapPos);
-        }
-
-//        log.debug("final gapPos=lastPos={}", gapPos);
-
-        // because gap is at a last position of the series - it is safe to mark gap as empty and finish
-        data[gapPos << 1] = NOT_ALLOWED_KEY;
-        data[(gapPos << 1) + 1] = 0;
-
+        final long value = data[offset + 1];
+        LinearProbing.deleteAt(data, offset);
+        size--;
+        return value;
     }
 
     private void resize() {
@@ -319,9 +245,4 @@ public class LongLongHashtable implements ILongLongHashtable {
 //        final int hash = HashingUtils.hash(key);
 //        return (hash & mask) << 1;
 //    }
-
-
-    static boolean canFillGapAndFinish(int k, int h, int g, int mask) {
-        return ((k - h) & mask) >= ((g - h) & mask);
-    }
 }
