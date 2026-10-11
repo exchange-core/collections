@@ -49,6 +49,15 @@
 
 ### Changed
 
+- **Hashtable removal is linear in the cluster length.** Both hashtables delete by backward shift in one pass
+  (Knuth's Algorithm R, shared code) instead of searching the cluster backwards from its end for every shifted
+  entry. At load 0.65 (1.36M keys, 2^21 slots) the worst removal hashes 118 entries instead of 454
+  (p99.99: 83 instead of 197).
+- **`LongLongLL2Hashtable`: `put`, `get` and `remove` inline into the caller.** The path without a resize in
+  flight is separated from the migration code: `put` shrank from 625 to 121 bytes of bytecode, below the JIT's
+  inlining limit (FreqInlineSize = 325).
+- **`LongLongLL2Hashtable`: a failed migrator is reported right away** - with its exception as the cause,
+  within milliseconds, instead of a bare "stuck waiting for migration" after the 10 s hang detection.
 - **Published artifacts are now compiled for Java 17 instead of Java 26.** `collections-core` and
   `collections-orderbook` no longer force consumers onto the latest JDK. 17 is the floor imposed by
   agrona 2.x (Java 17 class files) in `collections-orderbook`; `collections-core` has no

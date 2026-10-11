@@ -377,41 +377,67 @@ public abstract class LongLongHashtableAbstractTest {
 
         for (int k = 0; k < size; k++) {
             for (int h = 0; h < size; h++) {
-                if (k == h) {
-                    continue;
-                }
                 for (int g = 0; g < size; g++) {
                     if (g == k) {
                         continue;
                     }
-
-                    boolean c = canFillGapAndFinish(k, h, g);
-                    boolean c2 = LongLongHashtable.canFillGapAndFinish(k, h, g, mask);
-                    System.out.println("k:" + k + " h:" + h + " g:" + g + " - " + c + "/" + c2);
-
-                    assertThat(c2, is(c));
+                    assertThat("k:" + k + " h:" + h + " g:" + g,
+                            LinearProbing.canFillGap(g, h, k, mask), is(canFillGapAndFinish(k, h, g)));
                 }
-
             }
         }
-
-
     }
 
 
+    /** reference: the gap g lies within [h, k) on the ring - empty for an entry at its home (h == k) */
     public boolean canFillGapAndFinish(int k, int h, int g) {
 
         if (g == k) {
             throw new IllegalStateException("gap == k, should finish");
         }
-        if (h == k) {
-            throw new IllegalStateException("h == k, should skip to k-1 !");
-        }
 
-        if (h < k) {
+        if (h == k) {
+            return false;
+        } else if (h < k) {
             return g >= h && g < k;
         } else {
             return g >= h || g < k;
+        }
+    }
+
+    /**
+     * Removal fuzz on a 16-slot table: keys homed in the last and first slots form clusters that wrap around the
+     * end of the array, removed in random order. After every removal all remaining keys must still be found.
+     */
+    @Test
+    public void should_keep_keys_reachable_after_removals_in_wrapping_clusters() {
+
+        final Random rand = new Random(21L);
+        final int[] homes = {12, 13, 14, 15, 0, 1, 2};
+        for (int round = 0; round < 2000; round++) {
+
+            hashtable = newHashtable(SMALL_SIZE);
+            final Map<Long, Long> ref = new HashMap<>();
+            final int count = 2 + rand.nextInt(SMALL_SIZE - 2); // up to 9 entries - the 10th would resize
+            long next = rand.nextInt(1_000_000) + 1;
+            for (int i = 0; i < count; i++) {
+                final long key = findKeyForPosition(homes[rand.nextInt(homes.length)], next, SMALL_CAPACITY);
+                next = key;
+                hashtable.put(key, -key);
+                ref.put(key, -key);
+            }
+
+            final List<Long> order = new ArrayList<>(ref.keySet());
+            java.util.Collections.shuffle(order, rand);
+            for (long removed : order) {
+                assertThat(hashtable.remove(removed), is(-removed));
+                ref.remove(removed);
+                assertFalse(hashtable.containsKey(removed));
+                for (Map.Entry<Long, Long> e : ref.entrySet()) {
+                    assertThat("round " + round + " key " + e.getKey(), hashtable.get(e.getKey()), is(e.getValue()));
+                }
+                assertThat(hashtable.size(), is((long) ref.size()));
+            }
         }
     }
 

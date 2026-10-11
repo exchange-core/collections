@@ -74,7 +74,7 @@ public class CollectionsLatencySamples {
     private static final Path DIR = Path.of(System.getProperty("samples.dir", "target/samples-collections"));
     private static final int SAMPLES = Integer.getInteger("samples.count", 100_000);
     private static final Set<String> GROUPS = Set.of(System.getProperty("samples.groups",
-            "hashtable-get,hashtable-put,hashtable-working-set,art-vs-treemap,art-keys").split(","));
+            "hashtable-get,hashtable-put,hashtable-remove,hashtable-working-set,art-vs-treemap,art-keys").split(","));
 
     /**
      * Warm-up bounds: a tiered recompilation that lands in the measured loop shows up as a 5-20us outlier,
@@ -107,8 +107,10 @@ public class CollectionsLatencySamples {
     /** With the spinning migrator an async resize starts within microseconds - sync only for the smallest tables. */
     private static final int LL2_SYNC_RESIZE_BELOW = 300;
 
-    /** Entries in every map, except the working-set group. */
+    /** Entries in every map, except the working-set and remove groups. */
     private static final int MAP_SIZE = 1_000_000;
+    /** hashtable-remove: just below the resize of a 2^21-slot table at load factor 0.65 - the longest clusters. */
+    private static final int REMOVE_MAP_SIZE = 1_360_000;
     /** Length of the query sequence, cycled through by the service-time loop. */
     private static final int QUERIES = 1 << 20;
 
@@ -166,6 +168,7 @@ public class CollectionsLatencySamples {
         try (CpuAffinity ignore = pinCurrentThread()) {
             if (GROUPS.contains("hashtable-get")) hashtableGet();
             if (GROUPS.contains("hashtable-put")) hashtablePut();
+            if (GROUPS.contains("hashtable-remove")) hashtableRemove();
             if (GROUPS.contains("hashtable-working-set")) hashtableWorkingSet();
             if (GROUPS.contains("art-vs-treemap")) artVsTreeMap();
             if (GROUPS.contains("art-keys")) artKeys();
@@ -309,6 +312,91 @@ public class CollectionsLatencySamples {
             return (k, from, to) -> {
                 final Long prev = m.put(k[from], k[from]);
                 return prev == null ? 0 : prev;
+            };
+        });
+    }
+
+    /** Remove of a present key at load ~0.65, put back outside the measured interval. */
+    private void hashtableRemove() throws IOException {
+        final String group = "hashtable-remove";
+        final long[] stored = randomKeys(REMOVE_MAP_SIZE, 14);
+        final long[] removals = shuffled(stored, 15);
+
+        serviceTime(group, "exchange-hashtable-remove", removals, () -> {
+            final LongLongHashtable m = new LongLongHashtable(INITIAL_CAPACITY);
+            for (long k : stored) m.put(k, k);
+            return new Bench() {
+                @Override
+                public long run(long[] keys, int from, int to) {
+                    long s = 0;
+                    for (int i = from; i < to; i++) s += m.remove(keys[i]);
+                    return s;
+                }
+
+                @Override
+                public long undo(long[] keys, int from, int to) {
+                    for (int i = from; i < to; i++) m.put(keys[i], keys[i]);
+                    return to - from;
+                }
+            };
+        });
+        serviceTime(group, "exchange-ll2-hashtable-remove", removals, () -> {
+            final LongLongLL2Hashtable m = new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_MIGRATOR, LL2_SYNC_RESIZE_BELOW);
+            for (long k : stored) m.put(k, k);
+            return new Bench() {
+                @Override
+                public long run(long[] keys, int from, int to) {
+                    long s = 0;
+                    for (int i = from; i < to; i++) s += m.remove(keys[i]);
+                    return s;
+                }
+
+                @Override
+                public long undo(long[] keys, int from, int to) {
+                    for (int i = from; i < to; i++) m.put(keys[i], keys[i]);
+                    return to - from;
+                }
+
+                @Override
+                public void close() {
+                    m.close();
+                }
+            };
+        });
+        serviceTime(group, "agrona-long2long-remove", removals, () -> {
+            final Long2LongHashMap m = new Long2LongHashMap(INITIAL_CAPACITY, LOAD_FACTOR, 0L);
+            for (long k : stored) m.put(k, k);
+            return new Bench() {
+                @Override
+                public long run(long[] keys, int from, int to) {
+                    long s = 0;
+                    for (int i = from; i < to; i++) s += m.remove(keys[i]);
+                    return s;
+                }
+
+                @Override
+                public long undo(long[] keys, int from, int to) {
+                    for (int i = from; i < to; i++) m.put(keys[i], keys[i]);
+                    return to - from;
+                }
+            };
+        });
+        serviceTime(group, "fastutil-long2long-remove", removals, () -> {
+            final Long2LongOpenHashMap m = new Long2LongOpenHashMap(INITIAL_CAPACITY, LOAD_FACTOR);
+            for (long k : stored) m.put(k, k);
+            return new Bench() {
+                @Override
+                public long run(long[] keys, int from, int to) {
+                    long s = 0;
+                    for (int i = from; i < to; i++) s += m.remove(keys[i]);
+                    return s;
+                }
+
+                @Override
+                public long undo(long[] keys, int from, int to) {
+                    for (int i = from; i < to; i++) m.put(keys[i], keys[i]);
+                    return to - from;
+                }
             };
         });
     }

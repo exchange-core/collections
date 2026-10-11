@@ -132,6 +132,48 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         assertEquals(0, h.verify(ref, "extension"));
     }
 
+    /**
+     * A migrator that dies leaves the application spinning on its progress. That used to end only at the 10s hang
+     * detection, without the migrator's exception; now the failure is rethrown, with its cause, within milliseconds.
+     */
+    @Test(timeout = 60_000)
+    public void migrator_failure_is_rethrown_without_waiting_for_the_hang_detection() throws Exception {
+
+        final Harness h = new Harness(1000);
+        final Random rand = new Random(5L);
+        long migratedKey = 0;
+        while (ARRAY_FEATURE.get(h.table) == null) {
+            migratedKey = rand.nextLong() | 1L;
+            h.table.put(migratedKey, 1L);
+        }
+        final long[] old = (long[]) DATA.get(h.table);
+        final long farKey = keyWithSlot(1, (old.length >> 1) * 3 / 4, (old.length >> 1) - 1);
+        h.table.get(farKey); // starts the migration
+        final HashtableAsync2Resizer r = h.resizer();
+
+        // a key homed in the first segment: its lookup waits for the migrator
+        final int s = r.getStartingPosition();
+        final long firstSegmentKey = keyWithSlot(1, ((s + 2) & (old.length - 1)) >> 1, (old.length >> 1) - 1);
+
+        // an odd allowed position: copyInterval rejects it, the copying task fails
+        ALLOWED.setVolatile(r, 3);
+        final Thread migrator = h.startMigrator(() -> {
+        });
+        migrator.join();
+
+        final long t0 = System.nanoTime();
+        try {
+            h.table.get(firstSegmentKey);
+            throw new AssertionError("expected the migrator failure");
+        } catch (IllegalStateException e) {
+            final long ms = (System.nanoTime() - t0) / 1_000_000;
+            log.info("failed after {}ms: {}", ms, e.getMessage());
+            assertNotNull("cause", e.getCause());
+            assertTrue(e.getCause().getMessage(), e.getCause().getMessage().contains("copyInterval"));
+            assertTrue("took " + ms + "ms", ms < 5_000);
+        }
+    }
+
     /** @return null if the seed does not produce the scenario, otherwise whether no key was lost */
     private static Boolean insertAcrossFrontier(long seed) throws Exception {
 
