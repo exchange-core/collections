@@ -6,6 +6,27 @@ public class HashingUtils {
     public static final long NOT_ALLOWED_KEY = 0L;
 
     /**
+     * Largest table: 2^29 slots, a long[2^30]. Resizing stops there - the next array length would not fit an int.
+     */
+    static final int MAX_CAPACITY = 1 << 29;
+
+    /**
+     * Number of slots (a power of two) for a table expected to hold expectedSize entries at the given load factor.
+     */
+    static int capacityFor(final int expectedSize, final float loadFactor) {
+        if (expectedSize < 0) {
+            throw new IllegalArgumentException("expected size must not be negative: " + expectedSize);
+        }
+        // a float to int cast saturates at Integer.MAX_VALUE, so a huge expectedSize can not wrap around here
+        final int minCapacity = (int) (expectedSize / loadFactor);
+        if (minCapacity > MAX_CAPACITY) {
+            throw new IllegalArgumentException("expected size " + expectedSize + " exceeds the maximum of "
+                    + (int) (MAX_CAPACITY * loadFactor) + " entries");
+        }
+        return nextPositivePowerOfTwo(minCapacity);
+    }
+
+    /**
      * Key mixing function: David Stafford's "Mix04" variant of the MurmurHash3 64-bit finalizer,
      * returning the high 32 bits - identical to {@code java.util.SplittableRandom#mix32}.
      * <p>

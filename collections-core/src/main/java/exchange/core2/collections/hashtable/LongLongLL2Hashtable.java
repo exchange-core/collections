@@ -134,7 +134,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         this.executor = executor;
         this.syncResizeBelow = syncResizeBelow;
         this.upsizeThresholdPerc = 0.65f;
-        final int arraySize = HashingUtils.nextPositivePowerOfTwo((int) (size / upsizeThresholdPerc));
+        final int arraySize = HashingUtils.capacityFor(size, upsizeThresholdPerc);
 
         this.data = new long[arraySize * 2];
         //this.blockThresholdPerc = 0.6501f;
@@ -378,6 +378,15 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
     @Override
     public long get(long key) {
+        return lookup(key, 1);
+    }
+
+    /**
+     * Probes for the key - in whichever array currently holds its home position - and returns one long of the
+     * cell the probe stopped at: cell 0 is the key (equal to the requested one only if it is present, 0 for a
+     * gap), cell 1 is the value.
+     */
+    private long lookup(long key, int cell) {
 
       //  boolean migStated = false;
         if (arrayFeature != null) {
@@ -399,7 +408,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 //            setAction(key, 36);
 
             final int offset = HashingUtils.findFreeOffset(key, pos, data);
-            return data[offset + 1];
+            return data[offset + cell];
         }
 
         // not in old data - either migrated already or still under processing
@@ -418,7 +427,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         final long[] newData = resizer.getNewDataArray();
         pos = (hash & resizer.getNewMask()) << 1;
         final int offset = HashingUtils.findFreeOffset(key, pos, newData);
-        final long val = newData[offset + 1];
+        final long val = newData[offset + cell];
 
         knownProgressCached = resizer.getProcessedPosition();
         if (knownProgressCached == allowedPosition) {
@@ -430,7 +439,8 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
     @Override
     public boolean containsKey(long key) {
-        return get(key) != NOT_ALLOWED_KEY;
+        // the probe stops either at the key or at a gap - and a gap holds key 0, which is why 0 is excluded
+        return key != NOT_ALLOWED_KEY && lookup(key, 0) == key;
     }
 
     @Override
@@ -439,6 +449,11 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     }
 
     public long remove(long key, int hash) {
+
+        if (key == NOT_ALLOWED_KEY) {
+            // never stored - and removeInternal would take the first gap it meets for this key
+            return 0L;
+        }
 
         if (arrayFeature != null) {
             startAsyncCopyingIfDone(key, 52);

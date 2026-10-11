@@ -1,8 +1,18 @@
-package exchange.core2.collections.hashtable;
+package tests.pref;
 
+
+import exchange.core2.collections.hashtable.HashingUtils;
+import exchange.core2.collections.hashtable.ILongLongHashtable;
+import exchange.core2.collections.hashtable.LongLongConsumer;
+import exchange.core2.collections.hashtable.LongLongHashtable;
 
 import java.util.stream.LongStream;
 
+/**
+ * Experiment, not a usable map: shards keys across LongLongHashtable instances by the high bits of the hash, so
+ * that each shard can be resized on its own. Only put is implemented, the rest are stubs - which is why it lives
+ * next to its benchmark ({@link PerfRadixHashtableUpsize}) and not in the published collections-core.
+ */
 public class LongLongRadixHashtable implements ILongLongHashtable {
 
 

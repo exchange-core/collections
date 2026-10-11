@@ -1,6 +1,8 @@
 package exchange.core2.collections.hashtable;
 
 
+import java.util.Arrays;
+import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
@@ -24,7 +26,7 @@ public class LongLongHashtable implements ILongLongHashtable {
     public LongLongHashtable(int size) {
 
         this.upsizeThresholdPerc = 0.65f;
-        final int arraySize = HashingUtils.nextPositivePowerOfTwo((int) (size / upsizeThresholdPerc));
+        final int arraySize = HashingUtils.capacityFor(size, upsizeThresholdPerc);
 
         this.data = new long[arraySize * 2];
         this.mask = (this.data.length / 2) - 1;
@@ -63,7 +65,8 @@ public class LongLongHashtable implements ILongLongHashtable {
 
     @Override
     public boolean containsKey(long key) {
-        return get(key) != NOT_ALLOWED_KEY;
+        // the probe stops either at the key or at a gap - and a gap holds key 0, which is why 0 is excluded
+        return key != NOT_ALLOWED_KEY && data[HashingUtils.findFreeOffset(key, data, mask)] == key;
     }
 
     @Override
@@ -72,6 +75,10 @@ public class LongLongHashtable implements ILongLongHashtable {
     }
 
     public long remove(long key, int hash) {
+        if (key == NOT_ALLOWED_KEY) {
+            // never stored - and removeInternal would take the first gap it meets for this key
+            return 0L;
+        }
         return removeInternal(key, hash, data, mask);
     }
 
@@ -182,24 +189,49 @@ public class LongLongHashtable implements ILongLongHashtable {
         upsizeThreshold = (int) ((mask + 1) * upsizeThresholdPerc);
     }
 
+    /**
+     * Removes all entries, keeping the current capacity.
+     */
     @Override
     public void clear() {
-        throw new UnsupportedOperationException();
+        Arrays.fill(data, 0L);
+        size = 0;
     }
 
+    /**
+     * Keys in the table order. The stream reads the table lazily - do not modify the table until it is consumed.
+     */
     @Override
     public LongStream keysStream() {
-        throw new UnsupportedOperationException();
+        final long[] d = data;
+        return IntStream.range(0, d.length >> 1)
+                .filter(i -> d[i << 1] != NOT_ALLOWED_KEY)
+                .mapToLong(i -> d[i << 1]);
     }
 
+    /**
+     * Values in the same order as {@link #keysStream()}. Same restriction: do not modify the table until it is consumed.
+     */
     @Override
     public LongStream valuesStream() {
-        throw new UnsupportedOperationException();
+        final long[] d = data;
+        return IntStream.range(0, d.length >> 1)
+                .filter(i -> d[i << 1] != NOT_ALLOWED_KEY)
+                .mapToLong(i -> d[(i << 1) + 1]);
     }
 
+    /**
+     * Allocation-free iteration over all entries. The consumer must not modify the table.
+     */
     @Override
     public void forEach(LongLongConsumer consumer) {
-        throw new UnsupportedOperationException();
+        final long[] d = data;
+        for (int i = 0; i < d.length; i += 2) {
+            final long key = d[i];
+            if (key != NOT_ALLOWED_KEY) {
+                consumer.accept(key, d[i + 1]);
+            }
+        }
     }
 
     @Override
