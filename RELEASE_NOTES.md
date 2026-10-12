@@ -56,6 +56,11 @@
 - **`LongLongLL2Hashtable`: `put`, `get` and `remove` inline into the caller.** The path without a resize in
   flight is separated from the migration code: `put` shrank from 625 to 121 bytes of bytecode, below the JIT's
   inlining limit (FreqInlineSize = 325).
+- **`LongLongLL2Hashtable`: shorter waits during a migration.** An operation on a key whose home is in the
+  segment being copied waits until the migrator finishes the segment. Segments are now at most 256 slots
+  instead of 1024: in the put benchmark (1M puts/s, growing to 4M entries) p99.99 went from 4.6 us to 1.0 us,
+  puts slower than 2 us halved, p99 +1.5%. Each segment costs a hand-over, so copying a large table takes 25%
+  longer; the new `PerfLL2MigrationThroughput` benchmark measures that.
 - **`LongLongLL2Hashtable`: a failed migrator is reported right away** - with its exception as the cause,
   within milliseconds, instead of a bare "stuck waiting for migration" after the 10 s hang detection.
 - **Published artifacts are now compiled for Java 17 instead of Java 26.** `collections-core` and

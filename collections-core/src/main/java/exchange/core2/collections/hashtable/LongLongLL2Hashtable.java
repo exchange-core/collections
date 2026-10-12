@@ -749,11 +749,14 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     /**
      * Segment = 1/16 of the table, clamped: small tables get small segments (async migration works for any size),
      * large ones keep a bounded segment - an access to a position authorized but not yet copied waits for the
-     * migrator to copy up to it, so the segment size bounds that wait (~10-50us at 1024 slots).
+     * migrator to copy up to it, so the segment size bounds that wait. At 256 slots (was 1024) the put benchmark's
+     * p99.99 went from 4.6us to 1.0us. The price is a hand-over per segment (~0.3-0.5us of migrator idle time):
+     * copying 2^23 slots takes 74ms instead of 58ms, still ~3x faster than one thread fills the table
+     * (PerfLL2MigrationThroughput).
      */
     private static final int SEGMENTS_PER_MIGRATION = 16;
     private static final int MIN_SEGMENT_LONGS = 32;
-    private static final int MAX_SEGMENT_LONGS = 2048;
+    private static final int MAX_SEGMENT_LONGS = 512;
 
     /**
      * Next migration boundary: the first gap at least one segment after 'from' (boundaries must be gaps - no
