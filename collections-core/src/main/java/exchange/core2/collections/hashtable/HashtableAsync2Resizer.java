@@ -5,7 +5,7 @@ import java.util.concurrent.locks.LockSupport;
 
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
 
-public class HashtableAsync2Resizer {
+class HashtableAsync2Resizer {
 
 
     /**

@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -77,7 +78,7 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
     @Test(timeout = 60_000)
     public void put_at_block_threshold_after_backward_extension_must_not_hang() throws Exception {
 
-        final Harness h = new Harness(41);
+        final Harness h = new Harness(40);
         final Map<Long, Long> ref = new HashMap<>();
         long nextKey = 1;
 
@@ -172,6 +173,71 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
             assertTrue(e.getCause().getMessage(), e.getCause().getMessage().contains("copyInterval"));
             assertTrue("took " + ms + "ms", ms < 5_000);
         }
+    }
+
+    /**
+     * During a migration the compound operations are made of the basic ones. Keys homed in the old array, while the
+     * copying task is held back - a wait for the migrator would hang the test; then ensureCapacity beyond the new
+     * array, which finishes the migration and rehashes.
+     */
+    @Test(timeout = 60_000)
+    public void compound_operations_and_ensure_capacity_during_migration() throws Exception {
+
+        final Harness h = new Harness(1000);
+        final Map<Long, Long> ref = new HashMap<>();
+        final Random rand = new Random(9L);
+        while (ARRAY_FEATURE.get(h.table) == null) {
+            final long key = rand.nextLong() | 1L;
+            h.table.put(key, key);
+            ref.put(key, key);
+        }
+
+        // keys homed in the last quarter of the old array - the migration starts at its beginning
+        final long[] old = (long[]) DATA.get(h.table);
+        final int oldSlotMask = (old.length >> 1) - 1;
+        final long[] far = new long[40];
+        long nextKey = 1;
+        for (int i = 0; i < far.length; i++) {
+            far[i] = keyWithSlot(nextKey, (old.length >> 1) * 3 / 4 + i, oldSlotMask);
+            nextKey = far[i] + 1;
+        }
+        h.table.get(far[0]); // starts the migration
+        h.resizer();
+        assertTrue(h.table.toString(), h.table.toString().contains("migration in progress"));
+
+        for (int i = 0; i < far.length; i++) {
+            final long key = far[i];
+            final long value = i;
+            assertEquals(0L, h.table.putIfAbsent(key, value));
+            assertEquals(value, h.table.putIfAbsent(key, -1L));
+            assertEquals(value + 5, h.table.addAndGet(key, 5L));
+            assertEquals(value + 5, h.table.computeIfAbsent(key, k -> -1L));
+            assertFalse(h.table.remove(key, -1L));
+            if (i % 2 == 0) {
+                assertTrue(h.table.remove(key, value + 5));
+            } else {
+                ref.put(key, value + 5);
+            }
+        }
+        final long computed = keyWithSlot(nextKey, (old.length >> 1) * 3 / 4 + far.length, oldSlotMask);
+        assertEquals(computed * 3, h.table.computeIfAbsent(computed, k -> k * 3));
+        ref.put(computed, computed * 3);
+        assertEquals(ref.size(), h.table.size());
+
+        // within the capacity the migration is heading to: nothing to do, the migration goes on
+        h.table.ensureCapacity(2000);
+        assertEquals(2048, h.table.capacity());
+        assertTrue(h.table.toString().contains("migration in progress"));
+
+        // beyond it: the migration is finished first (the migrator runs from here on), then one rehash
+        final Thread migrator = h.startMigrator(() -> {
+        });
+        h.table.ensureCapacity(10_000);
+        assertEquals(16384, h.table.capacity());
+        assertTrue(h.table.toString().startsWith("{"));
+
+        h.close(migrator);
+        assertEquals(0, h.verify(ref, "compound"));
     }
 
     /** @return null if the seed does not produce the scenario, otherwise whether no key was lost */

@@ -97,6 +97,16 @@ public class LongLongRadixHashtable implements ILongLongHashtable {
         return size;
     }
 
+    @Override
+    public int capacity() {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void ensureCapacity(int expectedSize) {
+        throw new UnsupportedOperationException();
+    }
+
     private void upsize() {
 
         final LongLongHashtable[] newTables = new LongLongHashtable[tables.length * 2];

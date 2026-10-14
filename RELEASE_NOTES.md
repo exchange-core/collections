@@ -13,6 +13,14 @@
 - **`LongLongHashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`.** The README documented
   them, but all four threw `UnsupportedOperationException`. `forEach` does not allocate. They stay
   unsupported in `LongLongLL2Hashtable`.
+- **Hashtables: `putIfAbsent`, `addAndGet`, `computeIfAbsent`, `remove(key, value)`, `capacity()`,
+  `ensureCapacity(expectedSize)` and `toString()`.** The compound operations take one probe, like `put`
+  (in `LongLongLL2Hashtable` when no resize is in flight - during a migration they are made of the basic
+  operations). `ensureCapacity` grows the table in one rehash. `toString` prints `{key=value, ...}`;
+  during a migration `LongLongLL2Hashtable` prints only the size. In `ILongLongHashtable` the compound
+  operations are default methods; `capacity()` and `ensureCapacity()` are new abstract methods.
+- **`Automatic-Module-Name`** in the published jars: `exchange.core2.collections`,
+  `exchange.core2.collections.orderbook`, `exchange.core2.collections.affinity`.
 
 ### Fixed
 
@@ -44,6 +52,11 @@
   taking new keys, with ever longer probes, until the last free slot - and then every operation that probed
   for a missing key failed. Now a table there takes new keys up to load 0.9 and then refuses them with
   `IllegalStateException` ("table is full"); the refused put changes nothing, updates and removals still work.
+- **A table sized for n entries could resize at the n-th insert.** The resize starts when the size reaches
+  (int) (capacity * 0.65), and for every capacity one expected size was exactly that - e.g. 681 574 for
+  2^20 slots, where `LongLongHashtable` then copies the table for ~7 ms on the last pre-sized insert.
+  Expected size 0 got a single slot, resized by the first put. Now the constructors (and `ensureCapacity`)
+  take the smallest capacity that holds n entries without a resize.
 
 ### Removed
 
@@ -54,6 +67,11 @@
   not safe either: its segments could overlap, and it ran on the common ForkJoinPool.
 - **`printLayout()` of both hashtables** - it computed nothing it returned or printed, and in
   `LongLongLL2Hashtable` it also finished an in-flight migration.
+- **Hashtable internals are no longer public:** `HashtableAsync2Resizer`, `HashtableResizer`,
+  `HashingUtils.findFreeOffset`, `LongLongLL2Hashtable.debugLocate`. `LongLongLL2Hashtable.mask()`
+  (deprecated) is gone - `capacity() - 1` is the same.
+- **`remove(key, hash)` of both hashtables.** Besides exposing the internal hash, it would have overloaded
+  the new `remove(key, value)`: `remove(key, 5)` with an int literal resolved to the hash variant.
 
 ### Changed
 

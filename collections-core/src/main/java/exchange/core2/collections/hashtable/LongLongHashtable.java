@@ -2,6 +2,7 @@ package exchange.core2.collections.hashtable;
 
 
 import java.util.Arrays;
+import java.util.function.LongUnaryOperator;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
@@ -14,8 +15,8 @@ import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
  *     <li>Key {@code 0} marks empty slots and can not be stored; a missing key reads as value {@code 0} - see
  *     {@link ILongLongHashtable}.</li>
  *     <li>Grows by doubling at load factor 0.65. The resize copies the whole table on the calling thread (~7ns per
- *     slot: ~7ms at 2^20 slots) - pre-size the table, or use {@link LongLongLL2Hashtable} where that pause
- *     matters.</li>
+ *     slot: ~7ms at 2^20 slots) - pre-size the table (constructor, {@link #ensureCapacity}), or use
+ *     {@link LongLongLL2Hashtable} where that pause matters.</li>
  *     <li>Maximum capacity: 2^29 slots, a {@code long[2^30]} (8 GB). There the table stops growing and takes new keys
  *     up to load 0.9, after that a {@code put} of a new key throws {@link IllegalStateException}.</li>
  *     <li>Not thread-safe.</li>
@@ -49,11 +50,7 @@ public class LongLongHashtable implements ILongLongHashtable {
 
         this.upsizeThresholdPerc = 0.65f;
         this.maxCapacity = maxCapacity;
-        final int arraySize = HashingUtils.capacityFor(size, upsizeThresholdPerc);
-        if (arraySize > maxCapacity) {
-            throw new IllegalArgumentException("expected size " + size + " needs " + arraySize
-                    + " slots, more than the maximum capacity " + maxCapacity);
-        }
+        final int arraySize = HashingUtils.capacityFor(size, upsizeThresholdPerc, maxCapacity);
 
         this.data = new long[arraySize * 2];
         this.mask = (this.data.length / 2) - 1;
@@ -68,17 +65,65 @@ public class LongLongHashtable implements ILongLongHashtable {
         final int offset = HashingUtils.findFreeOffset(key, data, mask);
 
         if (data[offset] != key) {
-            data[offset] = key;
-            data[offset + 1] = value;
-            if (++size >= upsizeThreshold) {
-                resize(offset);
-            }
+            insertAt(offset, key, value);
             return 0L;
         }
 
         final long prevValue = data[offset + 1];
         data[offset + 1] = value;
         return prevValue;
+    }
+
+    @Override
+    public long putIfAbsent(long key, long value) {
+
+        if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
+        final int offset = HashingUtils.findFreeOffset(key, data, mask);
+
+        if (data[offset] == key) {
+            return data[offset + 1];
+        }
+        insertAt(offset, key, value);
+        return 0L;
+    }
+
+    @Override
+    public long addAndGet(long key, long delta) {
+
+        if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
+        final int offset = HashingUtils.findFreeOffset(key, data, mask);
+
+        if (data[offset] == key) {
+            return data[offset + 1] += delta;
+        }
+        insertAt(offset, key, delta);
+        return delta;
+    }
+
+    @Override
+    public long computeIfAbsent(long key, LongUnaryOperator mappingFunction) {
+
+        if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
+        final int offset = HashingUtils.findFreeOffset(key, data, mask);
+
+        if (data[offset] == key) {
+            return data[offset + 1];
+        }
+        final long value = mappingFunction.applyAsLong(key);
+        // probe again rather than insert at the offset found before: the function may have changed the table
+        put(key, value);
+        return value;
+    }
+
+    /**
+     * Stores a new key in the gap its probe stopped at.
+     */
+    private void insertAt(int offset, long key, long value) {
+        data[offset] = key;
+        data[offset + 1] = value;
+        if (++size >= upsizeThreshold) {
+            resize(offset);
+        }
     }
 
 
@@ -97,15 +142,11 @@ public class LongLongHashtable implements ILongLongHashtable {
 
     @Override
     public long remove(long key) {
-        return remove(key, HashingUtils.hash(key));
-    }
-
-    public long remove(long key, int hash) {
         if (key == NOT_ALLOWED_KEY) {
             // never stored - and the probe would stop at the first gap, which holds key 0
             return 0L;
         }
-        final int offset = HashingUtils.findFreeOffset(key, (hash & mask) << 1, data);
+        final int offset = HashingUtils.findFreeOffset(key, data, mask);
         if (data[offset] != key) {
             return 0L;
         }
@@ -113,6 +154,20 @@ public class LongLongHashtable implements ILongLongHashtable {
         LinearProbing.deleteAt(data, offset);
         size--;
         return value;
+    }
+
+    @Override
+    public boolean remove(long key, long value) {
+        if (key == NOT_ALLOWED_KEY) {
+            return false;
+        }
+        final int offset = HashingUtils.findFreeOffset(key, data, mask);
+        if (data[offset] != key || data[offset + 1] != value) {
+            return false;
+        }
+        LinearProbing.deleteAt(data, offset);
+        size--;
+        return true;
     }
 
     /**
@@ -142,8 +197,21 @@ public class LongLongHashtable implements ILongLongHashtable {
 
     private void switchToNewArray(long[] data2) {
         this.data = data2;
-        mask = mask * 2 + 1;
+        mask = (data2.length >> 1) - 1;
         upsizeThreshold = (int) ((mask + 1) * upsizeThresholdPerc);
+    }
+
+    @Override
+    public int capacity() {
+        return mask + 1;
+    }
+
+    @Override
+    public void ensureCapacity(int expectedSize) {
+        final int capacity = HashingUtils.capacityFor(expectedSize, upsizeThresholdPerc, maxCapacity);
+        if (capacity > mask + 1) {
+            switchToNewArray(HashtableResizer.rehash(data, capacity));
+        }
     }
 
     /**
@@ -194,6 +262,14 @@ public class LongLongHashtable implements ILongLongHashtable {
     @Override
     public long size() {
         return size;
+    }
+
+    /**
+     * All entries as {@code {key=value, ...}} - for tests and debugging, it walks the whole table.
+     */
+    @Override
+    public String toString() {
+        return LinearProbing.entriesToString(data);
     }
 
     public long upsizeThreshold() {

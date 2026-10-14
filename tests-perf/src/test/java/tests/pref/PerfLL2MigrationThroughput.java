@@ -1,7 +1,6 @@
 package tests.pref;
 
 import exchange.core2.collections.affinity.CpuAffinity;
-import exchange.core2.collections.hashtable.HashtableAsync2Resizer;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
 import org.junit.Test;
 import org.slf4j.Logger;
@@ -54,7 +53,8 @@ public class PerfLL2MigrationThroughput {
             // LL2 starts its Cleaner thread at class init - before this thread pins itself, or it inherits the pin
             MethodHandles.lookup().ensureInitialized(LongLongLL2Hashtable.class);
             RESIZER = MethodHandles.privateLookupIn(LongLongLL2Hashtable.class, MethodHandles.lookup())
-                    .findVarHandle(LongLongLL2Hashtable.class, "resizer", HashtableAsync2Resizer.class);
+                    .findVarHandle(LongLongLL2Hashtable.class, "resizer",
+                            Class.forName("exchange.core2.collections.hashtable.HashtableAsync2Resizer"));
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }

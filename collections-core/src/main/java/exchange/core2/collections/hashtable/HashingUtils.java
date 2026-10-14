@@ -16,19 +16,22 @@ public class HashingUtils {
     static final float FULL_LOAD = 0.9f;
 
     /**
-     * Number of slots (a power of two) for a table expected to hold expectedSize entries at the given load factor.
+     * Number of slots (a power of two) for a table to hold expectedSize entries without a resize. The tables resize
+     * when the size reaches (int) (capacity * loadFactor), so that has to be above expectedSize.
+     *
+     * @param maxCapacity the largest capacity the table may have - IllegalArgumentException if more is needed
      */
-    static int capacityFor(final int expectedSize, final float loadFactor) {
+    static int capacityFor(final int expectedSize, final float loadFactor, final int maxCapacity) {
         if (expectedSize < 0) {
             throw new IllegalArgumentException("expected size must not be negative: " + expectedSize);
         }
-        // a float to int cast saturates at Integer.MAX_VALUE, so a huge expectedSize can not wrap around here
-        final int minCapacity = (int) (expectedSize / loadFactor);
-        if (minCapacity > MAX_CAPACITY) {
+        // rounding of the division could only matter where the result is an integer - and there it is exact
+        final double minCapacity = Math.ceil((expectedSize + 1.0) / loadFactor);
+        if (minCapacity > maxCapacity) {
             throw new IllegalArgumentException("expected size " + expectedSize + " exceeds the maximum of "
-                    + (int) (MAX_CAPACITY * loadFactor) + " entries");
+                    + ((int) (maxCapacity * loadFactor) - 1) + " entries (capacity " + maxCapacity + ")");
         }
-        return nextPositivePowerOfTwo(minCapacity);
+        return nextPositivePowerOfTwo((int) minCapacity);
     }
 
     /**
@@ -69,7 +72,7 @@ public class HashingUtils {
      * @param mask - mask for data array
      * @return offset in the array
      */
-    public static int findFreeOffset(long key, long[] data, int mask) {
+    static int findFreeOffset(long key, long[] data, int mask) {
         final int hash = HashingUtils.hash(key);
         int pos = (hash & mask) << 1;
 //        log.debug("collision on key:{} hash:{}(0x{})->pos:{}(0x{})", key, hash, String.format("%x", hash), pos, String.format("%x", pos));
@@ -81,7 +84,7 @@ public class HashingUtils {
      * its gap invariant was broken by a concurrent migration) it would otherwise spin forever,
      * which is indistinguishable from a deadlock. Bound it and fail loudly instead.
      */
-    public static int findFreeOffset(long key, int pos, long[] data) {
+    static int findFreeOffset(long key, int pos, long[] data) {
         final int startPos = pos;
         int i = 0;
 

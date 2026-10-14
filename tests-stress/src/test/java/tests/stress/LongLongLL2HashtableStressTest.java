@@ -106,7 +106,7 @@ public class LongLongLL2HashtableStressTest {
 
                 } catch (Throwable er) {
 
-                    int mask = hashtable.mask();
+                    int mask = hashtable.capacity() - 1;
                     final int hash = HashingUtils.hash(key);
                     int pos = (hash & mask) << 1;
 
@@ -130,7 +130,7 @@ public class LongLongLL2HashtableStressTest {
 
                     MutableInteger errCnt = new MutableInteger(0);
 
-                    int mask = hashtable.mask();
+                    int mask = hashtable.capacity() - 1;
 
                     MutableLong timeFrom = new MutableLong(Long.MAX_VALUE);
                     MutableLong timeTo = new MutableLong(0L);

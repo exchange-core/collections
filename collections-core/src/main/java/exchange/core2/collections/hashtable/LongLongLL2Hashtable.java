@@ -9,6 +9,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.LongUnaryOperator;
 import java.util.stream.LongStream;
 
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
@@ -133,8 +134,8 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
     /**
      * WARNING: the executor runs both the destination array allocation and the copying task, and
-     * the copying task spins ({@link HashtableAsync2Resizer#copy()}) while waiting for the
-     * application to authorize the next segment. A bounded executor therefore deadlocks as soon as
+     * the copying task spins while waiting for the application to authorize the next segment.
+     * A bounded executor therefore deadlocks as soon as
      * every thread in it is occupied by a spinning migrator - the allocation never gets scheduled.
      * Pass an unbounded / thread-per-task executor, or two separate ones.
      */
@@ -160,11 +161,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         this.syncResizeBelow = syncResizeBelow;
         this.maxCapacity = maxCapacity;
         this.upsizeThresholdPerc = 0.65f;
-        final int arraySize = HashingUtils.capacityFor(size, upsizeThresholdPerc);
-        if (arraySize > maxCapacity) {
-            throw new IllegalArgumentException("expected size " + size + " needs " + arraySize
-                    + " slots, more than the maximum capacity " + maxCapacity);
-        }
+        final int arraySize = HashingUtils.capacityFor(size, upsizeThresholdPerc, maxCapacity);
 
         this.data = new long[arraySize * 2];
         //this.blockThresholdPerc = 0.6501f;
@@ -489,7 +486,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         return remove(key, HashingUtils.hash(key));
     }
 
-    public long remove(long key, int hash) {
+    private long remove(long key, int hash) {
 
         if (key == NOT_ALLOWED_KEY) {
             // never stored - and the probe would stop at the first gap, which holds key 0
@@ -739,7 +736,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
      * Diagnostic: where a key physically is, and how each array is classified for it right now.
      * Scans both arrays, so it is only for failure reporting.
      */
-    public String debugLocate(long key) {
+    String debugLocate(long key) {
 
         final HashtableAsync2Resizer r = resizer;
         final int hash = HashingUtils.hash(key);
@@ -942,9 +939,139 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         return size;
     }
 
-    @Deprecated
-    public int mask() {
-        return mask;
+    /*
+     * The compound operations take one probe, like put, when no resize is in flight. During a resize they are made of
+     * the basic operations, which deal with the migration.
+     */
+
+    @Override
+    public long putIfAbsent(long key, long value) {
+
+        if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
+
+        if (arrayFeature != null || resizer != null) {
+            return containsKey(key) ? get(key) : put(key, value);
+        }
+
+        final int offset = HashingUtils.findFreeOffset(key, data, mask);
+        if (data[offset] == key) {
+            return data[offset + 1];
+        }
+        insertAt(offset, key, value);
+        return 0L;
+    }
+
+    @Override
+    public long addAndGet(long key, long delta) {
+
+        if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
+
+        if (arrayFeature != null || resizer != null) {
+            final long value = get(key) + delta;
+            put(key, value);
+            return value;
+        }
+
+        final int offset = HashingUtils.findFreeOffset(key, data, mask);
+        if (data[offset] == key) {
+            return data[offset + 1] += delta;
+        }
+        insertAt(offset, key, delta);
+        return delta;
+    }
+
+    @Override
+    public long computeIfAbsent(long key, LongUnaryOperator mappingFunction) {
+
+        if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
+
+        if (arrayFeature != null || resizer != null) {
+            if (containsKey(key)) {
+                return get(key);
+            }
+        } else {
+            final int offset = HashingUtils.findFreeOffset(key, data, mask);
+            if (data[offset] == key) {
+                return data[offset + 1];
+            }
+        }
+        final long value = mappingFunction.applyAsLong(key);
+        // a new probe through put: the function may have changed the table
+        put(key, value);
+        return value;
+    }
+
+    @Override
+    public boolean remove(long key, long value) {
+
+        if (key == NOT_ALLOWED_KEY) {
+            return false;
+        }
+
+        if (arrayFeature != null || resizer != null) {
+            if (containsKey(key) && get(key) == value) {
+                remove(key);
+                return true;
+            }
+            return false;
+        }
+
+        final int offset = HashingUtils.findFreeOffset(key, data, mask);
+        if (data[offset] != key || data[offset + 1] != value) {
+            return false;
+        }
+        LinearProbing.deleteAt(data, offset);
+        size--;
+        return true;
+    }
+
+    /**
+     * Stores a new key in the gap its probe stopped at - no resize in flight.
+     */
+    private void insertAt(int offset, long key, long value) {
+        data[offset] = key;
+        data[offset + 1] = value;
+        if (++size >= upsizeThreshold) {
+            resize(offset);
+        }
+    }
+
+    /**
+     * @return the number of slots of the current array - during a migration the old one, the new one has twice as many
+     */
+    @Override
+    public int capacity() {
+        return mask + 1;
+    }
+
+    /**
+     * A resize in flight already counts with its new capacity. If more is needed, the resize is finished first (as in
+     * {@link #close()}), then the table is rehashed synchronously.
+     */
+    @Override
+    public void ensureCapacity(int expectedSize) {
+        final int capacity = HashingUtils.capacityFor(expectedSize, upsizeThresholdPerc, maxCapacity);
+        final int targetCapacity = arrayFeature != null || resizer != null ? (mask + 1) * 2 : mask + 1;
+        if (capacity > targetCapacity) {
+            blockOnResizing();
+            if (capacity > mask + 1) {
+                data = HashtableResizer.rehash(data, capacity);
+                mask = capacity - 1;
+                upsizeThreshold = calculateUpsizeThreshold();
+                blockThreshold = calculateBlockThreshold();
+            }
+        }
+    }
+
+    /**
+     * All entries as {@code {key=value, ...}} - for tests and debugging, it walks the whole table. During a migration
+     * only the size: the entries are split between two arrays, and the migrator is writing one of them.
+     */
+    @Override
+    public String toString() {
+        return resizer == null
+                ? LinearProbing.entriesToString(data)
+                : "LongLongLL2Hashtable[size=" + size + ", migration in progress]";
     }
 
     public long upsizeThreshold() {

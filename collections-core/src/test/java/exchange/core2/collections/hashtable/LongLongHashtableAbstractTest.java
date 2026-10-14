@@ -29,10 +29,10 @@ public abstract class LongLongHashtableAbstractTest {
     private static final Logger log = LoggerFactory.getLogger(LongLongHashtableAbstractTest.class);
 
     /**
-     * Expected size giving a 16-slot table at load factor 0.65 (10 / 0.65 = 15.4, rounded up to a power of two),
-     * which the collision tests below rely on. Up to 10 entries it does not resize.
+     * Expected size giving a 16-slot table, which the collision tests below rely on: it resizes at the 10th entry
+     * (16 * 0.65 = 10.4), so it takes up to 9.
      */
-    private static final int SMALL_SIZE = 10;
+    private static final int SMALL_SIZE = 9;
     private static final int SMALL_CAPACITY = 16;
 
     private final List<ILongLongHashtable> created = new ArrayList<>();
@@ -436,7 +436,7 @@ public abstract class LongLongHashtableAbstractTest {
 
             hashtable = newHashtable(SMALL_SIZE);
             final Map<Long, Long> ref = new HashMap<>();
-            final int count = 2 + rand.nextInt(SMALL_SIZE - 2); // up to 9 entries - the 10th would resize
+            final int count = 2 + rand.nextInt(SMALL_SIZE - 1); // up to 9 entries - the 10th would resize
             long next = rand.nextInt(1_000_000) + 1;
             for (int i = 0; i < count; i++) {
                 final long key = findKeyForPosition(homes[rand.nextInt(homes.length)], next, SMALL_CAPACITY);
@@ -494,6 +494,246 @@ public abstract class LongLongHashtableAbstractTest {
         assertThat(hashtable.size(), is((long) limit));
         assertThrows(IllegalStateException.class, () -> hashtable.put(refused + 1, 1L));
         checkIntegrity(hashtable);
+    }
+
+
+    @Test
+    public void should_put_if_absent() {
+
+        hashtable = newHashtable(SMALL_SIZE);
+        assertThat(hashtable.putIfAbsent(5L, 50L), is(0L));
+        assertThat(hashtable.putIfAbsent(5L, 51L), is(50L));
+        assertThat(hashtable.get(5L), is(50L));
+
+        // behind a collision, and a present key with value 0 - present, so unchanged
+        final long key2 = findCollision(5L, SMALL_CAPACITY);
+        assertThat(hashtable.putIfAbsent(key2, 0L), is(0L));
+        assertThat(hashtable.putIfAbsent(key2, 61L), is(0L));
+        assertTrue(hashtable.containsKey(key2));
+        assertThat(hashtable.get(key2), is(0L));
+        assertThat(hashtable.size(), is(2L));
+
+        assertThrows(IllegalArgumentException.class, () -> hashtable.putIfAbsent(0L, 1L));
+        assertThat(hashtable.size(), is(2L));
+    }
+
+    @Test
+    public void should_add_and_get() {
+
+        hashtable = newHashtable(SMALL_SIZE);
+        assertThat(hashtable.addAndGet(5L, 7L), is(7L));
+        assertThat(hashtable.addAndGet(5L, -10L), is(-3L));
+        assertThat(hashtable.get(5L), is(-3L));
+
+        // reaching 0 keeps the entry, adding 0 to a missing key puts it
+        assertThat(hashtable.addAndGet(5L, 3L), is(0L));
+        assertTrue(hashtable.containsKey(5L));
+        final long key2 = findCollision(5L, SMALL_CAPACITY);
+        assertThat(hashtable.addAndGet(key2, 0L), is(0L));
+        assertTrue(hashtable.containsKey(key2));
+        assertThat(hashtable.addAndGet(key2, 4L), is(4L));
+        assertThat(hashtable.size(), is(2L));
+
+        // wraps around like +
+        assertThat(hashtable.addAndGet(7L, Long.MAX_VALUE), is(Long.MAX_VALUE));
+        assertThat(hashtable.addAndGet(7L, 1L), is(Long.MIN_VALUE));
+
+        assertThrows(IllegalArgumentException.class, () -> hashtable.addAndGet(0L, 1L));
+        assertThat(hashtable.size(), is(3L));
+    }
+
+    @Test
+    public void should_compute_if_absent() {
+
+        hashtable = newHashtable(SMALL_SIZE);
+        final int[] calls = {0};
+        assertThat(hashtable.computeIfAbsent(5L, k -> ++calls[0] * k), is(5L));
+        assertThat(hashtable.computeIfAbsent(5L, k -> ++calls[0] * k), is(5L));
+        assertThat(calls[0], is(1));
+
+        final long key2 = findCollision(5L, SMALL_CAPACITY);
+        hashtable.put(key2, 0L);
+        assertThat(hashtable.computeIfAbsent(key2, k -> ++calls[0]), is(0L));
+        assertThat(calls[0], is(1));
+
+        assertThrows(IllegalArgumentException.class, () -> hashtable.computeIfAbsent(0L, k -> ++calls[0]));
+        assertThat(calls[0], is(1));
+        assertThat(hashtable.size(), is(2L));
+    }
+
+    /**
+     * The function grows the table through resizes: the offset found before calling it is stale, the computed value
+     * must still land under the key.
+     */
+    @Test
+    public void should_compute_if_absent_when_the_function_modifies_the_table() {
+
+        hashtable = newHashtable(SMALL_SIZE);
+        final long key = 1_000_001L;
+        assertThat(hashtable.computeIfAbsent(key, k -> {
+            for (long i = 1; i <= 100; i++) {
+                hashtable.put(i, i);
+            }
+            return 77L;
+        }), is(77L));
+
+        assertThat(hashtable.get(key), is(77L));
+        assertThat(hashtable.size(), is(101L));
+        for (long i = 1; i <= 100; i++) {
+            assertThat(hashtable.get(i), is(i));
+        }
+        checkIntegrity(hashtable);
+    }
+
+    @Test
+    public void should_remove_only_with_matching_value() {
+
+        hashtable = newHashtable(SMALL_SIZE);
+        hashtable.put(5L, 50L);
+        final long key2 = findCollision(5L, SMALL_CAPACITY);
+        hashtable.put(key2, 0L);
+
+        assertFalse(hashtable.remove(5L, 51L));
+        assertThat(hashtable.get(5L), is(50L));
+        assertTrue(hashtable.remove(5L, 50L));
+        assertFalse(hashtable.containsKey(5L));
+        assertFalse(hashtable.remove(5L, 50L));
+
+        // value 0: matches a key stored with 0, not a missing key
+        assertFalse(hashtable.remove(6L, 0L));
+        assertTrue(hashtable.containsKey(key2));
+        assertTrue(hashtable.remove(key2, 0L));
+        assertFalse(hashtable.containsKey(key2));
+
+        assertFalse(hashtable.remove(0L, 0L));
+        assertThat(hashtable.size(), is(0L));
+    }
+
+    @Test
+    public void should_print_entries() {
+
+        hashtable = newHashtable(SMALL_SIZE);
+        assertThat(hashtable.toString(), is("{}"));
+        hashtable.put(5L, 50L);
+        assertThat(hashtable.toString(), is("{5=50}"));
+        hashtable.put(-7L, 0L);
+        final String s = hashtable.toString();
+        assertTrue(s, s.equals("{5=50, -7=0}") || s.equals("{-7=0, 5=50}"));
+    }
+
+    /**
+     * A table sized for n entries takes n without a resize, with the smallest capacity that does. Expected sizes
+     * right at a threshold, (int) (capacity * 0.65), used to get that capacity - and to resize at the last entry.
+     */
+    @Test
+    public void should_fit_the_expected_size_without_resize() {
+
+        final List<Integer> sizes = new ArrayList<>();
+        for (int n = 0; n <= 100; n++) {
+            sizes.add(n);
+        }
+        for (int capacity = 128; capacity <= 1 << 16; capacity <<= 1) {
+            final int threshold = (int) (capacity * 0.65f);
+            sizes.add(threshold - 1);
+            sizes.add(threshold);
+            sizes.add(threshold + 1);
+        }
+
+        for (int n : sizes) {
+            final ILongLongHashtable table = newHashtable(n);
+            final int capacity = table.capacity();
+            assertTrue("n=" + n + " capacity=" + capacity, (int) (capacity * 0.65f) > n);
+            assertTrue("n=" + n + " capacity=" + capacity, (int) ((capacity >> 1) * 0.65f) <= n);
+            for (long key = 1; key <= n; key++) {
+                table.put(key, key);
+            }
+            assertThat("n=" + n, table.capacity(), is(capacity));
+        }
+    }
+
+    @Test
+    public void should_ensure_capacity() {
+
+        hashtable = newHashtable(SMALL_SIZE);
+        final Map<Long, Long> ref = new HashMap<>();
+        for (long key = 1; key <= SMALL_SIZE; key++) {
+            hashtable.put(key * 7919, key);
+            ref.put(key * 7919, key);
+        }
+        assertThat(hashtable.capacity(), is(SMALL_CAPACITY));
+
+        hashtable.ensureCapacity(5); // fits already
+        assertThat(hashtable.capacity(), is(SMALL_CAPACITY));
+
+        hashtable.ensureCapacity(10_000); // 10001 / 0.65 = 15386 slots needed - one rehash to 16384
+        assertThat(hashtable.capacity(), is(16384));
+        ref.forEach((k, v) -> assertThat(hashtable.get(k), is(v)));
+        checkIntegrity(hashtable);
+
+        for (long key = 1; hashtable.size() < 10_000; key++) {
+            hashtable.put(-key, key);
+        }
+        assertThat(hashtable.capacity(), is(16384));
+        ref.forEach((k, v) -> assertThat(hashtable.get(k), is(v)));
+
+        assertThrows(IllegalArgumentException.class, () -> hashtable.ensureCapacity(-1));
+        assertThrows(IllegalArgumentException.class, () -> hashtable.ensureCapacity(400_000_000));
+        assertThat(hashtable.capacity(), is(16384));
+        checkIntegrity(hashtable);
+    }
+
+    /**
+     * All operations against a reference map while the table grows through resizes - asynchronous ones in LL2, past
+     * 8200 entries, so that the compound operations run during migrations too.
+     */
+    @Test
+    public void should_match_reference_map_with_all_operations() {
+
+        final Random rand = new Random(5L);
+        hashtable = newHashtable(16);
+        final Map<Long, Long> ref = new HashMap<>();
+        final long[] keys = new long[40_000];
+        for (int i = 0; i < keys.length; i++) {
+            keys[i] = rand.nextLong() | 1L;
+        }
+
+        for (int op = 0; op < 400_000; op++) {
+            // a growing set of keys, so that the table keeps resizing
+            final long key = keys[rand.nextInt(Math.min(keys.length, 100 + op / 8))];
+            final long value = rand.nextInt(4) == 0 ? 0L : rand.nextLong();
+            final int kind = rand.nextInt(9);
+            switch (kind) {
+                case 0 -> check(op, kind, hashtable.put(key, value), orZero(ref.put(key, value)));
+                case 1 -> check(op, kind, hashtable.putIfAbsent(key, value), orZero(ref.putIfAbsent(key, value)));
+                case 2 -> check(op, kind, hashtable.addAndGet(key, value), ref.merge(key, value, Long::sum));
+                case 3 -> check(op, kind, hashtable.computeIfAbsent(key, k -> k ^ value),
+                        ref.computeIfAbsent(key, k -> k ^ value));
+                case 4 -> check(op, kind, hashtable.remove(key), orZero(ref.remove(key)));
+                case 5 -> {
+                    final long expected = rand.nextBoolean() ? orZero(ref.get(key)) : value;
+                    final boolean removed = hashtable.remove(key, expected);
+                    check(op, kind, removed ? 1 : 0, ref.remove(key, expected) ? 1 : 0);
+                }
+                case 6 -> check(op, kind, hashtable.containsKey(key) ? 1 : 0, ref.containsKey(key) ? 1 : 0);
+                default -> check(op, kind, hashtable.get(key), orZero(ref.get(key)));
+            }
+            check(op, -1, hashtable.size(), ref.size());
+        }
+
+        log.info("size={} capacity={}", hashtable.size(), hashtable.capacity());
+        ref.forEach((k, v) -> assertThat(hashtable.get(k), is(v)));
+        checkIntegrity(hashtable);
+    }
+
+    /** assertThat with a message built only on failure - the reference test runs millions of checks */
+    private static void check(int op, int kind, long actual, long expected) {
+        if (actual != expected) {
+            throw new AssertionError("op " + op + " kind " + kind + ": expected " + expected + " but was " + actual);
+        }
+    }
+
+    private static long orZero(Long value) {
+        return value == null ? 0L : value;
     }
 
 
