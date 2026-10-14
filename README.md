@@ -176,6 +176,8 @@ Do not modify the table from the `forEach` consumer or while a stream is being c
   `containsKey` tells them apart
 - the constructor argument is the expected number of entries, up to ~349 million (2^29 slots); a
   negative or larger value throws `IllegalArgumentException`
+- at the maximum capacity of 2^29 slots the table stops growing: it takes new keys up to load 0.9, then
+  `put` of a new key throws `IllegalStateException` and changes nothing
 - the table grows automatically at 65% load factor; that resize is synchronous and shows up as a
   latency spike — pre-size the table if this matters
 - not thread-safe

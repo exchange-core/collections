@@ -11,6 +11,11 @@ public class HashingUtils {
     static final int MAX_CAPACITY = 1 << 29;
 
     /**
+     * Load a table at its maximum capacity is allowed to reach - it can not grow, new keys are refused after that.
+     */
+    static final float FULL_LOAD = 0.9f;
+
+    /**
      * Number of slots (a power of two) for a table expected to hold expectedSize entries at the given load factor.
      */
     static int capacityFor(final int expectedSize, final float loadFactor) {

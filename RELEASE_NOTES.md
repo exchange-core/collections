@@ -40,12 +40,20 @@
   that moved the start onto the migrator's position, the migrator waited for an authorization that never
   came, and the put waited for the migrator until the 10 s hang detection. Seen with small tables migrated
   asynchronously (low `syncResizeBelow`).
+- **At the maximum capacity (2^29 slots) both tables filled up completely.** They stopped growing but kept
+  taking new keys, with ever longer probes, until the last free slot - and then every operation that probed
+  for a missing key failed. Now a table there takes new keys up to load 0.9 and then refuses them with
+  `IllegalStateException` ("table is full"); the refused put changes nothing, updates and removals still work.
 
 ### Removed
 
 - **`LongLongRadixHashtable` is no longer published.** It was an experiment with stubbed methods: `get`
   returned `0`, `size()` was always `0`, `keysStream()` returned `null`. It moved next to its benchmark in
   `tests-perf`.
+- **`HashtableAsyncResizer` and `HashtableResizer.resizeParallelSync()`** - unused. The parallel resize was
+  not safe either: its segments could overlap, and it ran on the common ForkJoinPool.
+- **`printLayout()` of both hashtables** - it computed nothing it returned or printed, and in
+  `LongLongLL2Hashtable` it also finished an in-flight migration.
 
 ### Changed
 

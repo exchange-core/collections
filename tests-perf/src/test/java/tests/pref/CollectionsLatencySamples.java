@@ -24,6 +24,7 @@ import java.lang.management.ManagementFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +55,8 @@ import java.util.stream.Collectors;
  *     <li>{@code -Daffinity.reserved} - hex mask of CPUs for the pinned threads (default: the kernel's isolated CPUs),
  *     {@code -Dsamples.cpu.main} / {@code -Dsamples.cpu.ll2-migrator} - explicit CPU, see {@link CpuAffinity}</li>
  *     <li>{@code -Dsamples.seed} - offset of the data-set seeds (default 0), other keys of the same shape</li>
+ *     <li>{@code -Dsamples.rewarm.puts} - hashtable-put: puts of a throwaway instance between the GC and the measured
+ *     instance (default 50000, 0 = none)</li>
  * </ul>
  * Two kinds of samples:
  * <ul>
@@ -116,6 +119,8 @@ public class CollectionsLatencySamples {
 
     /** hashtable-put: every map grows from INITIAL_CAPACITY to PUT_KEYS entries at PUT_RATE. */
     private static final int PUT_KEYS = 4_000_000;
+    /** hashtable-put: puts of the throwaway instance run between the GC and the measured one (~50ms at PUT_RATE), 0 = none. */
+    private static final int REWARM_PUTS = Integer.getInteger("samples.rewarm.puts", 50_000);
     private static final long PUT_RATE = 1_000_000;
     private static final int INITIAL_CAPACITY = 16;
     private static final float LOAD_FACTOR = 0.65f;
@@ -678,6 +683,13 @@ public class CollectionsLatencySamples {
         }
         log.info("{}/{}: warm-up {} instances, {}ms", group, name, instances, (System.nanoTime() - start) / 1_000_000);
         System.gc();
+        // The full GC leaves the caches cold, and the measured instance resizes most often right at its start: its first
+        // LL2 migrations ran 30-80us slower than any later one. Run the start of one more throwaway instance first.
+        if (REWARM_PUTS > 0) {
+            try (Bench rewarm = subject.get()) {
+                measureResponseTime(rewarm, Arrays.copyOf(keys, REWARM_PUTS), new long[REWARM_PUTS * SAMPLES / keys.length]);
+            }
+        }
         log.info("{}/{}: measuring {} puts at {} ops/s...", group, name, keys.length, PUT_RATE);
         final long[] samples = new long[SAMPLES];
         try (Bench bench = subject.get()) {

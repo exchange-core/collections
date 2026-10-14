@@ -7,12 +7,27 @@ import java.util.stream.LongStream;
 
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
 
+/**
+ * Primitive {@code long} to {@code long} hashtable: open addressing with linear probing, keys and values interleaved
+ * in one {@code long[]}, backward-shift deletion (no tombstones).
+ * <ul>
+ *     <li>Key {@code 0} marks empty slots and can not be stored; a missing key reads as value {@code 0} - see
+ *     {@link ILongLongHashtable}.</li>
+ *     <li>Grows by doubling at load factor 0.65. The resize copies the whole table on the calling thread (~7ns per
+ *     slot: ~7ms at 2^20 slots) - pre-size the table, or use {@link LongLongLL2Hashtable} where that pause
+ *     matters.</li>
+ *     <li>Maximum capacity: 2^29 slots, a {@code long[2^30]} (8 GB). There the table stops growing and takes new keys
+ *     up to load 0.9, after that a {@code put} of a new key throws {@link IllegalStateException}.</li>
+ *     <li>Not thread-safe.</li>
+ * </ul>
+ */
 public class LongLongHashtable implements ILongLongHashtable {
 
 
     public static final int DEFAULT_ARRAY_SIZE = 16;
 
     private final float upsizeThresholdPerc;
+    private final int maxCapacity;
 
     private long[] data;
     private long size = 0;
@@ -24,9 +39,21 @@ public class LongLongHashtable implements ILongLongHashtable {
     }
 
     public LongLongHashtable(int size) {
+        this(size, HashingUtils.MAX_CAPACITY);
+    }
+
+    /**
+     * @param maxCapacity capacity in slots the table stops growing at - lower than the real maximum only in tests
+     */
+    LongLongHashtable(int size, int maxCapacity) {
 
         this.upsizeThresholdPerc = 0.65f;
+        this.maxCapacity = maxCapacity;
         final int arraySize = HashingUtils.capacityFor(size, upsizeThresholdPerc);
+        if (arraySize > maxCapacity) {
+            throw new IllegalArgumentException("expected size " + size + " needs " + arraySize
+                    + " slots, more than the maximum capacity " + maxCapacity);
+        }
 
         this.data = new long[arraySize * 2];
         this.mask = (this.data.length / 2) - 1;
@@ -40,18 +67,17 @@ public class LongLongHashtable implements ILongLongHashtable {
         //        log.debug("PUT key:{} val:{}", key, value);
         final int offset = HashingUtils.findFreeOffset(key, data, mask);
 
-        final long prevValue = data[offset + 1];
         if (data[offset] != key) {
-            size++;
+            data[offset] = key;
+            data[offset + 1] = value;
+            if (++size >= upsizeThreshold) {
+                resize(offset);
+            }
+            return 0L;
         }
 
-        data[offset] = key;
+        final long prevValue = data[offset + 1];
         data[offset + 1] = value;
-
-        if (size >= upsizeThreshold) {
-            resize();
-        }
-
         return prevValue;
     }
 
@@ -89,24 +115,29 @@ public class LongLongHashtable implements ILongLongHashtable {
         return value;
     }
 
-    private void resize() {
+    /**
+     * @param insertedOffset where the put that crossed the threshold stored its new key - taken back if the table is
+     *                       full
+     */
+    private void resize(int insertedOffset) {
 
         // log.debug("RESIZE {}->{} elements={} ...", data.length, data.length * 2L, size);
 
-        if (data.length * 2L > Integer.MAX_VALUE) {
-            upsizeThreshold = Integer.MAX_VALUE;
-            return;
+        if (mask + 1 >= maxCapacity) {
+            // can not grow any more: take new keys up to FULL_LOAD, then refuse them - beyond that the probes, and
+            // with them every operation, get longer and longer
+            final long limit = (long) ((mask + 1) * HashingUtils.FULL_LOAD);
+            if (size <= limit) {
+                upsizeThreshold = limit + 1;
+                return;
+            }
+            LinearProbing.deleteAt(data, insertedOffset);
+            size--;
+            throw new IllegalStateException("table is full: " + size + " entries at the maximum capacity of "
+                    + (mask + 1) + " slots");
         }
 
-        final long[] data2;
-        final HashtableResizer hashtableResizer = new HashtableResizer(data);
-        // log.debug("Sync resizing...");
-//        if (data.length >= 32768) { // TODO find right value
-//            data2 = hashtableResizer.resizeParallelSync();
-//        } else {
-        data2 = hashtableResizer.resizeSync();
-//        }
-        switchToNewArray(data2);
+        switchToNewArray(new HashtableResizer(data).resizeSync());
     }
 
     private void switchToNewArray(long[] data2) {
@@ -169,7 +200,6 @@ public class LongLongHashtable implements ILongLongHashtable {
         return upsizeThreshold;
     }
 
-    //public void extractMatching(long[] destArray, int destBits, int destMask) {
     public void extractMatching(LongLongHashtable dest, int destBits, int destMask) {
 
         for (int i = 0; i < data.length; i += 2) {
@@ -217,32 +247,34 @@ public class LongLongHashtable implements ILongLongHashtable {
 
     }
 
+    /**
+     * Verifies the linear-probing invariants: every key is found by probing from its home (no gap in its way, no
+     * duplicate before it), free slots hold value 0 (a missing key reads as the value of the gap its probe stops at),
+     * size matches the occupied slots, and at least one slot is free. For tests - scans the whole array.
+     */
     void integrityCheck() {
-        // TODO check all keys are reachable
-        // TODO check size is correct
-        // TODO check load factor is correct
-
-
-    }
-
-    public void printLayout(String comment) {
-
+        long occupied = 0;
         for (int i = 0; i < data.length; i += 2) {
             final long key = data[i];
-            if (key != NOT_ALLOWED_KEY) {
-                final int hash = HashingUtils.hash(key);
-                final int targetPos = hash & mask;
-            } else {
+            if (key == NOT_ALLOWED_KEY) {
+                if (data[i + 1] != 0) {
+                    throw new IllegalStateException("integrityCheck: free slot " + i + " holds value " + data[i + 1]);
+                }
+                continue;
             }
-
-            if (i > 256) {
-                break;
+            occupied++;
+            final int reachableAt = HashingUtils.findFreeOffset(key, data, mask);
+            if (reachableAt != i) {
+                throw new IllegalStateException("integrityCheck: key=" + key + " stored at " + i
+                        + " but probing from its home reaches " + reachableAt
+                        + " (" + (data[reachableAt] == key ? "duplicate" : "unreachable") + ")");
             }
         }
+        if (occupied != size) {
+            throw new IllegalStateException("integrityCheck: size=" + size + " but " + occupied + " occupied slots");
+        }
+        if (occupied > mask) {
+            throw new IllegalStateException("integrityCheck: no free slot left, capacity=" + (mask + 1));
+        }
     }
-
-//    private int desiredPosition(long key) {
-//        final int hash = HashingUtils.hash(key);
-//        return (hash & mask) << 1;
-//    }
 }

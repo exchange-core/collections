@@ -13,6 +13,23 @@ import java.util.stream.LongStream;
 
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
 
+/**
+ * The {@link LongLongHashtable} layout with an asynchronous resize: a migrator thread copies the old array into the
+ * new one segment by segment while the application keeps using the table - no stop-the-world pause.
+ * <ul>
+ *     <li>One application thread. Every operation, {@link #get} included, may advance the migration and switch
+ *     arrays, so the table is not safe even for concurrent readers.</li>
+ *     <li>An operation on a key whose home is in the segment being copied waits for that segment (a 256-slot segment
+ *     copies in ~2us). A put that brings the old array to 90% load before the migration ends waits for all of it.</li>
+ *     <li>During a migration both arrays are alive: three times the memory of the old one.</li>
+ *     <li>Tables with fewer than {@code syncResizeBelow} entries (default {@value #DEFAULT_SYNC_RESIZE_BELOW}) resize
+ *     synchronously, like {@link LongLongHashtable}.</li>
+ *     <li>The executor runs the allocation of the new array and the copying, which spins until its migration ends:
+ *     it must not be bounded (see the constructors). {@link #close()} finishes an in-flight migration.</li>
+ *     <li>{@link #clear()}, {@link #forEach}, {@link #keysStream()} and {@link #valuesStream()} are not supported.</li>
+ *     <li>Key {@code 0}, value {@code 0} and the maximum capacity as in {@link LongLongHashtable}.</li>
+ * </ul>
+ */
 public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
     public static final int DEFAULT_ARRAY_SIZE = 32;
@@ -23,6 +40,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
     private final Executor executor;
     private final int syncResizeBelow;
+    private final int maxCapacity;
 
     private long[] data;
     private long size = 0;
@@ -131,10 +149,22 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
      * a thread-per-task executor needs 50-100us, more if each new thread pins itself to a core.
      */
     public LongLongLL2Hashtable(int size, Executor executor, int syncResizeBelow) {
+        this(size, executor, syncResizeBelow, HashingUtils.MAX_CAPACITY);
+    }
+
+    /**
+     * @param maxCapacity capacity in slots the table stops growing at - lower than the real maximum only in tests
+     */
+    LongLongLL2Hashtable(int size, Executor executor, int syncResizeBelow, int maxCapacity) {
         this.executor = executor;
         this.syncResizeBelow = syncResizeBelow;
+        this.maxCapacity = maxCapacity;
         this.upsizeThresholdPerc = 0.65f;
         final int arraySize = HashingUtils.capacityFor(size, upsizeThresholdPerc);
+        if (arraySize > maxCapacity) {
+            throw new IllegalArgumentException("expected size " + size + " needs " + arraySize
+                    + " slots, more than the maximum capacity " + maxCapacity);
+        }
 
         this.data = new long[arraySize * 2];
         //this.blockThresholdPerc = 0.6501f;
@@ -159,16 +189,17 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         }
 
         final int offset = HashingUtils.findFreeOffset(key, data, mask);
-        final long prevValue = data[offset + 1];
         if (data[offset] != key) {
             data[offset] = key;
-            size++;
+            data[offset + 1] = value;
+            if (++size >= upsizeThreshold) {
+                resize(offset);
+            }
+            return 0L;
         }
-        data[offset + 1] = value;
 
-        if (size >= upsizeThreshold) {
-            resize();
-        }
+        final long prevValue = data[offset + 1];
+        data[offset + 1] = value;
         return prevValue;
     }
 
@@ -225,18 +256,17 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
             //        log.debug("PUT key:{} val:{}", key, value);
             final int offset = HashingUtils.findFreeOffset(key, pos, data);
 
-            final long prevValue = data[offset + 1];
             if (data[offset] != key) {
-                size++;
+                data[offset] = key;
+                data[offset + 1] = value;
+                if (++size >= upsizeThreshold && arrayFeature == null) {
+                    resize(offset);
+                }
+                return 0L;
             }
 
-            data[offset] = key;
+            final long prevValue = data[offset + 1];
             data[offset + 1] = value;
-
-            if (arrayFeature == null && size >= upsizeThreshold) {
-                resize();
-            }
-
             return prevValue;
         }
 
@@ -538,13 +568,26 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         return value;
     }
 
-    private void resize() {
+    /**
+     * @param insertedOffset where the put that crossed the threshold stored its new key - taken back if the table is
+     *                       full (no migration is in flight here, data is the only array)
+     */
+    private void resize(int insertedOffset) {
 
         //log.debug("RESIZE {}->{} elements={} ...", data.length, data.length * 2L, size);
 
-        if (data.length * 2L > Integer.MAX_VALUE) {
-            upsizeThreshold = Integer.MAX_VALUE;
-            return;
+        if (mask + 1 >= maxCapacity) {
+            // can not grow any more: take new keys up to FULL_LOAD, then refuse them - beyond that the probes, and
+            // with them every operation, get longer and longer
+            final long limit = (long) ((mask + 1) * HashingUtils.FULL_LOAD);
+            if (size <= limit) {
+                upsizeThreshold = limit + 1;
+                return;
+            }
+            LinearProbing.deleteAt(data, insertedOffset);
+            size--;
+            throw new IllegalStateException("table is full: " + size + " entries at the maximum capacity of "
+                    + (mask + 1) + " slots");
         }
 
         // synchronous copy on the calling thread: ~7.5ns per slot, 62us at 8192 slots
@@ -559,7 +602,6 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
             blockThreshold = calculateBlockThreshold();
             //log.debug("SYNC RESIZE done, upsizeThreshold=" + upsizeThreshold);
         } else {
-            //printLayout("BEFORE async RESIZE");
           //  log.info("(A) Allocating array async: long[{}] ...", data.length * 2);
             final String threadName = Thread.currentThread().getName();
             arrayFeature = CompletableFuture.supplyAsync(
@@ -820,7 +862,6 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
             // the migrator has been signalled and unparked - wait for it to actually leave copy()
             awaitFuture(pendingCopy, "migrator shutdown");
 
-            // printLayout("AFTER async RESIZE");
         }
     }
 
@@ -1002,25 +1043,6 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         if (size >= capacity) {
             throw new IllegalStateException("integrityCheck: no gap left, size=" + size
                     + " capacity=" + capacity);
-        }
-    }
-
-    public void printLayout(String comment) {
-
-
-        blockOnResizing();
-
-        for (int i = 0; i < data.length; i += 2) {
-            final long key = data[i];
-            if (key != NOT_ALLOWED_KEY) {
-                final int hash = HashingUtils.hash(key);
-                final int targetPos = hash & mask;
-            } else {
-            }
-
-            if (i > 256) {
-                break;
-            }
         }
     }
 

@@ -44,10 +44,28 @@ public abstract class LongLongHashtableAbstractTest {
      */
     protected abstract ILongLongHashtable create(int expectedSize);
 
+    /**
+     * @param maxCapacity slots the table stops growing at, instead of the real 2^29
+     */
+    protected abstract ILongLongHashtable createLimited(int expectedSize, int maxCapacity);
+
     private ILongLongHashtable newHashtable(int expectedSize) {
         final ILongLongHashtable table = create(expectedSize);
         created.add(table);
         return table;
+    }
+
+    /**
+     * The tables' own invariant check: every key reachable from its home, size = occupied slots, a free slot left.
+     * LL2 checks only between migrations - close() finishes one in flight, the table stays usable.
+     */
+    static void checkIntegrity(ILongLongHashtable table) {
+        if (table instanceof LongLongHashtable t) {
+            t.integrityCheck();
+        } else if (table instanceof LongLongLL2Hashtable t) {
+            t.close();
+            t.integrityCheck();
+        }
     }
 
     @After
@@ -321,7 +339,6 @@ public abstract class LongLongHashtableAbstractTest {
 
                 if (BitUtil.isPowerOfTwo(i)) {
 
-                    //hashtable.printLayout();
 
                     assertThat(hashtable.size(), is(i + 1L));
                     log.info("Periodic validating get - size={} iteration={}...", hashtable.size(), iteration);
@@ -358,6 +375,7 @@ public abstract class LongLongHashtableAbstractTest {
                     throw er;
                 }
             });
+            checkIntegrity(hashtable);
             log.info("validating remove...");
             refMap.forEach((k, v) -> assertThat(hashtable.remove(k), is(v)));
             assertThat(hashtable.size(), is(0L));
@@ -437,8 +455,45 @@ public abstract class LongLongHashtableAbstractTest {
                     assertThat("round " + round + " key " + e.getKey(), hashtable.get(e.getKey()), is(e.getValue()));
                 }
                 assertThat(hashtable.size(), is((long) ref.size()));
+                checkIntegrity(hashtable);
             }
         }
+    }
+
+    /**
+     * At its maximum capacity a table can not grow: it takes new keys up to load 0.9 and refuses the next one,
+     * unchanged - instead of filling up completely, with ever longer probes, and failing only at 100%.
+     */
+    @Test
+    public void should_refuse_new_keys_at_full_load_of_the_maximum_capacity() {
+
+        final int maxCapacity = 64;
+        final int limit = (int) (maxCapacity * HashingUtils.FULL_LOAD); // 57
+        hashtable = createLimited(SMALL_SIZE, maxCapacity);             // 16 -> 32 -> 64 slots, then stops
+        created.add(hashtable);
+
+        final Map<Long, Long> ref = new HashMap<>();
+        for (long key = 1; key <= limit; key++) {
+            assertThat(hashtable.put(key, key * 10), is(0L));
+            ref.put(key, key * 10);
+        }
+        assertThat(hashtable.size(), is((long) limit));
+
+        final long refused = limit + 1;
+        final IllegalStateException e = assertThrows(IllegalStateException.class, () -> hashtable.put(refused, 1L));
+        assertTrue(e.getMessage(), e.getMessage().contains("table is full"));
+        assertFalse(hashtable.containsKey(refused));
+        assertThat(hashtable.size(), is((long) limit));
+        ref.forEach((k, v) -> assertThat(hashtable.get(k), is(v)));
+        checkIntegrity(hashtable);
+
+        // updates still work, and a removal makes room for one new key
+        assertThat(hashtable.put(1L, 11L), is(10L));
+        assertThat(hashtable.remove(2L), is(20L));
+        assertThat(hashtable.put(refused, 1L), is(0L));
+        assertThat(hashtable.size(), is((long) limit));
+        assertThrows(IllegalStateException.class, () -> hashtable.put(refused + 1, 1L));
+        checkIntegrity(hashtable);
     }
 
 

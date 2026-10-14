@@ -7,3 +7,6 @@ delombok/
 *.iws
 *.iml
 *.ipr
+
+### logback FileAppender of tests-common (stress and benchmark runs) ###
+application.log
