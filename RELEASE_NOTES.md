@@ -13,6 +13,16 @@
 - **`LongLongHashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`.** The README documented
   them, but all four threw `UnsupportedOperationException`. `forEach` does not allocate. They stay
   unsupported in `LongLongLL2Hashtable`.
+- **Hashtables: `putIfAbsent`, `addAndGet`, `computeIfAbsent`, `remove(key, value)`, `capacity()`,
+  `ensureCapacity(expectedSize)` and `toString()`.** The compound operations take one probe, like `put`
+  (in `LongLongLL2Hashtable` when no resize is in flight - during a migration they are made of the basic
+  operations). `ensureCapacity` grows the table in one rehash. `toString` prints `{key=value, ...}`;
+  during a migration `LongLongLL2Hashtable` prints only the size. In `ILongLongHashtable` the compound
+  operations are default methods; `capacity()` and `ensureCapacity()` are new abstract methods.
+- **`HashtableOpsJmh`** (`tests-perf`, JMH 1.34): average time of the single-key hashtable operations, hits
+  and misses, from an L1-resident table to one in DRAM - for A/B runs of `collections-core` builds.
+- **`Automatic-Module-Name`** in the published jars: `exchange.core2.collections`,
+  `exchange.core2.collections.orderbook`, `exchange.core2.collections.affinity`.
 
 ### Fixed
 
@@ -40,15 +50,44 @@
   that moved the start onto the migrator's position, the migrator waited for an authorization that never
   came, and the put waited for the migrator until the 10 s hang detection. Seen with small tables migrated
   asynchronously (low `syncResizeBelow`).
+- **At the maximum capacity (2^29 slots) both tables filled up completely.** They stopped growing but kept
+  taking new keys, with ever longer probes, until the last free slot - and then every operation that probed
+  for a missing key failed. Now a table there takes new keys up to load 0.9 and then refuses them with
+  `IllegalStateException` ("table is full"); the refused put changes nothing, updates and removals still work.
+- **A table sized for n entries could resize at the n-th insert.** The resize starts when the size reaches
+  (int) (capacity * 0.65), and for every capacity one expected size was exactly that - e.g. 681 574 for
+  2^20 slots, where `LongLongHashtable` then copies the table for ~7 ms on the last pre-sized insert.
+  Expected size 0 got a single slot, resized by the first put. Now the constructors (and `ensureCapacity`)
+  take the smallest capacity that holds n entries without a resize.
 
 ### Removed
 
 - **`LongLongRadixHashtable` is no longer published.** It was an experiment with stubbed methods: `get`
-  returned `0`, `size()` was always `0`, `keysStream()` returned `null`. It moved next to its benchmark in
-  `tests-perf`.
+  returned `0`, `size()` was always `0`, `keysStream()` returned `null`. Removed together with
+  `extractMatching` (below), its benchmark too.
+- **`HashtableAsyncResizer` and `HashtableResizer.resizeParallelSync()`** - unused. The parallel resize was
+  not safe either: its segments could overlap, and it ran on the common ForkJoinPool.
+- **`printLayout()` of both hashtables** - it computed nothing it returned or printed, and in
+  `LongLongLL2Hashtable` it also finished an in-flight migration.
+- **Hashtable internals are no longer public:** `HashingUtils` (hash function, empty-slot key),
+  `HashtableAsync2Resizer`, `HashtableResizer`, `LongLongLL2Hashtable.debugLocate`, `upsizeThreshold()` of both
+  tables. `LongLongLL2Hashtable.mask()` (deprecated) is gone - `capacity() - 1` is the same, and the tables
+  grow at 65% of `capacity()`.
+- **`extractMatching` of both hashtables** - only the Radix sharding experiment used it.
+- **`remove(key, hash)` of both hashtables.** Besides exposing the internal hash, it would have overloaded
+  the new `remove(key, value)`: `remove(key, 5)` with an int literal resolved to the hash variant.
 
 ### Changed
 
+- **`LongLongHashtable` and `LongLongLL2Hashtable` are `final`.**
+- **Hashtables: any key, and a configurable value for missing keys** (breaking). Key `0` can be stored - it
+  still marks the empty slots, so its entry is kept in two fields of the table; `put(0, v)` no longer throws.
+  `missingValue` (constructor argument, `0` by default) is what `get`, `put`, `remove` and `putIfAbsent`
+  return for a missing key, see `ILongLongHashtable.missingValue()`; `addAndGet` counts a missing key as `0`.
+  Free slots hold the missing value, so `get` still returns the value of the slot its probe stops at without
+  comparing the key: in `HashtableOpsJmh` the lookups stay within run-to-run noise (±5%) of the previous
+  build, while comparing the key made `get` up to 21% slower on a 3M-entry table. A non-zero missing value
+  costs one more pass over every new array (in `LongLongLL2Hashtable` on the migration executor).
 - **Hashtable removal is linear in the cluster length.** Both hashtables delete by backward shift in one pass
   (Knuth's Algorithm R, shared code) instead of searching the cluster backwards from its end for every shifted
   entry. At load 0.65 (1.36M keys, 2^21 slots) the worst removal hashes 118 entries instead of 454

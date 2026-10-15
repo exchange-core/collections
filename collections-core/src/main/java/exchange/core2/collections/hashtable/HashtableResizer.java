@@ -1,27 +1,30 @@
 package exchange.core2.collections.hashtable;
 
 
-import java.util.concurrent.CompletableFuture;
-
-import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
-
-public class HashtableResizer {
+class HashtableResizer {
 
 
     private final long[] data;
+    private final long missingValue;
 
-    public HashtableResizer(long[] data) {
+    HashtableResizer(long[] data, long missingValue) {
         this.data = data;
+        this.missingValue = missingValue;
     }
 
-    public long[] resizeSync() {
-        // log.info("(S) Allocating array: long[{}] ... -----------------", data.length * 2);
-        final long[] data2 = new long[data.length * 2];
-        final int newMask = data.length - 1;
+    long[] resizeSync() {
+        return rehash(data, data.length, missingValue);
+    }
 
-        // log.info("(S) Copying data (up to {} elements) ...", data.length / 2);
-        for (int i = 0; i < data.length; i += 2) {
-            final long key = data[i];
+    /**
+     * Copies all entries of src into a new array of the given capacity (in slots, a power of two).
+     */
+    static long[] rehash(long[] src, int capacity, long missingValue) {
+        final long[] data2 = LinearProbing.newArray(capacity, missingValue);
+        final int newMask = capacity - 1;
+
+        for (int i = 0; i < src.length; i += 2) {
+            final long key = src[i];
 
             if (key == HashingUtils.NOT_ALLOWED_KEY) {
                 continue;
@@ -30,87 +33,9 @@ public class HashtableResizer {
             final int offset = HashingUtils.findFreeOffset(key, data2, newMask);
 
             data2[offset] = key;
-            data2[offset + 1] = data[i + 1];
+            data2[offset + 1] = src[i + 1];
         }
-
-        // log.info("(S) Copying completed ----------------------");
-        return data2;
-    }
-
-
-    public long[] resizeParallelSync() {
-
-        final long[] data2 = new long[data.length * 2];
-        final int newMask = data.length - 1;
-
-
-        final int threads = 4; // TODO use ForkJoinPool (optional)
-        final int step = data.length / threads;
-
-        final int[] gaps = new int[threads];
-        for (int i = 0; i < threads; i++) {
-            final int gap = findNextGapPos(data, (i * step) & 0xFFFFFFFE);
-            // TODO gap can overlap!!
-            gaps[i] = gap;
-        }
-
-        final CompletableFuture<?>[] futures = new CompletableFuture[threads];
-        for (int i = 0; i < threads; i++) {
-            final int fromIncl = gaps[i == 0 ? threads - 1 : i - 1];
-            final int toExl = gaps[i];
-            futures[i] = CompletableFuture.runAsync(() -> migrateSegment(fromIncl, toExl, data2, newMask));
-        }
-
-        CompletableFuture.allOf(futures).join();
 
         return data2;
     }
-
-    private void migrateSegment(int fromIncl, int toExl, long[] data2, int newMask) {
-        if (fromIncl == toExl) {
-            throw new IllegalArgumentException("Not allowed fromIncl == toExl");
-        }
-
-        for (int i = fromIncl; ; i += 2) {
-            if (i == data.length) {
-                i = 0;
-            }
-
-            if (i == toExl) {
-                break;
-            }
-
-            final long key = data[i];
-
-            if (key == HashingUtils.NOT_ALLOWED_KEY) {
-                continue;
-            }
-
-            final int offset = HashingUtils.findFreeOffset(key, data2, newMask);
-
-            data2[offset] = key;
-            data2[offset + 1] = data[i + 1];
-        }
-    }
-
-
-    private int findNextGapPos(final long[] prevData, final int initialPos) {
-
-        int pos = initialPos;
-
-        long existingKey = prevData[pos];
-        while (existingKey != NOT_ALLOWED_KEY) {
-            pos += 2;
-            if (pos == prevData.length) {
-                pos = 0;
-            }
-            if (pos == initialPos) {
-                throw new IllegalStateException("No gap found, can not perform migration");
-            }
-            existingKey = prevData[pos];
-        }
-
-        return pos;
-    }
-
 }

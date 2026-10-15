@@ -2,7 +2,6 @@ package tests.stress;
 
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
 import org.agrona.BitUtil;
-import org.agrona.collections.Hashing;
 import org.agrona.collections.Long2LongHashMap;
 import org.agrona.collections.MutableInteger;
 import org.agrona.collections.MutableLong;
@@ -12,7 +11,6 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.Arrays;
-import java.util.Currency;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
@@ -107,8 +105,8 @@ public class LongLongLL2HashtableStressTest {
 
                 } catch (Throwable er) {
 
-                    int mask = hashtable.mask();
-                    final int hash = Hashing.hash(key);
+                    int mask = hashtable.capacity() - 1;
+                    final int hash = TableHash.hash(key);
                     int pos = (hash & mask) << 1;
 
                     // String actions = hashtable.getActions(key);
@@ -121,7 +119,6 @@ public class LongLongLL2HashtableStressTest {
 
                 if (BitUtil.isPowerOfTwo(i)) {
 
-                    //hashtable.printLayout();
 
                     assertThat(hashtable.size(), is(i + 1L));
                     //log.info("Periodic validating get - size={} iteration={}...", hashtable.size(), iteration);
@@ -132,7 +129,7 @@ public class LongLongLL2HashtableStressTest {
 
                     MutableInteger errCnt = new MutableInteger(0);
 
-                    int mask = hashtable.mask();
+                    int mask = hashtable.capacity() - 1;
 
                     MutableLong timeFrom = new MutableLong(Long.MAX_VALUE);
                     MutableLong timeTo = new MutableLong(0L);
@@ -146,7 +143,7 @@ public class LongLongLL2HashtableStressTest {
                             assertThat(hashtable.get(k), is(v));
                         } catch (Throwable er) {
 
-                            final int hash = Hashing.hash(k);
+                            final int hash = TableHash.hash(k);
                             int pos = (hash & mask) << 1;
 
                             posFrom.set(Math.min(posFrom.get(), pos));

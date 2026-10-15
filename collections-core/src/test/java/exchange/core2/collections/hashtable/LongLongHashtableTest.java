@@ -2,6 +2,7 @@ package exchange.core2.collections.hashtable;
 
 import org.junit.Test;
 
+import java.lang.reflect.Field;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
@@ -11,6 +12,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
 
 public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
 
@@ -19,30 +21,61 @@ public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
         return new LongLongHashtable(expectedSize);
     }
 
-
-    @Test
-    public void should_migrate_mas() {
-        int initialCapacity = 16;
-
-        hashtable = new LongLongHashtable();
-
-        hashtable.put(15417, 1);
-        hashtable.put(28723, 2);
-        hashtable.put(43344, 3);
-        hashtable.put(88455, 4);
-        hashtable.put(23543, 5);
-        hashtable.put(93234, 6);
-        hashtable.put(79555, 7);
-        hashtable.put(53733, 8);
-        hashtable.put(27863, 9);
-
-        LongLongHashtable dst = new LongLongHashtable();
-
-        ((LongLongHashtable)hashtable).extractMatching(dst, 0x8000_0000, 0x8000_0000);
-
-
-        // TODO finalize test
+    @Override
+    protected ILongLongHashtable create(int expectedSize, long missingValue) {
+        return new LongLongHashtable(expectedSize, missingValue);
     }
+
+    @Override
+    protected ILongLongHashtable createLimited(int expectedSize, int maxCapacity) {
+        return new LongLongHashtable(expectedSize, 0L, maxCapacity);
+    }
+
+    /**
+     * integrityCheck is the oracle of other tests here - it must catch what it claims to.
+     */
+    @Test
+    public void integrityCheck_should_detect_broken_invariants() throws Exception {
+
+        final Field dataField = LongLongHashtable.class.getDeclaredField("data");
+        final Field sizeField = LongLongHashtable.class.getDeclaredField("size");
+        dataField.setAccessible(true);
+        sizeField.setAccessible(true);
+
+        final LongLongHashtable table = new LongLongHashtable();
+        for (long key = 1; key <= 15; key++) {
+            table.put(key, key);
+        }
+        table.integrityCheck();
+
+        // a key moved one slot away from where its probe stops: unreachable
+        final long[] data = (long[]) dataField.get(table);
+        final LongLongHashtable broken = new LongLongHashtable();
+        broken.put(5L, 50L);
+        final long[] b = (long[]) dataField.get(broken);
+        final int at = HashingUtils.findFreeOffset(5L, b, (b.length >> 1) - 1);
+        final int next = (at + 2) & (b.length - 1);
+        b[next] = b[at];
+        b[next + 1] = b[at + 1];
+        b[at] = 0;
+        b[at + 1] = 0;
+        assertThrows(IllegalStateException.class, broken::integrityCheck);
+
+        // a wrong size
+        sizeField.setLong(table, 14L);
+        assertThrows(IllegalStateException.class, table::integrityCheck);
+        sizeField.setLong(table, 15L);
+        table.integrityCheck();
+
+        // a value left in a free slot - a missing key would read it
+        int free = 0;
+        while (data[free] != 0) {
+            free += 2;
+        }
+        data[free + 1] = 7L;
+        assertThrows(IllegalStateException.class, table::integrityCheck);
+    }
+
 
     /**
      * forEach, keysStream and valuesStream (documented in the README) used to throw UnsupportedOperationException.
@@ -100,6 +133,25 @@ public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
         ref2.forEach((k, v) -> assertThat(table.get(k), is(v)));
     }
 
+    /** free slots hold the missing value, also after clear */
+    @Test
+    public void should_clear_with_missing_value() {
+
+        final LongLongHashtable table = new LongLongHashtable(16, -1L);
+        final Map<Long, Long> ref = fillWithRandomEntries(table);
+
+        table.clear();
+
+        assertThat(table.size(), is(0L));
+        for (long key : ref.keySet()) {
+            assertThat(table.get(key), is(-1L));
+        }
+        table.integrityCheck();
+        final Map<Long, Long> ref2 = fillWithRandomEntries(table);
+        ref2.forEach((k, v) -> assertThat(table.get(k), is(v)));
+        table.integrityCheck();
+    }
+
     /**
      * Grows the table through several resizes and removes a part of the keys, so that iteration sees both
      * collision chains and the gaps left by removal.
@@ -107,6 +159,8 @@ public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
     private static Map<Long, Long> fillWithRandomEntries(LongLongHashtable table) {
         final Random rand = new Random(7L);
         final Map<Long, Long> ref = new HashMap<>();
+        table.put(0L, 77L); // kept outside the array
+        ref.put(0L, 77L);
         for (int i = 0; i < 5000; i++) {
             final long key = rand.nextLong() | 1L;
             final long value = rand.nextInt(4) == 0 ? 0L : rand.nextLong(); // value 0 is a regular value

@@ -1,9 +1,15 @@
 package exchange.core2.collections.hashtable;
 
 
-public class HashingUtils {
+final class HashingUtils {
 
-    public static final long NOT_ALLOWED_KEY = 0L;
+    private HashingUtils() {
+    }
+
+    /**
+     * Key of an empty slot. Key 0 itself is stored too - outside the arrays, in fields of the table.
+     */
+    static final long NOT_ALLOWED_KEY = 0L;
 
     /**
      * Largest table: 2^29 slots, a long[2^30]. Resizing stops there - the next array length would not fit an int.
@@ -11,19 +17,27 @@ public class HashingUtils {
     static final int MAX_CAPACITY = 1 << 29;
 
     /**
-     * Number of slots (a power of two) for a table expected to hold expectedSize entries at the given load factor.
+     * Load a table at its maximum capacity is allowed to reach - it can not grow, new keys are refused after that.
      */
-    static int capacityFor(final int expectedSize, final float loadFactor) {
+    static final float FULL_LOAD = 0.9f;
+
+    /**
+     * Number of slots (a power of two) for a table to hold expectedSize entries without a resize. The tables resize
+     * when the size reaches (int) (capacity * loadFactor), so that has to be above expectedSize.
+     *
+     * @param maxCapacity the largest capacity the table may have - IllegalArgumentException if more is needed
+     */
+    static int capacityFor(final int expectedSize, final float loadFactor, final int maxCapacity) {
         if (expectedSize < 0) {
             throw new IllegalArgumentException("expected size must not be negative: " + expectedSize);
         }
-        // a float to int cast saturates at Integer.MAX_VALUE, so a huge expectedSize can not wrap around here
-        final int minCapacity = (int) (expectedSize / loadFactor);
-        if (minCapacity > MAX_CAPACITY) {
+        // rounding of the division could only matter where the result is an integer - and there it is exact
+        final double minCapacity = Math.ceil((expectedSize + 1.0) / loadFactor);
+        if (minCapacity > maxCapacity) {
             throw new IllegalArgumentException("expected size " + expectedSize + " exceeds the maximum of "
-                    + (int) (MAX_CAPACITY * loadFactor) + " entries");
+                    + ((int) (maxCapacity * loadFactor) - 1) + " entries (capacity " + maxCapacity + ")");
         }
-        return nextPositivePowerOfTwo(minCapacity);
+        return nextPositivePowerOfTwo((int) minCapacity);
     }
 
     /**
@@ -42,18 +56,14 @@ public class HashingUtils {
      *
      * @see <a href="http://zimbry.blogspot.com/2011/09/better-bit-mixing-improving-on.html">Better Bit Mixing</a>
      */
-    public static int hash(final long value) {
+    static int hash(final long value) {
         long z = value;
         z = (z ^ (z >>> 33)) * 0x62a9d9ed799705f5L;
         return (int) (((z ^ (z >>> 28)) * 0xcb24d0a5c88c35b3L) >>> 32);
     }
 
-    public static int nextPositivePowerOfTwo(final int value) {
+    static int nextPositivePowerOfTwo(final int value) {
         return 1 << (Integer.SIZE - Integer.numberOfLeadingZeros(value - 1));
-    }
-
-    public static long nextPositivePowerOfTwo(final long value) {
-        return 1L << (Long.SIZE - Long.numberOfLeadingZeros(value - 1));
     }
 
 
@@ -64,7 +74,7 @@ public class HashingUtils {
      * @param mask - mask for data array
      * @return offset in the array
      */
-    public static int findFreeOffset(long key, long[] data, int mask) {
+    static int findFreeOffset(long key, long[] data, int mask) {
         final int hash = HashingUtils.hash(key);
         int pos = (hash & mask) << 1;
 //        log.debug("collision on key:{} hash:{}(0x{})->pos:{}(0x{})", key, hash, String.format("%x", hash), pos, String.format("%x", pos));
@@ -76,7 +86,7 @@ public class HashingUtils {
      * its gap invariant was broken by a concurrent migration) it would otherwise spin forever,
      * which is indistinguishable from a deadlock. Bound it and fail loudly instead.
      */
-    public static int findFreeOffset(long key, int pos, long[] data) {
+    static int findFreeOffset(long key, int pos, long[] data) {
         final int startPos = pos;
         int i = 0;
 

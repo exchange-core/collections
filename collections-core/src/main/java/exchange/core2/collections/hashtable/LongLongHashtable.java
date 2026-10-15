@@ -1,34 +1,76 @@
 package exchange.core2.collections.hashtable;
 
 
-import java.util.Arrays;
+import java.util.function.LongUnaryOperator;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
 
-public class LongLongHashtable implements ILongLongHashtable {
+/**
+ * Primitive {@code long} to {@code long} hashtable: open addressing with linear probing, keys and values interleaved
+ * in one {@code long[]}, backward-shift deletion (no tombstones).
+ * <ul>
+ *     <li>Any key, {@code 0} included: key {@code 0} marks the empty slots, so its entry is kept in two fields.</li>
+ *     <li>A missing key reads as {@code missingValue} (constructor, {@code 0} by default) - see
+ *     {@link ILongLongHashtable}.</li>
+ *     <li>Grows by doubling at load factor 0.65. The resize copies the whole table on the calling thread (~7ns per
+ *     slot: ~7ms at 2^20 slots) - pre-size the table (constructor, {@link #ensureCapacity}), or use
+ *     {@link LongLongLL2Hashtable} where that pause matters.</li>
+ *     <li>Maximum capacity: 2^29 slots, a {@code long[2^30]} (8 GB). There the table stops growing and takes new keys
+ *     up to load 0.9, after that a {@code put} of a new key throws {@link IllegalStateException}.</li>
+ *     <li>Not thread-safe.</li>
+ * </ul>
+ */
+public final class LongLongHashtable implements ILongLongHashtable {
 
 
     public static final int DEFAULT_ARRAY_SIZE = 16;
 
     private final float upsizeThresholdPerc;
+    private final int maxCapacity;
+
+    private final long missingValue;
 
     private long[] data;
     private long size = 0;
     private int mask;
     private long upsizeThreshold;
 
+    // key 0 marks the gaps in data, so its entry is kept here (counted in size)
+    private boolean hasZeroKey;
+    private long zeroKeyValue;
+
     public LongLongHashtable() {
         this(DEFAULT_ARRAY_SIZE);
     }
 
+    /**
+     * @param size expected number of entries - that many fit without a resize
+     */
     public LongLongHashtable(int size) {
+        this(size, 0L);
+    }
+
+    /**
+     * @param size         expected number of entries - that many fit without a resize
+     * @param missingValue what get, put and remove return for a missing key
+     */
+    public LongLongHashtable(int size, long missingValue) {
+        this(size, missingValue, HashingUtils.MAX_CAPACITY);
+    }
+
+    /**
+     * @param maxCapacity capacity in slots the table stops growing at - lower than the real maximum only in tests
+     */
+    LongLongHashtable(int size, long missingValue, int maxCapacity) {
 
         this.upsizeThresholdPerc = 0.65f;
-        final int arraySize = HashingUtils.capacityFor(size, upsizeThresholdPerc);
+        this.missingValue = missingValue;
+        this.maxCapacity = maxCapacity;
+        final int arraySize = HashingUtils.capacityFor(size, upsizeThresholdPerc, maxCapacity);
 
-        this.data = new long[arraySize * 2];
+        this.data = LinearProbing.newArray(arraySize, missingValue);
         this.mask = (this.data.length / 2) - 1;
         this.upsizeThreshold = (int) ((mask + 1) * upsizeThresholdPerc);
     }
@@ -36,83 +78,189 @@ public class LongLongHashtable implements ILongLongHashtable {
     @Override
     public long put(long key, long value) {
 
-        if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
+        if (key == NOT_ALLOWED_KEY) return putZeroKey(value);
         //        log.debug("PUT key:{} val:{}", key, value);
         final int offset = HashingUtils.findFreeOffset(key, data, mask);
 
-        final long prevValue = data[offset + 1];
         if (data[offset] != key) {
-            size++;
+            insertAt(offset, key, value);
+            return missingValue;
         }
 
+        final long prevValue = data[offset + 1];
+        data[offset + 1] = value;
+        return prevValue;
+    }
+
+    @Override
+    public long putIfAbsent(long key, long value) {
+
+        if (key == NOT_ALLOWED_KEY) return hasZeroKey ? zeroKeyValue : putZeroKey(value);
+        final int offset = HashingUtils.findFreeOffset(key, data, mask);
+
+        if (data[offset] == key) {
+            return data[offset + 1];
+        }
+        insertAt(offset, key, value);
+        return missingValue;
+    }
+
+    @Override
+    public long addAndGet(long key, long delta) {
+
+        if (key == NOT_ALLOWED_KEY) {
+            final long value = (hasZeroKey ? zeroKeyValue : 0L) + delta;
+            putZeroKey(value);
+            return value;
+        }
+        final int offset = HashingUtils.findFreeOffset(key, data, mask);
+
+        if (data[offset] == key) {
+            return data[offset + 1] += delta;
+        }
+        insertAt(offset, key, delta);
+        return delta;
+    }
+
+    @Override
+    public long computeIfAbsent(long key, LongUnaryOperator mappingFunction) {
+
+        if (key == NOT_ALLOWED_KEY) {
+            if (hasZeroKey) {
+                return zeroKeyValue;
+            }
+        } else {
+            final int offset = HashingUtils.findFreeOffset(key, data, mask);
+            if (data[offset] == key) {
+                return data[offset + 1];
+            }
+        }
+        final long value = mappingFunction.applyAsLong(key);
+        // probe again rather than insert at the offset found before: the function may have changed the table
+        put(key, value);
+        return value;
+    }
+
+    /**
+     * Stores a new key in the gap its probe stopped at.
+     */
+    private void insertAt(int offset, long key, long value) {
         data[offset] = key;
         data[offset + 1] = value;
-
-        if (size >= upsizeThreshold) {
-            resize();
+        if (++size >= upsizeThreshold) {
+            resize(offset);
         }
-
-        return prevValue;
     }
 
 
     @Override
     public long get(long key) {
-        final int offset = HashingUtils.findFreeOffset(key, data, mask);
-        return data[offset + 1];
+        if (key == NOT_ALLOWED_KEY) return hasZeroKey ? zeroKeyValue : missingValue;
+        // a gap holds missingValue in its value cell
+        return data[HashingUtils.findFreeOffset(key, data, mask) + 1];
     }
 
 
     @Override
     public boolean containsKey(long key) {
-        // the probe stops either at the key or at a gap - and a gap holds key 0, which is why 0 is excluded
-        return key != NOT_ALLOWED_KEY && data[HashingUtils.findFreeOffset(key, data, mask)] == key;
+        if (key == NOT_ALLOWED_KEY) return hasZeroKey;
+        return data[HashingUtils.findFreeOffset(key, data, mask)] == key;
     }
 
     @Override
     public long remove(long key) {
-        return remove(key, HashingUtils.hash(key));
-    }
-
-    public long remove(long key, int hash) {
         if (key == NOT_ALLOWED_KEY) {
-            // never stored - and the probe would stop at the first gap, which holds key 0
-            return 0L;
+            return removeZeroKey();
         }
-        final int offset = HashingUtils.findFreeOffset(key, (hash & mask) << 1, data);
+        final int offset = HashingUtils.findFreeOffset(key, data, mask);
         if (data[offset] != key) {
-            return 0L;
+            return missingValue;
         }
         final long value = data[offset + 1];
-        LinearProbing.deleteAt(data, offset);
+        LinearProbing.deleteAt(data, offset, missingValue);
         size--;
         return value;
     }
 
-    private void resize() {
+    private long putZeroKey(long value) {
+        final long prev = hasZeroKey ? zeroKeyValue : missingValue;
+        if (!hasZeroKey) {
+            hasZeroKey = true;
+            size++;
+        }
+        zeroKeyValue = value;
+        return prev;
+    }
+
+    private long removeZeroKey() {
+        if (!hasZeroKey) {
+            return missingValue;
+        }
+        hasZeroKey = false;
+        size--;
+        return zeroKeyValue;
+    }
+
+    @Override
+    public boolean remove(long key, long value) {
+        if (key == NOT_ALLOWED_KEY) {
+            if (hasZeroKey && zeroKeyValue == value) {
+                removeZeroKey();
+                return true;
+            }
+            return false;
+        }
+        final int offset = HashingUtils.findFreeOffset(key, data, mask);
+        if (data[offset] != key || data[offset + 1] != value) {
+            return false;
+        }
+        LinearProbing.deleteAt(data, offset, missingValue);
+        size--;
+        return true;
+    }
+
+    /**
+     * @param insertedOffset where the put that crossed the threshold stored its new key - taken back if the table is
+     *                       full
+     */
+    private void resize(int insertedOffset) {
 
         // log.debug("RESIZE {}->{} elements={} ...", data.length, data.length * 2L, size);
 
-        if (data.length * 2L > Integer.MAX_VALUE) {
-            upsizeThreshold = Integer.MAX_VALUE;
-            return;
+        if (mask + 1 >= maxCapacity) {
+            // can not grow any more: take new keys up to FULL_LOAD, then refuse them - beyond that the probes, and
+            // with them every operation, get longer and longer
+            final long limit = (long) ((mask + 1) * HashingUtils.FULL_LOAD);
+            if (size <= limit) {
+                upsizeThreshold = limit + 1;
+                return;
+            }
+            LinearProbing.deleteAt(data, insertedOffset, missingValue);
+            size--;
+            throw new IllegalStateException("table is full: " + size + " entries at the maximum capacity of "
+                    + (mask + 1) + " slots");
         }
 
-        final long[] data2;
-        final HashtableResizer hashtableResizer = new HashtableResizer(data);
-        // log.debug("Sync resizing...");
-//        if (data.length >= 32768) { // TODO find right value
-//            data2 = hashtableResizer.resizeParallelSync();
-//        } else {
-        data2 = hashtableResizer.resizeSync();
-//        }
-        switchToNewArray(data2);
+        switchToNewArray(new HashtableResizer(data, missingValue).resizeSync());
     }
 
     private void switchToNewArray(long[] data2) {
         this.data = data2;
-        mask = mask * 2 + 1;
+        mask = (data2.length >> 1) - 1;
         upsizeThreshold = (int) ((mask + 1) * upsizeThresholdPerc);
+    }
+
+    @Override
+    public int capacity() {
+        return mask + 1;
+    }
+
+    @Override
+    public void ensureCapacity(int expectedSize) {
+        final int capacity = HashingUtils.capacityFor(expectedSize, upsizeThresholdPerc, maxCapacity);
+        if (capacity > mask + 1) {
+            switchToNewArray(HashtableResizer.rehash(data, capacity, missingValue));
+        }
     }
 
     /**
@@ -120,19 +268,23 @@ public class LongLongHashtable implements ILongLongHashtable {
      */
     @Override
     public void clear() {
-        Arrays.fill(data, 0L);
+        LinearProbing.clear(data, missingValue);
         size = 0;
+        hasZeroKey = false;
+        zeroKeyValue = 0L;
     }
 
     /**
-     * Keys in the table order. The stream reads the table lazily - do not modify the table until it is consumed.
+     * Keys in the table order, key 0 first. The stream reads the table lazily - do not modify the table until it is
+     * consumed.
      */
     @Override
     public LongStream keysStream() {
         final long[] d = data;
-        return IntStream.range(0, d.length >> 1)
+        final LongStream slots = IntStream.range(0, d.length >> 1)
                 .filter(i -> d[i << 1] != NOT_ALLOWED_KEY)
                 .mapToLong(i -> d[i << 1]);
+        return hasZeroKey ? LongStream.concat(LongStream.of(0L), slots) : slots;
     }
 
     /**
@@ -141,16 +293,20 @@ public class LongLongHashtable implements ILongLongHashtable {
     @Override
     public LongStream valuesStream() {
         final long[] d = data;
-        return IntStream.range(0, d.length >> 1)
+        final LongStream slots = IntStream.range(0, d.length >> 1)
                 .filter(i -> d[i << 1] != NOT_ALLOWED_KEY)
                 .mapToLong(i -> d[(i << 1) + 1]);
+        return hasZeroKey ? LongStream.concat(LongStream.of(zeroKeyValue), slots) : slots;
     }
 
     /**
-     * Allocation-free iteration over all entries. The consumer must not modify the table.
+     * Allocation-free iteration over all entries, key 0 first. The consumer must not modify the table.
      */
     @Override
     public void forEach(LongLongConsumer consumer) {
+        if (hasZeroKey) {
+            consumer.accept(0L, zeroKeyValue);
+        }
         final long[] d = data;
         for (int i = 0; i < d.length; i += 2) {
             final long key = d[i];
@@ -165,84 +321,48 @@ public class LongLongHashtable implements ILongLongHashtable {
         return size;
     }
 
-    public long upsizeThreshold() {
-        return upsizeThreshold;
+    @Override
+    public long missingValue() {
+        return missingValue;
     }
 
-    //public void extractMatching(long[] destArray, int destBits, int destMask) {
-    public void extractMatching(LongLongHashtable dest, int destBits, int destMask) {
-
-        for (int i = 0; i < data.length; i += 2) {
-            final long key = data[i];
-            if (key != NOT_ALLOWED_KEY) {
-                final int hash = HashingUtils.hash(key);
-                final boolean match = (hash & destMask) == destBits;
-//                log.debug("key={} hash={} pos={} match={}", key, String.format("%08X", hash), i >> 1, match);
-                if (match) {
-                    dest.put(key, data[i + 1]);
-                    data[i] = NOT_ALLOWED_KEY;
-                    data[i + 1] = 0;
-                    size--;
-                }
-            }
-        }
-
-        for (int i = 0; i < data.length; i += 2) {
-            final long key = data[i];
-            if (key != NOT_ALLOWED_KEY) {
-                final int hash = HashingUtils.hash(key);
-                int j = (hash & mask) << 1;
-
-//                log.debug("key={} hash={} curPos={} minPos={}", key, String.format("%08X", hash), i >> 1, j >> 1);
-
-                while (j != i) {
-                    if (data[j] == NOT_ALLOWED_KEY) {
-                        // found gap
-                        data[j] = data[i];
-                        data[j + 1] = data[i + 1];
-                        data[i] = NOT_ALLOWED_KEY;
-                        data[i + 1] = 0;
-
-//                        log.debug("replaced to {}", j >> 1);
-                        break;
-                    }
-
-                    j += 2;
-                    if (j == data.length) {
-                        j = 0;
-                    }
-                }
-            }
-        }
-
+    /**
+     * All entries as {@code {key=value, ...}} - for tests and debugging, it walks the whole table.
+     */
+    @Override
+    public String toString() {
+        return LinearProbing.entriesToString(hasZeroKey, zeroKeyValue, data);
     }
 
+    /**
+     * Verifies the linear-probing invariants: every key is found by probing from its home (no gap in its way, no
+     * duplicate before it), free slots hold missingValue (what get returns for a missing key), size matches the
+     * occupied slots plus key 0, and at least one slot is free. For tests - scans the whole array.
+     */
     void integrityCheck() {
-        // TODO check all keys are reachable
-        // TODO check size is correct
-        // TODO check load factor is correct
-
-
-    }
-
-    public void printLayout(String comment) {
-
+        long occupied = 0;
         for (int i = 0; i < data.length; i += 2) {
             final long key = data[i];
-            if (key != NOT_ALLOWED_KEY) {
-                final int hash = HashingUtils.hash(key);
-                final int targetPos = hash & mask;
-            } else {
+            if (key == NOT_ALLOWED_KEY) {
+                if (data[i + 1] != missingValue) {
+                    throw new IllegalStateException("integrityCheck: free slot " + i + " holds value " + data[i + 1]);
+                }
+                continue;
             }
-
-            if (i > 256) {
-                break;
+            occupied++;
+            final int reachableAt = HashingUtils.findFreeOffset(key, data, mask);
+            if (reachableAt != i) {
+                throw new IllegalStateException("integrityCheck: key=" + key + " stored at " + i
+                        + " but probing from its home reaches " + reachableAt
+                        + " (" + (data[reachableAt] == key ? "duplicate" : "unreachable") + ")");
             }
         }
+        if (occupied + (hasZeroKey ? 1 : 0) != size) {
+            throw new IllegalStateException("integrityCheck: size=" + size + " but " + occupied + " occupied slots"
+                    + (hasZeroKey ? " and key 0" : ""));
+        }
+        if (occupied > mask) {
+            throw new IllegalStateException("integrityCheck: no free slot left, capacity=" + (mask + 1));
+        }
     }
-
-//    private int desiredPosition(long key) {
-//        final int hash = HashingUtils.hash(key);
-//        return (hash & mask) << 1;
-//    }
 }

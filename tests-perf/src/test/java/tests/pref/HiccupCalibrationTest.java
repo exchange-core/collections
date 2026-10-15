@@ -2,7 +2,6 @@ package tests.pref;
 
 import tests.common.LatencyTools;
 import exchange.core2.collections.affinity.CpuAffinity;
-import exchange.core2.collections.hashtable.HashingUtils;
 import org.HdrHistogram.Histogram;
 import org.agrona.collections.Hashing;
 import org.agrona.collections.MutableInteger;

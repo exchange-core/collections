@@ -1,8 +1,6 @@
 package tests.stress;
 
 import exchange.core2.collections.affinity.CpuAffinity;
-import exchange.core2.collections.hashtable.HashingUtils;
-import exchange.core2.collections.hashtable.HashtableAsync2Resizer;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
 import org.agrona.collections.Long2LongHashMap;
 import org.junit.Test;
@@ -58,7 +56,12 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
     /** keys inserted below each frontier: about 3 make the cluster reach past it */
     private static final int CRAFTED_PER_FRONTIER = 4;
 
-    private static final VarHandle RESIZER = ll2Field("resizer", HashtableAsync2Resizer.class);
+    /** the resizer class is package-private: its state is read like the private fields of the table */
+    private static final Class<?> RESIZER_CLASS = resizerClass();
+    private static final VarHandle RESIZER = ll2Field("resizer", RESIZER_CLASS);
+    private static final VarHandle PROCESSED = resizerField("toProcessPosition", int.class);
+    private static final VarHandle STARTING = resizerField("startingPosition", int.class);
+    private static final VarHandle DST = resizerField("dstData", long[].class);
     private static final VarHandle ARRAY_FEATURE = ll2Field("arrayFeature", CompletableFuture.class);
     private static final VarHandle DATA = ll2Field("data", long[].class);
     private static final VarHandle ALLOWED = ll2Field("allowedPosition", int.class);
@@ -133,7 +136,7 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
             long lastCrafted = 0;
 
             while (true) {
-                final HashtableAsync2Resizer r = (HashtableAsync2Resizer) RESIZER.get(table);
+                final Object r = RESIZER.get(table);
                 if (r == null) {
                     if (ARRAY_FEATURE.get(table) == null) {
                         break; // migration finished
@@ -145,8 +148,8 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
                     break;
                 }
 
-                final int p = r.getProcessedPosition();
-                final int s = r.getStartingPosition();
+                final int p = (int) PROCESSED.getVolatile(r);
+                final int s = (int) STARTING.getVolatile(r);
                 if (p != lastP) {
                     lastP = p;
                     perFrontier = 0;
@@ -222,8 +225,8 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
      */
     private static void put(LongLongLL2Hashtable table, long key, long value, Long2LongHashMap ref, Stats stats) {
 
-        final HashtableAsync2Resizer r = (HashtableAsync2Resizer) RESIZER.get(table);
-        final int pBefore = r != null ? r.getProcessedPosition() : -1;
+        final Object r = RESIZER.get(table);
+        final int pBefore = r != null ? (int) PROCESSED.getVolatile(r) : -1;
 
         if (table.put(key, value) != ref.put(key, value)) {
             stats.wrongResults++;
@@ -232,9 +235,9 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
         if (r == null || RESIZER.get(table) != r) {
             return;
         }
-        final long[] dst = r.getNewDataArray();
+        final long[] dst = (long[]) DST.get(r);
         final int ring = dst.length;
-        final int home = (HashingUtils.hash(key) & r.getNewMask()) << 1;
+        final int home = (TableHash.hash(key) & ((ring >> 1) - 1)) << 1;
         int x = home;
         while (dst[x] != key) {
             if (dst[x] == 0) {
@@ -296,7 +299,7 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
             final int[] filled = new int[slots];
             int remaining = slots;
             for (long key = base; remaining > 0; key++) {
-                final int slot = HashingUtils.hash(key) & (slots - 1);
+                final int slot = TableHash.hash(key) & (slots - 1);
                 if (key != 0 && filled[slot] < perSlot) {
                     keys[slot * perSlot + filled[slot]++] = key;
                     if (filled[slot] == perSlot) {
@@ -351,6 +354,23 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
         try {
             return MethodHandles.privateLookupIn(LongLongLL2Hashtable.class, MethodHandles.lookup())
                     .findVarHandle(LongLongLL2Hashtable.class, name, type);
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
+    private static Class<?> resizerClass() {
+        try {
+            return Class.forName("exchange.core2.collections.hashtable.HashtableAsync2Resizer");
+        } catch (ClassNotFoundException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
+    private static VarHandle resizerField(String name, Class<?> type) {
+        try {
+            return MethodHandles.privateLookupIn(RESIZER_CLASS, MethodHandles.lookup())
+                    .findVarHandle(RESIZER_CLASS, name, type);
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }
