@@ -22,8 +22,13 @@ public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
     }
 
     @Override
+    protected ILongLongHashtable create(int expectedSize, long missingValue) {
+        return new LongLongHashtable(expectedSize, missingValue);
+    }
+
+    @Override
     protected ILongLongHashtable createLimited(int expectedSize, int maxCapacity) {
-        return new LongLongHashtable(expectedSize, maxCapacity);
+        return new LongLongHashtable(expectedSize, 0L, maxCapacity);
     }
 
     /**
@@ -152,6 +157,25 @@ public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
         ref2.forEach((k, v) -> assertThat(table.get(k), is(v)));
     }
 
+    /** free slots hold the missing value, also after clear */
+    @Test
+    public void should_clear_with_missing_value() {
+
+        final LongLongHashtable table = new LongLongHashtable(16, -1L);
+        final Map<Long, Long> ref = fillWithRandomEntries(table);
+
+        table.clear();
+
+        assertThat(table.size(), is(0L));
+        for (long key : ref.keySet()) {
+            assertThat(table.get(key), is(-1L));
+        }
+        table.integrityCheck();
+        final Map<Long, Long> ref2 = fillWithRandomEntries(table);
+        ref2.forEach((k, v) -> assertThat(table.get(k), is(v)));
+        table.integrityCheck();
+    }
+
     /**
      * Grows the table through several resizes and removes a part of the keys, so that iteration sees both
      * collision chains and the gaps left by removal.
@@ -159,6 +183,8 @@ public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
     private static Map<Long, Long> fillWithRandomEntries(LongLongHashtable table) {
         final Random rand = new Random(7L);
         final Map<Long, Long> ref = new HashMap<>();
+        table.put(0L, 77L); // kept outside the array
+        ref.put(0L, 77L);
         for (int i = 0; i < 5000; i++) {
             final long key = rand.nextLong() | 1L;
             final long value = rand.nextInt(4) == 0 ? 0L : rand.nextLong(); // value 0 is a regular value

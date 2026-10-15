@@ -3,6 +3,9 @@ package exchange.core2.collections.hashtable;
 
 public class HashingUtils {
 
+    /**
+     * Key of an empty slot. Key 0 itself is stored too - outside the arrays, in fields of the table.
+     */
     public static final long NOT_ALLOWED_KEY = 0L;
 
     /**

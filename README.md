@@ -154,6 +154,13 @@ table.get(999L);            // 0 — missing keys return 0
 table.containsKey(42L);     // true
 table.remove(42L);          // 1234 — returns the removed value
 table.size();               // 0
+table.put(0L, 5L);          // any key, 0 included
+
+// a missing key reads as the missingValue of the table instead of 0
+final LongLongHashtable prices = new LongLongHashtable(1_000, -1L);
+prices.get(42L);            // -1
+prices.put(42L, 0L);        // -1 — was absent
+prices.get(42L);            // 0 — a regular value
 ```
 
 Compound operations, one probe each:
@@ -161,7 +168,7 @@ Compound operations, one probe each:
 ```java
 table.putIfAbsent(7L, 70L);              // 0 — was absent, now 70
 table.putIfAbsent(7L, 71L);              // 70 — present, unchanged
-table.addAndGet(7L, 5L);                 // 75 — a missing key counts as 0
+table.addAndGet(7L, 5L);                 // 75 — a missing key counts as 0, whatever missingValue is
 table.computeIfAbsent(8L, k -> k * 10);  // 80 — the function runs only for a missing key
 table.remove(7L, 74L);                   // false — removes only with the matching value
 table.toString();                        // {7=75, 8=80} (table order)
@@ -184,10 +191,11 @@ table.clear();              // removes all entries, keeps the capacity
 Do not modify the table from the `forEach` consumer or while a stream is being consumed.
 
 **Notes**
-- key `0` is reserved as the empty-slot marker: `put(0, v)` throws `IllegalArgumentException`, while
-  `get(0)` and `remove(0)` return `0` and `containsKey(0)` returns `false`
-- `get` returns `0` for a missing key, so through `get` a stored `0` looks the same as a missing key —
-  `containsKey` tells them apart
+- any key can be stored; key `0` marks the empty slots, so its entry is kept in two fields of the
+  table (one predictable branch per operation)
+- `get`, `put` and `remove` return `missingValue` (`0` unless given to the constructor) for a missing
+  key, so through `get` a stored `missingValue` looks the same as a missing key — `containsKey` tells
+  them apart. Free slots hold the missing value: a non-zero one costs a pass over every new array
 - the constructor argument (and the one of `ensureCapacity`) is the expected number of entries: that
   many fit without a resize, up to ~349 million (2^29 slots); a negative or larger value throws
   `IllegalArgumentException`
@@ -234,7 +242,8 @@ final LongLongLL2Hashtable table = new LongLongLL2Hashtable(1_000_000, myExecuto
 > pass an unbounded / thread-per-task executor. The default one is exactly that, with daemon threads.
 
 **Notes**
-- same key/value rules as `LongLongHashtable`: key `0` is reserved, `get` returns `0` for a missing key
+- same key/value rules as `LongLongHashtable`: any key, `missingValue` for a missing key
+  (`new LongLongLL2Hashtable(size, missingValue)` or the executor constructor with it)
 - the compound operations take one probe when no resize is in flight; during a migration they are
   made of the basic operations; `toString()` then shows only the size
 - `ensureCapacity` beyond the capacity of an in-flight migration finishes it first (like `close()`),

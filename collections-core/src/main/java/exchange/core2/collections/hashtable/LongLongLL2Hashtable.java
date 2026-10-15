@@ -28,7 +28,8 @@ import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
  *     <li>The executor runs the allocation of the new array and the copying, which spins until its migration ends:
  *     it must not be bounded (see the constructors). {@link #close()} finishes an in-flight migration.</li>
  *     <li>{@link #clear()}, {@link #forEach}, {@link #keysStream()} and {@link #valuesStream()} are not supported.</li>
- *     <li>Key {@code 0}, value {@code 0} and the maximum capacity as in {@link LongLongHashtable}.</li>
+ *     <li>Key {@code 0}, {@code missingValue} and the maximum capacity as in {@link LongLongHashtable}. The entry of
+ *     key 0 is kept outside the arrays, migrations do not touch it.</li>
  * </ul>
  */
 public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
@@ -42,6 +43,11 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     private final Executor executor;
     private final int syncResizeBelow;
     private final int maxCapacity;
+    private final long missingValue;
+
+    // key 0 marks the gaps in the arrays, so its entry is kept here (counted in size)
+    private boolean hasZeroKey;
+    private long zeroKeyValue;
 
     private long[] data;
     private long size = 0;
@@ -102,6 +108,13 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     }
 
     /**
+     * @param missingValue what get, put and remove return for a missing key
+     */
+    public LongLongLL2Hashtable(int size, long missingValue) {
+        this(size, DAEMON_EXECUTOR, DEFAULT_SYNC_RESIZE_BELOW, missingValue);
+    }
+
+    /**
      * Migration threads must be daemons: {@link HashtableAsync2Resizer#copy()} spins until the
      * table authorizes the next segment, so a table abandoned mid-migration leaves a thread that
      * never terminates. As a non-daemon thread it also prevents the JVM from shutting down.
@@ -150,20 +163,28 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
      * a thread-per-task executor needs 50-100us, more if each new thread pins itself to a core.
      */
     public LongLongLL2Hashtable(int size, Executor executor, int syncResizeBelow) {
-        this(size, executor, syncResizeBelow, HashingUtils.MAX_CAPACITY);
+        this(size, executor, syncResizeBelow, 0L, HashingUtils.MAX_CAPACITY);
+    }
+
+    /**
+     * @param missingValue what get, put and remove return for a missing key
+     */
+    public LongLongLL2Hashtable(int size, Executor executor, int syncResizeBelow, long missingValue) {
+        this(size, executor, syncResizeBelow, missingValue, HashingUtils.MAX_CAPACITY);
     }
 
     /**
      * @param maxCapacity capacity in slots the table stops growing at - lower than the real maximum only in tests
      */
-    LongLongLL2Hashtable(int size, Executor executor, int syncResizeBelow, int maxCapacity) {
+    LongLongLL2Hashtable(int size, Executor executor, int syncResizeBelow, long missingValue, int maxCapacity) {
+        this.missingValue = missingValue;
         this.executor = executor;
         this.syncResizeBelow = syncResizeBelow;
         this.maxCapacity = maxCapacity;
         this.upsizeThresholdPerc = 0.65f;
         final int arraySize = HashingUtils.capacityFor(size, upsizeThresholdPerc, maxCapacity);
 
-        this.data = new long[arraySize * 2];
+        this.data = LinearProbing.newArray(arraySize, missingValue);
         //this.blockThresholdPerc = 0.6501f;
         this.blockThresholdPerc = 0.90f;
         this.mask = (this.data.length / 2) - 1;
@@ -179,7 +200,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     @Override
     public long put(long key, long value) {
 
-        if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
+        if (key == NOT_ALLOWED_KEY) return putZeroKey(value);
 
         if (arrayFeature != null || resizer != null) {
             return putResizing(key, value);
@@ -192,7 +213,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
             if (++size >= upsizeThreshold) {
                 resize(offset);
             }
-            return 0L;
+            return missingValue;
         }
 
         final long prevValue = data[offset + 1];
@@ -259,7 +280,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
                 if (++size >= upsizeThreshold && arrayFeature == null) {
                     resize(offset);
                 }
-                return 0L;
+                return missingValue;
             }
 
             final long prevValue = data[offset + 1];
@@ -398,8 +419,10 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     private long putInternalInsert(long[] datax, int offset, long key, long value) {
         if (datax[offset] != key) {
             size++;
+            datax[offset] = key;
+            datax[offset + 1] = value;
+            return missingValue;
         }
-        datax[offset] = key;
 
         final long prevValue = datax[offset + 1];
         datax[offset + 1] = value;
@@ -409,13 +432,18 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
     @Override
     public long get(long key) {
-        return lookup(key, 1);
+        if (key == NOT_ALLOWED_KEY) return hasZeroKey ? zeroKeyValue : missingValue;
+        return lookup(key, VALUE);
     }
 
+    /** what lookup returns from the slot the probe stopped at: its key, or its value (missingValue for a gap) */
+    private static final int KEY = 0;
+    private static final int VALUE = 1;
+
     /**
-     * Probes for the key - in whichever array currently holds its home position - and returns one long of the
-     * cell the probe stopped at: cell 0 is the key (equal to the requested one only if it is present, 0 for a
-     * gap), cell 1 is the value.
+     * Probes for the key - in whichever array currently holds its home position - and returns one long of the slot
+     * the probe stopped at: KEY is equal to the requested key only if it is present (0 for a gap), VALUE is its value
+     * (missingValue for a gap - free slots hold it).
      */
     private long lookup(long key, int cell) {
         if (arrayFeature != null || resizer != null) {
@@ -477,8 +505,9 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
     @Override
     public boolean containsKey(long key) {
-        // the probe stops either at the key or at a gap - and a gap holds key 0, which is why 0 is excluded
-        return key != NOT_ALLOWED_KEY && lookup(key, 0) == key;
+        // the probe stops either at the key or at a gap, which holds key 0 - that key is kept outside the array
+        if (key == NOT_ALLOWED_KEY) return hasZeroKey;
+        return lookup(key, KEY) == key;
     }
 
     @Override
@@ -489,8 +518,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     private long remove(long key, int hash) {
 
         if (key == NOT_ALLOWED_KEY) {
-            // never stored - and the probe would stop at the first gap, which holds key 0
-            return 0L;
+            return removeZeroKey();
         }
 
         if (arrayFeature != null || resizer != null) {
@@ -554,13 +582,32 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         return val;
     }
 
+    private long putZeroKey(long value) {
+        final long prev = hasZeroKey ? zeroKeyValue : missingValue;
+        if (!hasZeroKey) {
+            hasZeroKey = true;
+            size++;
+        }
+        zeroKeyValue = value;
+        return prev;
+    }
+
+    private long removeZeroKey() {
+        if (!hasZeroKey) {
+            return missingValue;
+        }
+        hasZeroKey = false;
+        size--;
+        return zeroKeyValue;
+    }
+
     private long removeInternal(long key, int hash, long[] datax, int maskx) {
         final int offset = HashingUtils.findFreeOffset(key, (hash & maskx) << 1, datax);
         if (datax[offset] != key) {
-            return 0L;
+            return missingValue;
         }
         final long value = datax[offset + 1];
-        LinearProbing.deleteAt(datax, offset);
+        LinearProbing.deleteAt(datax, offset, missingValue);
         size--;
         return value;
     }
@@ -581,7 +628,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
                 upsizeThreshold = limit + 1;
                 return;
             }
-            LinearProbing.deleteAt(data, insertedOffset);
+            LinearProbing.deleteAt(data, insertedOffset, missingValue);
             size--;
             throw new IllegalStateException("table is full: " + size + " entries at the maximum capacity of "
                     + (mask + 1) + " slots");
@@ -591,7 +638,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         final boolean useSync = size < syncResizeBelow;
 
         if (useSync) {
-            final HashtableResizer hashtableResizer = new HashtableResizer(data);
+            final HashtableResizer hashtableResizer = new HashtableResizer(data, missingValue);
             //log.debug("Sync resizing...");
             this.data = hashtableResizer.resizeSync();
             mask = mask * 2 + 1;
@@ -604,7 +651,8 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
             arrayFeature = CompletableFuture.supplyAsync(
                     () -> {
                       //  log.debug("(Allocating array for {}: long[{}] ...)", threadName, data.length * 2);
-                        return new long[data.length * 2];
+                        // value cells filled with missingValue here, on the executor, not by the application
+                        return LinearProbing.newArray(data.length, missingValue);
                     },
                     executor);
 
@@ -939,6 +987,11 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         return size;
     }
 
+    @Override
+    public long missingValue() {
+        return missingValue;
+    }
+
     /*
      * The compound operations take one probe, like put, when no resize is in flight. During a resize they are made of
      * the basic operations, which deal with the migration.
@@ -947,7 +1000,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     @Override
     public long putIfAbsent(long key, long value) {
 
-        if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
+        if (key == NOT_ALLOWED_KEY) return hasZeroKey ? zeroKeyValue : putZeroKey(value);
 
         if (arrayFeature != null || resizer != null) {
             return containsKey(key) ? get(key) : put(key, value);
@@ -958,16 +1011,20 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
             return data[offset + 1];
         }
         insertAt(offset, key, value);
-        return 0L;
+        return missingValue;
     }
 
     @Override
     public long addAndGet(long key, long delta) {
 
-        if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
+        if (key == NOT_ALLOWED_KEY) {
+            final long value = (hasZeroKey ? zeroKeyValue : 0L) + delta;
+            putZeroKey(value);
+            return value;
+        }
 
         if (arrayFeature != null || resizer != null) {
-            final long value = get(key) + delta;
+            final long value = (containsKey(key) ? get(key) : 0L) + delta;
             put(key, value);
             return value;
         }
@@ -983,9 +1040,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     @Override
     public long computeIfAbsent(long key, LongUnaryOperator mappingFunction) {
 
-        if (key == NOT_ALLOWED_KEY) throw new IllegalArgumentException("Not allowed key " + NOT_ALLOWED_KEY);
-
-        if (arrayFeature != null || resizer != null) {
+        if (key == NOT_ALLOWED_KEY || arrayFeature != null || resizer != null) {
             if (containsKey(key)) {
                 return get(key);
             }
@@ -1004,11 +1059,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     @Override
     public boolean remove(long key, long value) {
 
-        if (key == NOT_ALLOWED_KEY) {
-            return false;
-        }
-
-        if (arrayFeature != null || resizer != null) {
+        if (key == NOT_ALLOWED_KEY || arrayFeature != null || resizer != null) {
             if (containsKey(key) && get(key) == value) {
                 remove(key);
                 return true;
@@ -1020,7 +1071,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         if (data[offset] != key || data[offset + 1] != value) {
             return false;
         }
-        LinearProbing.deleteAt(data, offset);
+        LinearProbing.deleteAt(data, offset, missingValue);
         size--;
         return true;
     }
@@ -1055,7 +1106,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         if (capacity > targetCapacity) {
             blockOnResizing();
             if (capacity > mask + 1) {
-                data = HashtableResizer.rehash(data, capacity);
+                data = HashtableResizer.rehash(data, capacity, missingValue);
                 mask = capacity - 1;
                 upsizeThreshold = calculateUpsizeThreshold();
                 blockThreshold = calculateBlockThreshold();
@@ -1070,7 +1121,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
     @Override
     public String toString() {
         return resizer == null
-                ? LinearProbing.entriesToString(data)
+                ? LinearProbing.entriesToString(hasZeroKey, zeroKeyValue, data)
                 : "LongLongLL2Hashtable[size=" + size + ", migration in progress]";
     }
 
@@ -1078,10 +1129,13 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         return upsizeThreshold;
     }
 
-    //public void extractMatching(long[] destArray, int destBits, int destMask) {
     public void extractMatching(LongLongLL2Hashtable dest, int destBits, int destMask) {
 
         blockOnResizing();
+
+        if (hasZeroKey && (HashingUtils.hash(0L) & destMask) == destBits) {
+            dest.put(0L, removeZeroKey());
+        }
 
 
         for (int i = 0; i < data.length; i += 2) {
@@ -1093,7 +1147,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
                 if (match) {
                     dest.put(key, data[i + 1]);
                     data[i] = NOT_ALLOWED_KEY;
-                    data[i + 1] = 0;
+                    data[i + 1] = missingValue;
                     size--;
                 }
             }
@@ -1113,7 +1167,7 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
                         data[j] = data[i];
                         data[j + 1] = data[i + 1];
                         data[i] = NOT_ALLOWED_KEY;
-                        data[i + 1] = 0;
+                        data[i + 1] = missingValue;
 
 //                        log.debug("replaced to {}", j >> 1);
                         break;
@@ -1149,6 +1203,9 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         for (int i = 0; i < data.length; i += 2) {
             final long key = data[i];
             if (key == NOT_ALLOWED_KEY) {
+                if (data[i + 1] != missingValue) {
+                    throw new IllegalStateException("integrityCheck: free slot " + i + " holds value " + data[i + 1]);
+                }
                 continue;
             }
             occupied++;
@@ -1162,13 +1219,14 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
             }
         }
 
-        if (occupied != size) {
+        if (occupied + (hasZeroKey ? 1 : 0) != size) {
             throw new IllegalStateException("integrityCheck: size=" + size
-                    + " but " + occupied + " occupied cells (capacity=" + capacity + ")");
+                    + " but " + occupied + " occupied cells" + (hasZeroKey ? " and key 0" : "")
+                    + " (capacity=" + capacity + ")");
         }
 
-        if (size >= capacity) {
-            throw new IllegalStateException("integrityCheck: no gap left, size=" + size
+        if (occupied >= capacity) {
+            throw new IllegalStateException("integrityCheck: no gap left, occupied=" + occupied
                     + " capacity=" + capacity);
         }
     }

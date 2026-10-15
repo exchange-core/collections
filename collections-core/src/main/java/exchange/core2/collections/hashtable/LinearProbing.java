@@ -15,7 +15,7 @@ final class LinearProbing {
      * cluster, moving back every entry the gap would cut off from its home. O(cluster), each entry hashed once - the
      * previous version searched the cluster backwards from its end for every shifted entry, O(cluster^2).
      */
-    static void deleteAt(long[] data, int offset) {
+    static void deleteAt(long[] data, int offset, long missingValue) {
         final int idxMask = data.length - 1;
         final int slotMask = idxMask >> 1;
         int gap = offset;
@@ -38,7 +38,32 @@ final class LinearProbing {
             }
         }
         data[gap] = NOT_ALLOWED_KEY;
-        data[gap + 1] = 0;
+        data[gap + 1] = missingValue;
+    }
+
+    /**
+     * A table array with all slots free: key 0, and the missing value in the value cell - a lookup of a missing key
+     * reads it from the gap its probe stops at, without comparing the key. With missingValue 0 this is just the
+     * zeroed array the JVM allocates; otherwise one more pass over it.
+     */
+    static long[] newArray(int capacity, long missingValue) {
+        final long[] data = new long[capacity * 2];
+        if (missingValue != 0L) {
+            for (int i = 1; i < data.length; i += 2) {
+                data[i] = missingValue;
+            }
+        }
+        return data;
+    }
+
+    /**
+     * Frees all slots of the array, see {@link #newArray}.
+     */
+    static void clear(long[] data, long missingValue) {
+        for (int i = 0; i < data.length; i += 2) {
+            data[i] = NOT_ALLOWED_KEY;
+            data[i + 1] = missingValue;
+        }
     }
 
     /**
@@ -50,10 +75,14 @@ final class LinearProbing {
     }
 
     /**
-     * All entries as {@code {key=value, ...}} in the array order - the format of {@code java.util.Map}.
+     * All entries as {@code {key=value, ...}}, key 0 first, then in the array order - the format of
+     * {@code java.util.Map}.
      */
-    static String entriesToString(long[] data) {
+    static String entriesToString(boolean hasZeroKey, long zeroKeyValue, long[] data) {
         final StringBuilder sb = new StringBuilder("{");
+        if (hasZeroKey) {
+            sb.append("0=").append(zeroKeyValue);
+        }
         for (int i = 0; i < data.length; i += 2) {
             if (data[i] != NOT_ALLOWED_KEY) {
                 if (sb.length() > 1) {

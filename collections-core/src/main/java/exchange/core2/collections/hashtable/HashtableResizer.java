@@ -5,20 +5,22 @@ class HashtableResizer {
 
 
     private final long[] data;
+    private final long missingValue;
 
-    HashtableResizer(long[] data) {
+    HashtableResizer(long[] data, long missingValue) {
         this.data = data;
+        this.missingValue = missingValue;
     }
 
     long[] resizeSync() {
-        return rehash(data, data.length);
+        return rehash(data, data.length, missingValue);
     }
 
     /**
      * Copies all entries of src into a new array of the given capacity (in slots, a power of two).
      */
-    static long[] rehash(long[] src, int capacity) {
-        final long[] data2 = new long[capacity * 2];
+    static long[] rehash(long[] src, int capacity, long missingValue) {
+        final long[] data2 = LinearProbing.newArray(capacity, missingValue);
         final int newMask = capacity - 1;
 
         for (int i = 0; i < src.length; i += 2) {

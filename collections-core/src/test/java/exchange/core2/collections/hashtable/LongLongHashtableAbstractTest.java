@@ -45,6 +45,11 @@ public abstract class LongLongHashtableAbstractTest {
     protected abstract ILongLongHashtable create(int expectedSize);
 
     /**
+     * @param missingValue what get, put and remove return for a missing key
+     */
+    protected abstract ILongLongHashtable create(int expectedSize, long missingValue);
+
+    /**
      * @param maxCapacity slots the table stops growing at, instead of the real 2^29
      */
     protected abstract ILongLongHashtable createLimited(int expectedSize, int maxCapacity);
@@ -217,16 +222,84 @@ public abstract class LongLongHashtableAbstractTest {
 
     // todo add more complex collision removal tests
 
+    /**
+     * Key 0 marks the empty slots, its entry is kept outside the array - with every operation working on it as on any
+     * other key, also next to keys homed at slot 0 (hash(0) = 0).
+     */
     @Test
-    public void should_reject_key_zero() {
+    public void should_store_key_zero() {
 
         hashtable = newHashtable(SMALL_SIZE);
-        hashtable.put(5L, 50L);
-
-        assertThrows(IllegalArgumentException.class, () -> hashtable.put(0L, 1L));
+        final long atSlot0 = findKeyForPosition(0, 100L, SMALL_CAPACITY);
+        hashtable.put(atSlot0, 7L);
         assertFalse(hashtable.containsKey(0L));
         assertThat(hashtable.get(0L), is(0L));
+
+        assertThat(hashtable.put(0L, 50L), is(0L));
+        assertTrue(hashtable.containsKey(0L));
+        assertThat(hashtable.get(0L), is(50L));
+        assertThat(hashtable.size(), is(2L));
+        assertThat(hashtable.put(0L, 51L), is(50L));
+        assertThat(hashtable.size(), is(2L));
+        assertThat(hashtable.get(atSlot0), is(7L));
+        assertTrue(hashtable.toString(), hashtable.toString().startsWith("{0=51, "));
+
+        assertThat(hashtable.putIfAbsent(0L, 1L), is(51L));
+        assertThat(hashtable.addAndGet(0L, 9L), is(60L));
+        assertThat(hashtable.computeIfAbsent(0L, k -> 1L), is(60L));
+        assertFalse(hashtable.remove(0L, 59L));
+        assertTrue(hashtable.remove(0L, 60L));
+        assertFalse(hashtable.containsKey(0L));
         assertThat(hashtable.size(), is(1L));
+
+        assertThat(hashtable.addAndGet(0L, 3L), is(3L));
+        assertThat(hashtable.remove(0L), is(3L));
+        assertThat(hashtable.putIfAbsent(0L, 4L), is(0L));
+        assertThat(hashtable.remove(0L), is(4L));
+        assertThat(hashtable.computeIfAbsent(0L, k -> 5L), is(5L));
+        assertThat(hashtable.remove(0L), is(5L));
+        assertThat(hashtable.remove(0L), is(0L));
+
+        // a stored value 0 is still present
+        hashtable.put(0L, 0L);
+        assertTrue(hashtable.containsKey(0L));
+        assertThat(hashtable.size(), is(2L));
+        assertThat(hashtable.get(atSlot0), is(7L));
+        checkIntegrity(hashtable);
+    }
+
+    /**
+     * A missing key reads as missingValue - in get, put, remove and putIfAbsent, for key 0 as well. addAndGet counts a
+     * missing key as 0. A key stored with the missing value itself is present.
+     */
+    @Test
+    public void should_return_missing_value_for_absent_keys() {
+
+        final long missing = -1L;
+        hashtable = create(SMALL_SIZE, missing);
+        created.add(hashtable);
+        assertThat(hashtable.missingValue(), is(missing));
+
+        for (long key : new long[]{5L, 0L}) {
+            assertThat(hashtable.get(key), is(missing));
+            assertThat(hashtable.remove(key), is(missing));
+            assertThat(hashtable.put(key, 50L), is(missing));
+            assertThat(hashtable.put(key, 51L), is(50L));
+            assertThat(hashtable.remove(key), is(51L));
+            assertThat(hashtable.putIfAbsent(key, 52L), is(missing));
+            assertThat(hashtable.putIfAbsent(key, 53L), is(52L));
+            assertThat(hashtable.remove(key), is(52L));
+            assertThat(hashtable.addAndGet(key, 3L), is(3L));
+            assertThat(hashtable.remove(key), is(3L));
+
+            assertThat(hashtable.put(key, missing), is(missing));
+            assertTrue(hashtable.containsKey(key));
+            assertThat(hashtable.get(key), is(missing));
+            assertTrue(hashtable.remove(key, missing));
+            assertFalse(hashtable.containsKey(key));
+        }
+        assertThat(hashtable.size(), is(0L));
+        assertThat(create(SMALL_SIZE).missingValue(), is(0L));
     }
 
     /**
@@ -513,8 +586,6 @@ public abstract class LongLongHashtableAbstractTest {
         assertThat(hashtable.get(key2), is(0L));
         assertThat(hashtable.size(), is(2L));
 
-        assertThrows(IllegalArgumentException.class, () -> hashtable.putIfAbsent(0L, 1L));
-        assertThat(hashtable.size(), is(2L));
     }
 
     @Test
@@ -538,7 +609,6 @@ public abstract class LongLongHashtableAbstractTest {
         assertThat(hashtable.addAndGet(7L, Long.MAX_VALUE), is(Long.MAX_VALUE));
         assertThat(hashtable.addAndGet(7L, 1L), is(Long.MIN_VALUE));
 
-        assertThrows(IllegalArgumentException.class, () -> hashtable.addAndGet(0L, 1L));
         assertThat(hashtable.size(), is(3L));
     }
 
@@ -556,8 +626,6 @@ public abstract class LongLongHashtableAbstractTest {
         assertThat(hashtable.computeIfAbsent(key2, k -> ++calls[0]), is(0L));
         assertThat(calls[0], is(1));
 
-        assertThrows(IllegalArgumentException.class, () -> hashtable.computeIfAbsent(0L, k -> ++calls[0]));
-        assertThat(calls[0], is(1));
         assertThat(hashtable.size(), is(2L));
     }
 
@@ -605,7 +673,6 @@ public abstract class LongLongHashtableAbstractTest {
         assertTrue(hashtable.remove(key2, 0L));
         assertFalse(hashtable.containsKey(key2));
 
-        assertFalse(hashtable.remove(0L, 0L));
         assertThat(hashtable.size(), is(0L));
     }
 
@@ -684,16 +751,26 @@ public abstract class LongLongHashtableAbstractTest {
 
     /**
      * All operations against a reference map while the table grows through resizes - asynchronous ones in LL2, past
-     * 8200 entries, so that the compound operations run during migrations too.
+     * 8200 entries, so that the compound operations run during migrations too. Key 0 is one of the keys.
      */
     @Test
     public void should_match_reference_map_with_all_operations() {
+        matchReferenceMap(0L);
+    }
+
+    @Test
+    public void should_match_reference_map_with_a_missing_value() {
+        matchReferenceMap(Long.MIN_VALUE);
+    }
+
+    private void matchReferenceMap(long missing) {
 
         final Random rand = new Random(5L);
-        hashtable = newHashtable(16);
+        hashtable = create(16, missing);
+        created.add(hashtable);
         final Map<Long, Long> ref = new HashMap<>();
         final long[] keys = new long[40_000];
-        for (int i = 0; i < keys.length; i++) {
+        for (int i = 1; i < keys.length; i++) {
             keys[i] = rand.nextLong() | 1L;
         }
 
@@ -703,24 +780,26 @@ public abstract class LongLongHashtableAbstractTest {
             final long value = rand.nextInt(4) == 0 ? 0L : rand.nextLong();
             final int kind = rand.nextInt(9);
             switch (kind) {
-                case 0 -> check(op, kind, hashtable.put(key, value), orZero(ref.put(key, value)));
-                case 1 -> check(op, kind, hashtable.putIfAbsent(key, value), orZero(ref.putIfAbsent(key, value)));
+                case 0 -> check(op, kind, hashtable.put(key, value), orElse(ref.put(key, value), missing));
+                case 1 -> check(op, kind, hashtable.putIfAbsent(key, value),
+                        orElse(ref.putIfAbsent(key, value), missing));
                 case 2 -> check(op, kind, hashtable.addAndGet(key, value), ref.merge(key, value, Long::sum));
                 case 3 -> check(op, kind, hashtable.computeIfAbsent(key, k -> k ^ value),
                         ref.computeIfAbsent(key, k -> k ^ value));
-                case 4 -> check(op, kind, hashtable.remove(key), orZero(ref.remove(key)));
+                case 4 -> check(op, kind, hashtable.remove(key), orElse(ref.remove(key), missing));
                 case 5 -> {
-                    final long expected = rand.nextBoolean() ? orZero(ref.get(key)) : value;
+                    final long expected = rand.nextBoolean() ? orElse(ref.get(key), missing) : value;
                     final boolean removed = hashtable.remove(key, expected);
                     check(op, kind, removed ? 1 : 0, ref.remove(key, expected) ? 1 : 0);
                 }
                 case 6 -> check(op, kind, hashtable.containsKey(key) ? 1 : 0, ref.containsKey(key) ? 1 : 0);
-                default -> check(op, kind, hashtable.get(key), orZero(ref.get(key)));
+                default -> check(op, kind, hashtable.get(key), orElse(ref.get(key), missing));
             }
             check(op, -1, hashtable.size(), ref.size());
         }
 
-        log.info("size={} capacity={}", hashtable.size(), hashtable.capacity());
+        log.info("size={} capacity={} key 0 present: {}", hashtable.size(), hashtable.capacity(),
+                hashtable.containsKey(0L));
         ref.forEach((k, v) -> assertThat(hashtable.get(k), is(v)));
         checkIntegrity(hashtable);
     }
@@ -732,8 +811,8 @@ public abstract class LongLongHashtableAbstractTest {
         }
     }
 
-    private static long orZero(Long value) {
-        return value == null ? 0L : value;
+    private static long orElse(Long value, long missing) {
+        return value == null ? missing : value;
     }
 
 

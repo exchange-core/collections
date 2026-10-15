@@ -98,6 +98,11 @@ public class LongLongRadixHashtable implements ILongLongHashtable {
     }
 
     @Override
+    public long missingValue() {
+        return 0L;
+    }
+
+    @Override
     public int capacity() {
         throw new UnsupportedOperationException();
     }

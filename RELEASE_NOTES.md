@@ -19,6 +19,8 @@
   operations). `ensureCapacity` grows the table in one rehash. `toString` prints `{key=value, ...}`;
   during a migration `LongLongLL2Hashtable` prints only the size. In `ILongLongHashtable` the compound
   operations are default methods; `capacity()` and `ensureCapacity()` are new abstract methods.
+- **`HashtableOpsJmh`** (`tests-perf`, JMH 1.34): average time of the single-key hashtable operations, hits
+  and misses, from an L1-resident table to one in DRAM - for A/B runs of `collections-core` builds.
 - **`Automatic-Module-Name`** in the published jars: `exchange.core2.collections`,
   `exchange.core2.collections.orderbook`, `exchange.core2.collections.affinity`.
 
@@ -75,6 +77,14 @@
 
 ### Changed
 
+- **Hashtables: any key, and a configurable value for missing keys** (breaking). Key `0` can be stored - it
+  still marks the empty slots, so its entry is kept in two fields of the table; `put(0, v)` no longer throws.
+  `missingValue` (constructor argument, `0` by default) is what `get`, `put`, `remove` and `putIfAbsent`
+  return for a missing key, see `ILongLongHashtable.missingValue()`; `addAndGet` counts a missing key as `0`.
+  Free slots hold the missing value, so `get` still returns the value of the slot its probe stops at without
+  comparing the key: in `HashtableOpsJmh` the lookups stay within run-to-run noise (±5%) of the previous
+  build, while comparing the key made `get` up to 21% slower on a 3M-entry table. A non-zero missing value
+  costs one more pass over every new array (in `LongLongLL2Hashtable` on the migration executor).
 - **Hashtable removal is linear in the cluster length.** Both hashtables delete by backward shift in one pass
   (Knuth's Algorithm R, shared code) instead of searching the cluster backwards from its end for every shifted
   entry. At load 0.65 (1.36M keys, 2^21 slots) the worst removal hashes 118 entries instead of 454

@@ -26,8 +26,14 @@ public class LongLongLL2HashtableTest extends LongLongHashtableAbstractTest {
     }
 
     @Override
+    protected ILongLongHashtable create(int expectedSize, long missingValue) {
+        return new LongLongLL2Hashtable(expectedSize, missingValue);
+    }
+
+    @Override
     protected ILongLongHashtable createLimited(int expectedSize, int maxCapacity) {
-        return new LongLongLL2Hashtable(expectedSize, THREAD_PER_TASK, LongLongLL2Hashtable.DEFAULT_SYNC_RESIZE_BELOW, maxCapacity);
+        return new LongLongLL2Hashtable(expectedSize, THREAD_PER_TASK, LongLongLL2Hashtable.DEFAULT_SYNC_RESIZE_BELOW,
+                0L, maxCapacity);
     }
 
     /**
@@ -38,7 +44,7 @@ public class LongLongLL2HashtableTest extends LongLongHashtableAbstractTest {
     public void should_refuse_new_keys_at_full_load_after_async_migrations() {
 
         final int limit = (int) (64 * HashingUtils.FULL_LOAD);
-        try (LongLongLL2Hashtable table = new LongLongLL2Hashtable(10, THREAD_PER_TASK, 0, 64)) {
+        try (LongLongLL2Hashtable table = new LongLongLL2Hashtable(10, THREAD_PER_TASK, 0, 0L, 64)) {
             for (long key = 1; key <= limit; key++) {
                 table.put(key, key);
             }
