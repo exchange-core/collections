@@ -32,7 +32,7 @@ import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
  *     key 0 is kept outside the arrays, migrations do not touch it.</li>
  * </ul>
  */
-public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
+public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
 
     public static final int DEFAULT_ARRAY_SIZE = 32;
     public static final int DEFAULT_SYNC_RESIZE_BELOW = 8200;
@@ -1123,64 +1123,6 @@ public class LongLongLL2Hashtable implements ILongLongHashtable, AutoCloseable {
         return resizer == null
                 ? LinearProbing.entriesToString(hasZeroKey, zeroKeyValue, data)
                 : "LongLongLL2Hashtable[size=" + size + ", migration in progress]";
-    }
-
-    public long upsizeThreshold() {
-        return upsizeThreshold;
-    }
-
-    public void extractMatching(LongLongLL2Hashtable dest, int destBits, int destMask) {
-
-        blockOnResizing();
-
-        if (hasZeroKey && (HashingUtils.hash(0L) & destMask) == destBits) {
-            dest.put(0L, removeZeroKey());
-        }
-
-
-        for (int i = 0; i < data.length; i += 2) {
-            final long key = data[i];
-            if (key != NOT_ALLOWED_KEY) {
-                final int hash = HashingUtils.hash(key);
-                final boolean match = (hash & destMask) == destBits;
-//                log.debug("key={} hash={} pos={} match={}", key, String.format("%08X", hash), i >> 1, match);
-                if (match) {
-                    dest.put(key, data[i + 1]);
-                    data[i] = NOT_ALLOWED_KEY;
-                    data[i + 1] = missingValue;
-                    size--;
-                }
-            }
-        }
-
-        for (int i = 0; i < data.length; i += 2) {
-            final long key = data[i];
-            if (key != NOT_ALLOWED_KEY) {
-                final int hash = HashingUtils.hash(key);
-                int j = (hash & mask) << 1;
-
-//                log.debug("key={} hash={} curPos={} minPos={}", key, String.format("%08X", hash), i >> 1, j >> 1);
-
-                while (j != i) {
-                    if (data[j] == NOT_ALLOWED_KEY) {
-                        // found gap
-                        data[j] = data[i];
-                        data[j + 1] = data[i + 1];
-                        data[i] = NOT_ALLOWED_KEY;
-                        data[i + 1] = missingValue;
-
-//                        log.debug("replaced to {}", j >> 1);
-                        break;
-                    }
-
-                    j += 2;
-                    if (j == data.length) {
-                        j = 0;
-                    }
-                }
-            }
-        }
-
     }
 
     /**

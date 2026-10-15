@@ -89,7 +89,7 @@ public class PerfLL2MigrationThroughput {
         System.gc();
         final LongLongLL2Hashtable table = new LongLongLL2Hashtable(EXPECTED, MIGRATOR, 1000);
         for (long k : fill) table.put(k, k);
-        final long threshold = table.upsizeThreshold();
+        final int capacity = table.capacity();
 
         final double nsPerOp = mops == 0 ? 0 : 1000.0 / mops;
         final long start = System.nanoTime();
@@ -114,7 +114,7 @@ public class PerfLL2MigrationThroughput {
                 copyStart = end;
                 putsBeforeCopy = i;
             }
-            if (table.upsizeThreshold() != threshold) {
+            if (table.capacity() != capacity) {
                 break; // switched to the new array
             }
         }

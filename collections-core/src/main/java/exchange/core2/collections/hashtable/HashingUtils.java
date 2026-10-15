@@ -1,12 +1,15 @@
 package exchange.core2.collections.hashtable;
 
 
-public class HashingUtils {
+final class HashingUtils {
+
+    private HashingUtils() {
+    }
 
     /**
      * Key of an empty slot. Key 0 itself is stored too - outside the arrays, in fields of the table.
      */
-    public static final long NOT_ALLOWED_KEY = 0L;
+    static final long NOT_ALLOWED_KEY = 0L;
 
     /**
      * Largest table: 2^29 slots, a long[2^30]. Resizing stops there - the next array length would not fit an int.
@@ -53,18 +56,14 @@ public class HashingUtils {
      *
      * @see <a href="http://zimbry.blogspot.com/2011/09/better-bit-mixing-improving-on.html">Better Bit Mixing</a>
      */
-    public static int hash(final long value) {
+    static int hash(final long value) {
         long z = value;
         z = (z ^ (z >>> 33)) * 0x62a9d9ed799705f5L;
         return (int) (((z ^ (z >>> 28)) * 0xcb24d0a5c88c35b3L) >>> 32);
     }
 
-    public static int nextPositivePowerOfTwo(final int value) {
+    static int nextPositivePowerOfTwo(final int value) {
         return 1 << (Integer.SIZE - Integer.numberOfLeadingZeros(value - 1));
-    }
-
-    public static long nextPositivePowerOfTwo(final long value) {
-        return 1L << (Long.SIZE - Long.numberOfLeadingZeros(value - 1));
     }
 
 

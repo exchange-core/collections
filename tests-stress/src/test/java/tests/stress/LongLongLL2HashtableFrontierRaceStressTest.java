@@ -1,7 +1,6 @@
 package tests.stress;
 
 import exchange.core2.collections.affinity.CpuAffinity;
-import exchange.core2.collections.hashtable.HashingUtils;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
 import org.agrona.collections.Long2LongHashMap;
 import org.junit.Test;
@@ -238,7 +237,7 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
         }
         final long[] dst = (long[]) DST.get(r);
         final int ring = dst.length;
-        final int home = (HashingUtils.hash(key) & ((ring >> 1) - 1)) << 1;
+        final int home = (TableHash.hash(key) & ((ring >> 1) - 1)) << 1;
         int x = home;
         while (dst[x] != key) {
             if (dst[x] == 0) {
@@ -300,7 +299,7 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
             final int[] filled = new int[slots];
             int remaining = slots;
             for (long key = base; remaining > 0; key++) {
-                final int slot = HashingUtils.hash(key) & (slots - 1);
+                final int slot = TableHash.hash(key) & (slots - 1);
                 if (key != 0 && filled[slot] < perSlot) {
                     keys[slot * perSlot + filled[slot]++] = key;
                     if (filled[slot] == perSlot) {

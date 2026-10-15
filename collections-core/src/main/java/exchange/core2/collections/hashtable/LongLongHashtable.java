@@ -22,7 +22,7 @@ import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
  *     <li>Not thread-safe.</li>
  * </ul>
  */
-public class LongLongHashtable implements ILongLongHashtable {
+public final class LongLongHashtable implements ILongLongHashtable {
 
 
     public static final int DEFAULT_ARRAY_SIZE = 16;
@@ -332,61 +332,6 @@ public class LongLongHashtable implements ILongLongHashtable {
     @Override
     public String toString() {
         return LinearProbing.entriesToString(hasZeroKey, zeroKeyValue, data);
-    }
-
-    public long upsizeThreshold() {
-        return upsizeThreshold;
-    }
-
-    public void extractMatching(LongLongHashtable dest, int destBits, int destMask) {
-
-        if (hasZeroKey && (HashingUtils.hash(0L) & destMask) == destBits) {
-            dest.put(0L, removeZeroKey());
-        }
-
-        for (int i = 0; i < data.length; i += 2) {
-            final long key = data[i];
-            if (key != NOT_ALLOWED_KEY) {
-                final int hash = HashingUtils.hash(key);
-                final boolean match = (hash & destMask) == destBits;
-//                log.debug("key={} hash={} pos={} match={}", key, String.format("%08X", hash), i >> 1, match);
-                if (match) {
-                    dest.put(key, data[i + 1]);
-                    data[i] = NOT_ALLOWED_KEY;
-                    data[i + 1] = missingValue;
-                    size--;
-                }
-            }
-        }
-
-        for (int i = 0; i < data.length; i += 2) {
-            final long key = data[i];
-            if (key != NOT_ALLOWED_KEY) {
-                final int hash = HashingUtils.hash(key);
-                int j = (hash & mask) << 1;
-
-//                log.debug("key={} hash={} curPos={} minPos={}", key, String.format("%08X", hash), i >> 1, j >> 1);
-
-                while (j != i) {
-                    if (data[j] == NOT_ALLOWED_KEY) {
-                        // found gap
-                        data[j] = data[i];
-                        data[j + 1] = data[i + 1];
-                        data[i] = NOT_ALLOWED_KEY;
-                        data[i + 1] = missingValue;
-
-//                        log.debug("replaced to {}", j >> 1);
-                        break;
-                    }
-
-                    j += 2;
-                    if (j == data.length) {
-                        j = 0;
-                    }
-                }
-            }
-        }
-
     }
 
     /**

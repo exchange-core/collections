@@ -63,20 +63,23 @@
 ### Removed
 
 - **`LongLongRadixHashtable` is no longer published.** It was an experiment with stubbed methods: `get`
-  returned `0`, `size()` was always `0`, `keysStream()` returned `null`. It moved next to its benchmark in
-  `tests-perf`.
+  returned `0`, `size()` was always `0`, `keysStream()` returned `null`. Removed together with
+  `extractMatching` (below), its benchmark too.
 - **`HashtableAsyncResizer` and `HashtableResizer.resizeParallelSync()`** - unused. The parallel resize was
   not safe either: its segments could overlap, and it ran on the common ForkJoinPool.
 - **`printLayout()` of both hashtables** - it computed nothing it returned or printed, and in
   `LongLongLL2Hashtable` it also finished an in-flight migration.
-- **Hashtable internals are no longer public:** `HashtableAsync2Resizer`, `HashtableResizer`,
-  `HashingUtils.findFreeOffset`, `LongLongLL2Hashtable.debugLocate`. `LongLongLL2Hashtable.mask()`
-  (deprecated) is gone - `capacity() - 1` is the same.
+- **Hashtable internals are no longer public:** `HashingUtils` (hash function, empty-slot key),
+  `HashtableAsync2Resizer`, `HashtableResizer`, `LongLongLL2Hashtable.debugLocate`, `upsizeThreshold()` of both
+  tables. `LongLongLL2Hashtable.mask()` (deprecated) is gone - `capacity() - 1` is the same, and the tables
+  grow at 65% of `capacity()`.
+- **`extractMatching` of both hashtables** - only the Radix sharding experiment used it.
 - **`remove(key, hash)` of both hashtables.** Besides exposing the internal hash, it would have overloaded
   the new `remove(key, value)`: `remove(key, 5)` with an int literal resolved to the hash variant.
 
 ### Changed
 
+- **`LongLongHashtable` and `LongLongLL2Hashtable` are `final`.**
 - **Hashtables: any key, and a configurable value for missing keys** (breaking). Key `0` can be stored - it
   still marks the empty slots, so its entry is kept in two fields of the table; `put(0, v)` no longer throws.
   `missingValue` (constructor argument, `0` by default) is what `get`, `put`, `remove` and `putIfAbsent`

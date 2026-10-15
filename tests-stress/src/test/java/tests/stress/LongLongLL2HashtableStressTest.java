@@ -2,7 +2,6 @@ package tests.stress;
 
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
 import org.agrona.BitUtil;
-import exchange.core2.collections.hashtable.HashingUtils;
 import org.agrona.collections.Long2LongHashMap;
 import org.agrona.collections.MutableInteger;
 import org.agrona.collections.MutableLong;
@@ -107,7 +106,7 @@ public class LongLongLL2HashtableStressTest {
                 } catch (Throwable er) {
 
                     int mask = hashtable.capacity() - 1;
-                    final int hash = HashingUtils.hash(key);
+                    final int hash = TableHash.hash(key);
                     int pos = (hash & mask) << 1;
 
                     // String actions = hashtable.getActions(key);
@@ -144,7 +143,7 @@ public class LongLongLL2HashtableStressTest {
                             assertThat(hashtable.get(k), is(v));
                         } catch (Throwable er) {
 
-                            final int hash = HashingUtils.hash(k);
+                            final int hash = TableHash.hash(k);
                             int pos = (hash & mask) << 1;
 
                             posFrom.set(Math.min(posFrom.get(), pos));
