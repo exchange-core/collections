@@ -280,6 +280,9 @@ final LongLongLL2Hashtable tuned = LongLongLL2Hashtable.builder()
 - `clear()`, `forEach()`, `keysStream()` and `valuesStream()` work on one array: an in-flight migration
   is finished first (like `close()`) — a pause, meant for the set-up, snapshots or tests
 - the public API is single-threaded: exactly one application thread, plus the internal migrator
+- waits for the migrator are bounded by `hangTimeout` (builder, default 10s): past it the operation throws
+  `IllegalStateException` with the migration state instead of hanging; interrupts do not fail operations,
+  the interrupt status is kept
 - `-Dexchange.hashtable.verify=true` runs a full integrity check after every migration —
   for debugging migration corruption only, it is expensive
 

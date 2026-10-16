@@ -2,11 +2,17 @@ package exchange.core2.collections.hashtable;
 
 import org.junit.Test;
 
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 /**
  * The contract tests against LongLongLL2Hashtable. With the default executor and sync-resize bound, the tables
@@ -34,6 +40,104 @@ public class LongLongLL2HashtableTest extends LongLongHashtableAbstractTest {
     protected ILongLongHashtable createLimited(int expectedSize, int maxCapacity) {
         return LongLongLL2Hashtable.builder().expectedSize(expectedSize).executor(THREAD_PER_TASK)
                 .maxCapacity(maxCapacity).build();
+    }
+
+    /**
+     * A put at the block threshold waits for the new array - allocated here 150ms late. An interrupt used to fail
+     * that put with IllegalStateException; now it waits, and the interrupt status stays set.
+     */
+    @Test(timeout = 60_000)
+    public void interrupt_does_not_fail_a_put_waiting_for_the_array() {
+
+        final AtomicInteger tasks = new AtomicInteger();
+        final Executor lateAllocation = task -> {
+            final boolean allocation = tasks.getAndIncrement() == 0;
+            final Thread thread = new Thread(() -> {
+                if (allocation) {
+                    LockSupport.parkNanos(150_000_000L);
+                }
+                task.run();
+            }, "test-migrator");
+            thread.setDaemon(true);
+            thread.start();
+        };
+        // 256 slots: the resize starts at 166 entries, a put finding 230 waits for the new array
+        try (LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().expectedSize(100)
+                .executor(lateAllocation).syncResizeBelow(0).build()) {
+            assertThat(table.capacity(), is(256));
+            for (long key = 1; key <= 230; key++) {
+                table.put(key, key);
+            }
+            Thread.currentThread().interrupt();
+            try {
+                table.put(231L, 231L); // at the block threshold: waits for the allocation
+                assertTrue("interrupt status kept", Thread.currentThread().isInterrupted());
+            } finally {
+                Thread.interrupted();
+            }
+            for (long key = 1; key <= 231; key++) {
+                assertThat(table.get(key), is(key));
+            }
+            checkIntegrity(table);
+        }
+    }
+
+    /**
+     * An interrupted migrator goes on with its migration (the table needs it complete), backs off while idle
+     * instead of spinning - parkNanos returns at once while the interrupt status is set - and has the status set
+     * again when its task ends.
+     */
+    @Test(timeout = 60_000)
+    public void interrupted_migrator_backs_off_and_keeps_the_interrupt() throws Exception {
+
+        final AtomicReference<Thread> copier = new AtomicReference<>();
+        final AtomicReference<Boolean> interruptedAfterCopy = new AtomicReference<>();
+        final AtomicInteger tasks = new AtomicInteger();
+        final Executor executor = task -> {
+            final boolean copy = tasks.getAndIncrement() % 2 == 1;
+            final Thread thread = new Thread(() -> {
+                if (copy) {
+                    copier.set(Thread.currentThread());
+                }
+                task.run();
+                if (copy) {
+                    interruptedAfterCopy.set(Thread.currentThread().isInterrupted());
+                }
+            }, "test-migrator");
+            thread.setDaemon(true);
+            thread.start();
+        };
+        try (LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().expectedSize(1000)
+                .executor(executor).syncResizeBelow(0).build()) {
+            // past the upsize threshold the puts start the migration - and stop there: further operations would
+            // authorize the next segments and could finish it
+            for (long key = 1; !table.toString().contains("migration in progress"); key++) {
+                table.put(key, key);
+            }
+            while (copier.get() == null) {
+                Thread.onSpinWait();
+            }
+            // the application is quiet: the migrator copies its first segment, then waits for the next one
+            Thread.sleep(50);
+            final Thread migrator = copier.get();
+            assertTrue("migrator still waiting", migrator.isAlive());
+            migrator.interrupt();
+
+            // its CPU time shows it: a parked thread looks TIMED_WAITING even when every park returns at once
+            final ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+            Thread.sleep(10);
+            final long cpu0 = threads.getThreadCpuTime(migrator.threadId());
+            Thread.sleep(200);
+            final long cpuMs = (threads.getThreadCpuTime(migrator.threadId()) - cpu0) / 1_000_000;
+            assertTrue("migrator used " + cpuMs + "ms of CPU in 200ms", cpuMs < 100);
+
+            table.close(); // authorizes the rest: the migration completes
+            for (long key = 1; key <= table.size(); key++) {
+                assertThat(table.get(key), is(key));
+            }
+            migrator.join(10_000);
+            assertThat(interruptedAfterCopy.get(), is(true));
+        }
     }
 
     /**

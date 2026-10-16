@@ -2,6 +2,7 @@ package exchange.core2.collections.hashtable;
 
 
 import java.lang.ref.Cleaner;
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
@@ -30,6 +31,11 @@ import static exchange.core2.collections.hashtable.HashingUtils.SEED;
  *     it must not be bounded (see the constructors). {@link #close()} finishes an in-flight migration.</li>
  *     <li>{@link #clear()}, {@link #forEach}, {@link #keysStream()} and {@link #valuesStream()} finish an in-flight
  *     migration first, as {@link #close()} does - a pause, for the set-up, snapshots or tests.</li>
+ *     <li>Waits for the migrator are bounded: past the hang timeout ({@link Builder#hangTimeout}, default 10s) an
+ *     operation fails with {@link IllegalStateException} and the state of the migration, instead of hanging; a
+ *     migrator that died is reported right away. The table stays consistent after such a failure. Interrupts do
+ *     not fail an operation: the waits are short, they go on, and the interrupt status is kept for the caller's
+ *     own blocking calls.</li>
  *     <li>Any key, {@code missingValue} ({@link Builder}), the hash seed of the JVM and the maximum capacity as in
  *     {@link LongLongHashtable}. The entry stored as key 0 is kept outside the arrays, migrations do not touch
  *     it.</li>
@@ -93,8 +99,10 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
      * copied in microseconds, so anything past this bound means the migrator is stuck or dead -
      * fail with the full state instead of hanging, which is what makes these bugs debuggable.
      */
-    private static final long HANG_DETECT_NANOS = 10_000_000_000L;
-    private static final long HANG_CHECK_SPIN_MASK = 0xFFFFF; // check the clock every ~1M spins
+    public static final Duration DEFAULT_HANG_TIMEOUT = Duration.ofSeconds(10);
+    private static final long HANG_CHECK_SPIN_MASK = 0xFFFFF; // check the clock every ~1M spins (~30ms)
+
+    private final long hangTimeoutNanos;
 
     /**
      * Runs {@link #integrityCheck()} right after every completed migration. Enable with
@@ -160,6 +168,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         this.missingValue = builder.missingValue;
         this.executor = builder.executor;
         this.syncResizeBelow = builder.syncResizeBelow;
+        this.hangTimeoutNanos = builder.hangTimeout.toNanos();
         this.maxCapacity = builder.maxCapacity;
         this.upsizeThresholdPerc = 0.65f;
         final int arraySize = HashingUtils.capacityFor(builder.expectedSize, upsizeThresholdPerc, maxCapacity);
@@ -185,6 +194,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         private long missingValue = 0L;
         private Executor executor = DAEMON_EXECUTOR;
         private int syncResizeBelow = DEFAULT_SYNC_RESIZE_BELOW;
+        private Duration hangTimeout = DEFAULT_HANG_TIMEOUT;
         private int maxCapacity = HashingUtils.MAX_CAPACITY;
 
         private Builder() {
@@ -229,6 +239,19 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
          */
         public Builder syncResizeBelow(int syncResizeBelow) {
             this.syncResizeBelow = syncResizeBelow;
+            return this;
+        }
+
+        /**
+         * How long an operation waits for the migrator before it fails with IllegalStateException (default 10s).
+         * A migration segment is copied in microseconds and the array allocated in milliseconds, so the bound only
+         * matters for a migrator that is stuck - or descheduled for long: a debugger, an overloaded executor.
+         */
+        public Builder hangTimeout(Duration hangTimeout) {
+            if (hangTimeout.isNegative() || hangTimeout.isZero()) {
+                throw new IllegalArgumentException("hang timeout must be positive: " + hangTimeout);
+            }
+            this.hangTimeout = hangTimeout;
             return this;
         }
 
@@ -772,7 +795,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
                 rethrowMigratorFailure();
                 final long now = System.nanoTime();
                 if (deadline == 0) {
-                    deadline = now + HANG_DETECT_NANOS;
+                    deadline = now + hangTimeoutNanos;
                 } else if (now - deadline > 0) {
                     throw new IllegalStateException("stuck waiting for migration of pos=" + pos
                             + " after " + spins + " spins, " + migrationState());
@@ -810,7 +833,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
                 rethrowMigratorFailure();
                 final long now = System.nanoTime();
                 if (deadline == 0) {
-                    deadline = now + HANG_DETECT_NANOS;
+                    deadline = now + hangTimeoutNanos;
                 } else if (now - deadline > 0) {
                     throw new IllegalStateException("stuck waiting for allowedPosition after "
                             + spins + " spins, " + migrationState());
@@ -823,17 +846,30 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
      * Same idea as the spin waits: a blocking join hides both a stuck migrator and an executor
      * that never scheduled the task (which is what happens when the same bounded Executor is used
      * for the allocation and for the copying). Time it out and report the state.
+     * <p>
+     * Not interruptible, like the spin waits: an interrupt used to fail the put (or close) waiting here, though
+     * nothing was wrong. The wait goes on, bounded by the hang timeout, and the interrupt status is set again.
      */
     private void awaitFuture(CompletableFuture<?> future, String what) {
+        final long deadline = System.nanoTime() + hangTimeoutNanos;
+        boolean interrupted = false;
         try {
-            future.get(HANG_DETECT_NANOS, TimeUnit.NANOSECONDS);
-        } catch (TimeoutException e) {
-            throw new IllegalStateException("stuck waiting for " + what + ", " + migrationState(), e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("interrupted waiting for " + what, e);
-        } catch (ExecutionException e) {
-            throw new IllegalStateException(what + " failed, " + migrationState(), e.getCause());
+            while (true) {
+                try {
+                    future.get(Math.max(0L, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+                    return;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                } catch (TimeoutException e) {
+                    throw new IllegalStateException("stuck waiting for " + what + ", " + migrationState(), e);
+                } catch (ExecutionException e) {
+                    throw new IllegalStateException(what + " failed, " + migrationState(), e.getCause());
+                }
+            }
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
