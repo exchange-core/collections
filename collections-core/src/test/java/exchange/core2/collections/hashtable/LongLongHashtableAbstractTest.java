@@ -13,9 +13,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.stream.Collectors;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
@@ -813,6 +815,109 @@ public abstract class LongLongHashtableAbstractTest {
 
     private static long orElse(Long value, long missing) {
         return value == null ? missing : value;
+    }
+
+
+    /**
+     * forEach and both streams see every entry once, key 0 included, and the streams in the same order. In
+     * LongLongLL2Hashtable they used to throw UnsupportedOperationException.
+     */
+    @Test
+    public void should_iterate_all_entries() {
+
+        hashtable = newHashtable(16);
+        final Map<Long, Long> ref = fillWithRandomEntries(hashtable);
+
+        final Map<Long, Long> visited = new HashMap<>();
+        hashtable.forEach((k, v) -> assertEquals("duplicate key " + k, null, visited.put(k, v)));
+        assertEquals(ref, visited);
+
+        final long[] keys = hashtable.keysStream().toArray();
+        final long[] values = hashtable.valuesStream().toArray();
+        assertThat(keys.length, is(ref.size()));
+        assertThat(values.length, is(ref.size()));
+        for (int i = 0; i < keys.length; i++) {
+            // both streams walk the table in the same order
+            assertThat(values[i], is(ref.get(keys[i])));
+        }
+        assertEquals(ref.keySet(), hashtable.keysStream().boxed().collect(Collectors.toSet()));
+    }
+
+    @Test
+    public void should_iterate_empty_table() {
+
+        hashtable = newHashtable(16);
+        hashtable.forEach((k, v) -> {
+            throw new AssertionError("unexpected entry " + k);
+        });
+        assertThat(hashtable.keysStream().count(), is(0L));
+        assertThat(hashtable.valuesStream().count(), is(0L));
+    }
+
+    @Test
+    public void should_clear() {
+
+        hashtable = newHashtable(16);
+        final Map<Long, Long> ref = fillWithRandomEntries(hashtable);
+        final int capacity = hashtable.capacity();
+
+        hashtable.clear();
+
+        assertThat(hashtable.size(), is(0L));
+        assertThat(hashtable.capacity(), is(capacity));
+        assertThat(hashtable.keysStream().count(), is(0L));
+        for (long key : ref.keySet()) {
+            assertFalse(hashtable.containsKey(key));
+            assertThat(hashtable.get(key), is(0L));
+        }
+
+        // still usable, at the capacity it had grown to
+        final Map<Long, Long> ref2 = fillWithRandomEntries(hashtable);
+        assertThat(hashtable.size(), is((long) ref2.size()));
+        ref2.forEach((k, v) -> assertThat(hashtable.get(k), is(v)));
+        checkIntegrity(hashtable);
+    }
+
+    /** free slots hold the missing value, also after clear */
+    @Test
+    public void should_clear_with_missing_value() {
+
+        hashtable = create(16, -1L);
+        created.add(hashtable);
+        final Map<Long, Long> ref = fillWithRandomEntries(hashtable);
+
+        hashtable.clear();
+
+        assertThat(hashtable.size(), is(0L));
+        for (long key : ref.keySet()) {
+            assertThat(hashtable.get(key), is(-1L));
+        }
+        checkIntegrity(hashtable);
+        final Map<Long, Long> ref2 = fillWithRandomEntries(hashtable);
+        ref2.forEach((k, v) -> assertThat(hashtable.get(k), is(v)));
+        checkIntegrity(hashtable);
+    }
+
+    /**
+     * Grows the table through several resizes and removes a part of the keys, so that iteration sees both
+     * collision chains and the gaps left by removal - and key 0, kept outside the array.
+     */
+    private static Map<Long, Long> fillWithRandomEntries(ILongLongHashtable table) {
+        final Random rand = new Random(7L);
+        final Map<Long, Long> ref = new HashMap<>();
+        table.put(0L, 77L);
+        ref.put(0L, 77L);
+        for (int i = 0; i < 5000; i++) {
+            final long key = rand.nextLong() | 1L;
+            final long value = rand.nextInt(4) == 0 ? 0L : rand.nextLong(); // value 0 is a regular value
+            table.put(key, value);
+            ref.put(key, value);
+            if (rand.nextInt(3) == 0) {
+                table.remove(key);
+                ref.remove(key);
+            }
+        }
+        return ref;
     }
 
 

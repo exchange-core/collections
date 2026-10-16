@@ -11,8 +11,10 @@
   GraalVM native image (reachability metadata included). Replaces OpenHFT Affinity (JNA) in the benchmarks;
   `net.openhft:affinity` is no longer used anywhere in the build.
 - **`LongLongHashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`.** The README documented
-  them, but all four threw `UnsupportedOperationException`. `forEach` does not allocate. They stay
-  unsupported in `LongLongLL2Hashtable`.
+  them, but all four threw `UnsupportedOperationException`. `forEach` does not allocate.
+- **`LongLongLL2Hashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`** - they threw
+  `UnsupportedOperationException`. They finish an in-flight migration first, as `close()` does: a pause, for
+  the set-up, snapshots or tests.
 - **Hashtables: `putIfAbsent`, `addAndGet`, `computeIfAbsent`, `remove(key, value)`, `capacity()`,
   `ensureCapacity(expectedSize)` and `toString()`.** The compound operations take one probe, like `put`
   (in `LongLongLL2Hashtable` when no resize is in flight - during a migration they are made of the basic

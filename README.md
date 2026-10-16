@@ -248,7 +248,8 @@ final LongLongLL2Hashtable table = new LongLongLL2Hashtable(1_000_000, myExecuto
   made of the basic operations; `toString()` then shows only the size
 - `ensureCapacity` beyond the capacity of an in-flight migration finishes it first (like `close()`),
   then rehashes on the calling thread
-- `clear()`, `forEach()`, `keysStream()` and `valuesStream()` throw `UnsupportedOperationException`
+- `clear()`, `forEach()`, `keysStream()` and `valuesStream()` work on one array: an in-flight migration
+  is finished first (like `close()`) — a pause, meant for the set-up, snapshots or tests
 - the public API is single-threaded: exactly one application thread, plus the internal migrator
 - `-Dexchange.hashtable.verify=true` runs a full integrity check after every migration —
   for debugging migration corruption only, it is expensive
