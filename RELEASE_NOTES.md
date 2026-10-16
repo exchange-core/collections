@@ -115,6 +115,13 @@
   instead of 1024: in the put benchmark (1M puts/s, growing to 4M entries) p99.99 went from 4.6 us to 1.0 us,
   puts slower than 2 us halved, p99 +1.5%. Each segment costs a hand-over, so copying a large table takes 25%
   longer; the new `PerfLL2MigrationThroughput` benchmark measures that.
+- **`LongLongLL2Hashtable`: configurable hang timeout, interrupts handled.** `Builder.hangTimeout(Duration)`
+  (default 10s) bounds every wait for the migrator; past it an operation fails with `IllegalStateException`
+  and the migration state, the table stays consistent. An interrupt no longer fails a `put` or `close()`
+  waiting for the new array or for the migrator to end - the waits are short, they go on and the interrupt
+  status is set again. An interrupted migrator spun on a whole core while waiting for the next segment
+  (`parkNanos` returns at once with the interrupt status set); it now backs off as before and gets the
+  status back when its task ends - the migration itself is completed either way, the table needs it.
 - **`LongLongLL2Hashtable`: a failed migrator is reported right away** - with its exception as the cause,
   within milliseconds, instead of a bare "stuck waiting for migration" after the 10 s hang detection.
 - **Published artifacts are now compiled for Java 17 instead of Java 26.** `collections-core` and

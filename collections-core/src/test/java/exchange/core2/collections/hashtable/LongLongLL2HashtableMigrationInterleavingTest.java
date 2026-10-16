@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
@@ -19,6 +20,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -283,6 +285,75 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         assertEquals(0, h.verify(Map.of(), "clear"));
     }
 
+    /**
+     * The hang detection is configurable: with the copying task held back, a lookup of a key in the first segment
+     * waits for a migrator that does not come, and fails after the hang timeout - not after the default 10s. The
+     * table is consistent afterwards: the migrator, started late, finishes the migration.
+     */
+    @Test(timeout = 60_000)
+    public void hang_timeout_is_configurable() throws Exception {
+
+        final Harness h = new Harness(1000, Duration.ofMillis(200));
+        final Map<Long, Long> ref = new HashMap<>();
+        final long firstSegmentKey = startMigrationHeldBack(h, ref);
+
+        final long t0 = System.nanoTime();
+        final IllegalStateException e = assertThrows(IllegalStateException.class, () -> h.table.get(firstSegmentKey));
+        final long ms = (System.nanoTime() - t0) / 1_000_000;
+        log.info("failed after {}ms: {}", ms, e.getMessage());
+        assertTrue(e.getMessage(), e.getMessage().startsWith("stuck waiting"));
+        assertTrue("took " + ms + "ms", ms >= 200 && ms < 3_000);
+
+        h.close(h.startMigrator(() -> {
+        }));
+        assertEquals(0, h.verify(ref, "hang timeout"));
+    }
+
+    /**
+     * An interrupt does not fail an operation that waits for the migrator: the lookup returns once the migrator
+     * (started 100ms late) has copied the segment, and the interrupt status is still set for the caller.
+     */
+    @Test(timeout = 60_000)
+    public void interrupt_does_not_fail_a_wait_for_the_migrator() throws Exception {
+
+        final Harness h = new Harness(1000);
+        final Map<Long, Long> ref = new HashMap<>();
+        final long firstSegmentKey = startMigrationHeldBack(h, ref);
+
+        final Thread migrator = h.startMigrator(() -> Thread.sleep(100));
+        Thread.currentThread().interrupt();
+        try {
+            assertEquals(0L, h.table.get(firstSegmentKey)); // missing - known only once its segment is copied
+            assertTrue("interrupt status kept", Thread.currentThread().isInterrupted());
+            h.table.close(); // finishes the migration - and waits for the copying task to end, interrupted too
+            assertTrue("interrupt status kept", Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted();
+        }
+        h.close(migrator);
+        assertEquals(0, h.verify(ref, "interrupt"));
+    }
+
+    /**
+     * Fills the harness table up to the resize, then starts the migration (the copying task held back).
+     *
+     * @return a key homed in the first segment of the migration - its lookup waits for the migrator
+     */
+    private static long startMigrationHeldBack(Harness h, Map<Long, Long> ref) throws Exception {
+        final Random rand = new Random(5L);
+        while (ARRAY_FEATURE.get(h.table) == null) {
+            final long key = rand.nextLong() | 1L;
+            h.table.put(key, 1L);
+            ref.put(key, 1L);
+        }
+        final long[] old = (long[]) DATA.get(h.table);
+        final int slotMask = (old.length >> 1) - 1;
+        h.table.get(keyWithSlot(1, (old.length >> 1) * 3 / 4, slotMask)); // starts the migration
+        final HashtableAsync2Resizer r = h.resizer();
+        final int s = r.getStartingPosition();
+        return keyWithSlot(1_000_000_007L, ((s + 2) & (old.length - 1)) >> 1, slotMask);
+    }
+
     /** @return null if the seed does not produce the scenario, otherwise whether no key was lost */
     private static Boolean insertAcrossFrontier(long seed) throws Exception {
 
@@ -398,6 +469,10 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         final LongLongLL2Hashtable table;
 
         Harness(int expectedSize) {
+            this(expectedSize, LongLongLL2Hashtable.DEFAULT_HANG_TIMEOUT);
+        }
+
+        Harness(int expectedSize, Duration hangTimeout) {
             // the first task allocates the new array (run here), the second one is the copying - held back
             final AtomicInteger executions = new AtomicInteger();
             final Executor executor = task -> {
@@ -407,7 +482,8 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
                     copyTask.set(task);
                 }
             };
-            table = new LongLongLL2Hashtable(expectedSize, executor, 0);
+            table = LongLongLL2Hashtable.builder().expectedSize(expectedSize).executor(executor).syncResizeBelow(0)
+                    .hangTimeout(hangTimeout).build();
         }
 
         HashtableAsync2Resizer resizer() throws IllegalAccessException {

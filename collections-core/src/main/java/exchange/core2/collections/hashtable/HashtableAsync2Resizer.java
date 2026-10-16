@@ -54,6 +54,9 @@ class HashtableAsync2Resizer {
     /** the thread currently running {@link #copy()}, null before it starts and after it returns */
     private volatile Thread migratorThread;
 
+    /** the migrator was interrupted while backing off - set again when copy() returns (migrator thread only) */
+    private boolean interrupted;
+
 
     public HashtableAsync2Resizer(long[] srcData, long[] dstData, int startingPosition, int allowedPosition) {
         this.srcData = srcData;
@@ -147,6 +150,9 @@ class HashtableAsync2Resizer {
             doCopy();
         } finally {
             migratorThread = null;
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -212,6 +218,13 @@ class HashtableAsync2Resizer {
                     ? PARK_INITIAL_NANOS
                     : Math.min(parkNanos * PARK_BACKOFF_FACTOR, PARK_MAX_NANOS);
 
+            // An interrupt does not stop the migration: entries put into the new array exist only there, the
+            // table needs it complete (the hang detection on the application side covers a migrator that never
+            // gets authorized). But with the interrupt status set parkNanos returns at once - a busy loop. Clear
+            // it here, set it again when copy() returns.
+            if (Thread.interrupted()) {
+                interrupted = true;
+            }
             LockSupport.parkNanos(this, parkNanos);
         }
     }
