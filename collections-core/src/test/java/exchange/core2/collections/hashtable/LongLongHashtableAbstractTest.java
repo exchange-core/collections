@@ -225,8 +225,9 @@ public abstract class LongLongHashtableAbstractTest {
     // todo add more complex collision removal tests
 
     /**
-     * Key 0 marks the empty slots, its entry is kept outside the array - with every operation working on it as on any
-     * other key, also next to keys homed at slot 0 (hash(0) = 0).
+     * Key 0 marks the empty slots, so with seed 0 its entry is kept outside the array - with every operation working
+     * on it as on any other key, also next to keys homed at slot 0 (hash(0) = 0). Under another seed it is a regular
+     * key, and the same holds.
      */
     @Test
     public void should_store_key_zero() {
@@ -244,7 +245,7 @@ public abstract class LongLongHashtableAbstractTest {
         assertThat(hashtable.put(0L, 51L), is(50L));
         assertThat(hashtable.size(), is(2L));
         assertThat(hashtable.get(atSlot0), is(7L));
-        assertTrue(hashtable.toString(), hashtable.toString().startsWith("{0=51, "));
+        assertTrue(hashtable.toString(), hashtable.toString().matches("\\{(.*, )?0=51(, .*)?}"));
 
         assertThat(hashtable.putIfAbsent(0L, 1L), is(51L));
         assertThat(hashtable.addAndGet(0L, 9L), is(60L));
@@ -765,6 +766,10 @@ public abstract class LongLongHashtableAbstractTest {
         matchReferenceMap(Long.MIN_VALUE);
     }
 
+    /**
+     * Key 0 and the key equal to the hash seed (the one kept in fields - the same key unless the tests run with
+     * -Dexchange.hashtable.seed, as the second surefire execution does) are among the keys.
+     */
     private void matchReferenceMap(long missing) {
 
         final Random rand = new Random(5L);
@@ -772,9 +777,10 @@ public abstract class LongLongHashtableAbstractTest {
         created.add(hashtable);
         final Map<Long, Long> ref = new HashMap<>();
         final long[] keys = new long[40_000];
-        for (int i = 1; i < keys.length; i++) {
+        for (int i = 2; i < keys.length; i++) {
             keys[i] = rand.nextLong() | 1L;
         }
+        keys[1] = HashingUtils.SEED;
 
         for (int op = 0; op < 400_000; op++) {
             // a growing set of keys, so that the table keeps resizing
@@ -899,6 +905,81 @@ public abstract class LongLongHashtableAbstractTest {
     }
 
     /**
+     * The point of the seed: keys picked to share one home slot through the public hash function - with seed 0 -
+     * pile up into a single cluster, and every probe for them walks it. Under another seed (the second surefire
+     * execution) they spread out.
+     */
+    @Test
+    public void should_spread_keys_picked_to_collide_unless_the_seed_is_0() throws Exception {
+
+        final int capacity = 1 << 13;
+        final long[] keys = new long[2000];
+        long key = 1;
+        for (int i = 0; i < keys.length; i++, key++) {
+            while ((HashingUtils.hash(key) & (capacity - 1)) != 5) {
+                key++;
+            }
+            keys[i] = key;
+        }
+
+        hashtable = newHashtable(4000);
+        for (long k : keys) {
+            hashtable.put(k, k);
+        }
+        assertThat(hashtable.capacity(), is(capacity));
+        for (long k : keys) {
+            assertThat(hashtable.get(k), is(k));
+        }
+
+        final int cluster = longestCluster(hashtable);
+        if (HashingUtils.SEED == 0) {
+            assertThat(cluster, is(keys.length));
+        } else {
+            assertTrue("longest cluster with seed " + HashingUtils.SEED + ": " + cluster, cluster < 30);
+        }
+        checkIntegrity(hashtable);
+    }
+
+    @Test
+    public void should_iterate_original_keys() {
+
+        final long seed = HashingUtils.SEED;
+        hashtable = newHashtable(16);
+        final Map<Long, Long> ref = new HashMap<>();
+        for (long key : new long[]{seed, 0L, 1L, -1L, seed ^ 1L, Long.MIN_VALUE}) {
+            hashtable.put(key, key * 3);
+            ref.put(key, key * 3);
+        }
+
+        final Map<Long, Long> visited = new HashMap<>();
+        hashtable.forEach((k, v) -> assertEquals("duplicate key " + k, null, visited.put(k, v)));
+        assertEquals(ref, visited);
+        assertEquals(ref.keySet(), hashtable.keysStream().boxed().collect(Collectors.toSet()));
+        // the key equal to the seed is the one kept in fields - it comes first
+        assertThat(hashtable.keysStream().findFirst().getAsLong(), is(seed));
+        assertTrue(hashtable.toString(), hashtable.toString().startsWith("{" + seed + "=" + seed * 3 + ", "));
+        assertThat(hashtable.size(), is((long) ref.size()));
+        checkIntegrity(hashtable);
+    }
+
+    /** cluster: occupied slots in a row (the table array is read directly) */
+    private static int longestCluster(ILongLongHashtable table) throws Exception {
+        if (table instanceof LongLongLL2Hashtable t) {
+            t.close(); // one array
+        }
+        final java.lang.reflect.Field field = table.getClass().getDeclaredField("data");
+        field.setAccessible(true);
+        final long[] data = (long[]) field.get(table);
+        int longest = 0;
+        int run = 0;
+        for (int i = 0; i < 2 * data.length; i += 2) { // twice around: a cluster may wrap
+            run = data[i % data.length] != 0 ? run + 1 : 0;
+            longest = Math.max(longest, run);
+        }
+        return Math.min(longest, data.length / 2);
+    }
+
+    /**
      * Grows the table through several resizes and removes a part of the keys, so that iteration sees both
      * collision chains and the gaps left by removal - and key 0, kept outside the array.
      */
@@ -927,7 +1008,7 @@ public abstract class LongLongHashtableAbstractTest {
      */
 
     private static int homePosition(long key, int capacity) {
-        return HashingUtils.hash(key) & (capacity - 1);
+        return HashingUtils.hash(key ^ HashingUtils.SEED) & (capacity - 1);
     }
 
     private long findCollision(long key, int capacity) {

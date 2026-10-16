@@ -239,7 +239,7 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
         final int ring = dst.length;
         final int home = (TableHash.hash(key) & ((ring >> 1) - 1)) << 1;
         int x = home;
-        while (dst[x] != key) {
+        while (dst[x] != TableHash.stored(key)) {
             if (dst[x] == 0) {
                 return; // in the old array
             }
@@ -300,7 +300,7 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
             int remaining = slots;
             for (long key = base; remaining > 0; key++) {
                 final int slot = TableHash.hash(key) & (slots - 1);
-                if (key != 0 && filled[slot] < perSlot) {
+                if (TableHash.stored(key) != 0 && filled[slot] < perSlot) {
                     keys[slot * perSlot + filled[slot]++] = key;
                     if (filled[slot] == perSlot) {
                         remaining--;

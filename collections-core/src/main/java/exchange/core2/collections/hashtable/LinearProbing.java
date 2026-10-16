@@ -77,18 +77,19 @@ final class LinearProbing {
         return ((pos - home) & mask) >= ((pos - gap) & mask);
     }
 
-    /**
-     * Iteration over the entries of a table: key 0 first (kept outside the array), then the occupied slots in the
-     * array order.
+    /*
+     * Iteration: the array holds the keys XOR-ed with the seed, and the entry stored as key 0 (the key equal to the
+     * seed) is kept by the table in fields - it comes first, then the occupied slots in the array order.
      */
-    static void forEach(boolean hasZeroKey, long zeroKeyValue, long[] data, LongLongConsumer consumer) {
+
+    static void forEach(boolean hasZeroKey, long zeroKeyValue, long[] data, long seed, LongLongConsumer consumer) {
         if (hasZeroKey) {
-            consumer.accept(0L, zeroKeyValue);
+            consumer.accept(seed, zeroKeyValue);
         }
         for (int i = 0; i < data.length; i += 2) {
             final long key = data[i];
             if (key != NOT_ALLOWED_KEY) {
-                consumer.accept(key, data[i + 1]);
+                consumer.accept(key ^ seed, data[i + 1]);
             }
         }
     }
@@ -96,11 +97,11 @@ final class LinearProbing {
     /**
      * Keys in the order of {@link #forEach}; the stream reads the array lazily.
      */
-    static LongStream keysStream(boolean hasZeroKey, long[] data) {
+    static LongStream keysStream(boolean hasZeroKey, long[] data, long seed) {
         final LongStream slots = IntStream.range(0, data.length >> 1)
                 .filter(i -> data[i << 1] != NOT_ALLOWED_KEY)
-                .mapToLong(i -> data[i << 1]);
-        return hasZeroKey ? LongStream.concat(LongStream.of(0L), slots) : slots;
+                .mapToLong(i -> data[i << 1] ^ seed);
+        return hasZeroKey ? LongStream.concat(LongStream.of(seed), slots) : slots;
     }
 
     /**
@@ -114,20 +115,19 @@ final class LinearProbing {
     }
 
     /**
-     * All entries as {@code {key=value, ...}}, key 0 first, then in the array order - the format of
-     * {@code java.util.Map}.
+     * All entries as {@code {key=value, ...}} in the order of {@link #forEach} - the format of {@code java.util.Map}.
      */
-    static String entriesToString(boolean hasZeroKey, long zeroKeyValue, long[] data) {
+    static String entriesToString(boolean hasZeroKey, long zeroKeyValue, long[] data, long seed) {
         final StringBuilder sb = new StringBuilder("{");
         if (hasZeroKey) {
-            sb.append("0=").append(zeroKeyValue);
+            sb.append(seed).append('=').append(zeroKeyValue);
         }
         for (int i = 0; i < data.length; i += 2) {
             if (data[i] != NOT_ALLOWED_KEY) {
                 if (sb.length() > 1) {
                     sb.append(", ");
                 }
-                sb.append(data[i]).append('=').append(data[i + 1]);
+                sb.append(data[i] ^ seed).append('=').append(data[i + 1]);
             }
         }
         return sb.append('}').toString();

@@ -377,7 +377,7 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
             h.table.put(key, key * 31);
             ref.put(key, key * 31);
             inserted++;
-            if (dst[o] == key) {
+            if (dst[o] == (key ^ HashingUtils.SEED)) {
                 placedAtO = key;
                 break;
             }
@@ -472,7 +472,8 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
 
     private static long keyWithSlot(long from, int slot, int slotMask) {
         long key = from;
-        while (key == 0 || (HashingUtils.hash(key) & slotMask) != slot) {
+        // the arrays hold key ^ SEED, and the key stored as 0 is not in them
+        while ((key ^ HashingUtils.SEED) == 0 || (HashingUtils.hash(key ^ HashingUtils.SEED) & slotMask) != slot) {
             key++;
         }
         return key;

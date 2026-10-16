@@ -21,6 +21,19 @@
   operations). `ensureCapacity` grows the table in one rehash. `toString` prints `{key=value, ...}`;
   during a migration `LongLongLL2Hashtable` prints only the size. In `ILongLongHashtable` the compound
   operations are default methods; `capacity()` and `ensureCapacity()` are new abstract methods.
+- **Hashtables: builders.** `LongLongHashtable.builder()` / `LongLongLL2Hashtable.builder()` set the expected
+  size, `missingValue` and, for LL2, the executor and `syncResizeBelow`; the plain constructors stay, those
+  with `missingValue` are replaced by the builders.
+- **Hashtables: hash seed** - `-Dexchange.hashtable.seed=random` or a number, one for all tables of the JVM,
+  default `0`. It is mixed into the hash of every key: where the keys come from outside, a seed unknown there
+  keeps them from being picked to pile up in one probe cluster - 2000 keys picked for one slot form a cluster
+  of 2000 under seed 0, under another seed none longer than 30. The arrays hold `key ^ seed`, so the probing,
+  resizing and migration code is unchanged. A static final: seed `0` costs nothing (the JIT folds the XOR
+  away; `HashtableOpsJmh` within ±1%), another seed 1-3 instructions per operation - in that back-to-back
+  benchmark +5..15% (up to +27%), a fraction of a nanosecond for an operation on its own. A seed per table
+  was dropped: it cost 1.4-7.3% even at `0`, the XOR with a field can not be folded. `seed()` reports the seed
+  in use; `0` keeps the iteration order the same from run to run. The core tests run a second time under a
+  seed.
 - **`HashtableOpsJmh`** (`tests-perf`, JMH 1.34): average time of the single-key hashtable operations, hits
   and misses, from an L1-resident table to one in DRAM - for A/B runs of `collections-core` builds.
 - **`Automatic-Module-Name`** in the published jars: `exchange.core2.collections`,
@@ -84,7 +97,7 @@
 - **`LongLongHashtable` and `LongLongLL2Hashtable` are `final`.**
 - **Hashtables: any key, and a configurable value for missing keys** (breaking). Key `0` can be stored - it
   still marks the empty slots, so its entry is kept in two fields of the table; `put(0, v)` no longer throws.
-  `missingValue` (constructor argument, `0` by default) is what `get`, `put`, `remove` and `putIfAbsent`
+  `missingValue` (builder, `0` by default) is what `get`, `put`, `remove` and `putIfAbsent`
   return for a missing key, see `ILongLongHashtable.missingValue()`; `addAndGet` counts a missing key as `0`.
   Free slots hold the missing value, so `get` still returns the value of the slot its probe stops at without
   comparing the key: in `HashtableOpsJmh` the lookups stay within run-to-run noise (±5%) of the previous

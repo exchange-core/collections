@@ -64,6 +64,28 @@
                     </archive>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <!-- the hashtable tests once more with a non-zero hash seed: a static final, read once per
+                             JVM - this execution gets a JVM of its own -->
+                        <id>hashtable-seed</id>
+                        <goals>
+                            <goal>test</goal>
+                        </goals>
+                        <configuration>
+                            <includes>
+                                <include>**/hashtable/*Test.java</include>
+                            </includes>
+                            <systemPropertyVariables>
+                                <exchange.hashtable.seed>0x9e3779b97f4a7c15</exchange.hashtable.seed>
+                            </systemPropertyVariables>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 

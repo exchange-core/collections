@@ -27,13 +27,32 @@ public class LongLongLL2HashtableTest extends LongLongHashtableAbstractTest {
 
     @Override
     protected ILongLongHashtable create(int expectedSize, long missingValue) {
-        return new LongLongLL2Hashtable(expectedSize, missingValue);
+        return LongLongLL2Hashtable.builder().expectedSize(expectedSize).missingValue(missingValue).build();
     }
 
     @Override
     protected ILongLongHashtable createLimited(int expectedSize, int maxCapacity) {
-        return new LongLongLL2Hashtable(expectedSize, THREAD_PER_TASK, LongLongLL2Hashtable.DEFAULT_SYNC_RESIZE_BELOW,
-                0L, maxCapacity);
+        return LongLongLL2Hashtable.builder().expectedSize(expectedSize).executor(THREAD_PER_TASK)
+                .maxCapacity(maxCapacity).build();
+    }
+
+    /**
+     * Builder defaults are those of the constructors; the seed is the one of the JVM.
+     */
+    @Test
+    public void builder_should_set_the_parameters() {
+
+        try (LongLongLL2Hashtable plain = new LongLongLL2Hashtable();
+             LongLongLL2Hashtable built = LongLongLL2Hashtable.builder().expectedSize(1000).missingValue(-7L)
+                     .executor(THREAD_PER_TASK).syncResizeBelow(0).build()) {
+
+            assertThat(plain.missingValue(), is(0L));
+            assertThat(plain.capacity(), is(64));
+            assertThat(built.missingValue(), is(-7L));
+            assertThat(built.capacity(), is(2048));
+            assertThat(built.get(1L), is(-7L));
+            assertThat(built.seed(), is(HashingUtils.SEED));
+        }
     }
 
     /**
@@ -44,7 +63,8 @@ public class LongLongLL2HashtableTest extends LongLongHashtableAbstractTest {
     public void should_refuse_new_keys_at_full_load_after_async_migrations() {
 
         final int limit = (int) (64 * HashingUtils.FULL_LOAD);
-        try (LongLongLL2Hashtable table = new LongLongLL2Hashtable(10, THREAD_PER_TASK, 0, 0L, 64)) {
+        try (LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().expectedSize(10)
+                .executor(THREAD_PER_TASK).syncResizeBelow(0).maxCapacity(64).build()) {
             for (long key = 1; key <= limit; key++) {
                 table.put(key, key);
             }
