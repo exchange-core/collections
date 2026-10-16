@@ -22,12 +22,12 @@ public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
 
     @Override
     protected ILongLongHashtable create(int expectedSize, long missingValue) {
-        return new LongLongHashtable(expectedSize, missingValue);
+        return LongLongHashtable.builder().expectedSize(expectedSize).missingValue(missingValue).build();
     }
 
     @Override
     protected ILongLongHashtable createLimited(int expectedSize, int maxCapacity) {
-        return new LongLongHashtable(expectedSize, 0L, maxCapacity);
+        return LongLongHashtable.builder().expectedSize(expectedSize).maxCapacity(maxCapacity).build();
     }
 
     /**
@@ -52,7 +52,7 @@ public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
         final LongLongHashtable broken = new LongLongHashtable();
         broken.put(5L, 50L);
         final long[] b = (long[]) dataField.get(broken);
-        final int at = HashingUtils.findFreeOffset(5L, b, (b.length >> 1) - 1);
+        final int at = HashingUtils.findFreeOffset(5L ^ HashingUtils.SEED, b, (b.length >> 1) - 1);
         final int next = (at + 2) & (b.length - 1);
         b[next] = b[at];
         b[next + 1] = b[at + 1];

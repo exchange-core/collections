@@ -1,15 +1,39 @@
 package exchange.core2.collections.hashtable;
 
 
+import java.security.SecureRandom;
+import java.util.concurrent.atomic.AtomicLong;
+
 final class HashingUtils {
 
     private HashingUtils() {
     }
 
     /**
-     * Key of an empty slot. Key 0 itself is stored too - outside the arrays, in fields of the table.
+     * Stored key of an empty slot. The arrays hold keys XOR-ed with the {@link #SEED}; the key stored as 0 - the key
+     * equal to the seed - is kept in fields of the table.
      */
     static final long NOT_ALLOWED_KEY = 0L;
+
+    /**
+     * Hash seed of all tables in this JVM: {@code -Dexchange.hashtable.seed=random} or a number (decimal, or hex with
+     * 0x), default 0. The tables store and hash key ^ SEED. Where keys come from outside, a seed unknown there keeps
+     * them from being picked to pile up in one probe cluster; seed 0 keeps the slot order - and the iteration order -
+     * the same from run to run. Being a static final, it costs nothing at 0 (the JIT folds the XOR away) and an XOR
+     * with a constant otherwise.
+     */
+    static final long SEED = seedFromProperty();
+
+    private static long seedFromProperty() {
+        final String value = System.getProperty("exchange.hashtable.seed", "0").trim();
+        if (value.equalsIgnoreCase("random")) {
+            return randomSeed();
+        }
+        // hex: all 64 bits, as printed by Long.toHexString
+        return value.startsWith("0x") || value.startsWith("0X")
+                ? Long.parseUnsignedLong(value.substring(2), 16)
+                : Long.parseLong(value);
+    }
 
     /**
      * Largest table: 2^29 slots, a long[2^30]. Resizing stops there - the next array length would not fit an int.
@@ -64,6 +88,22 @@ final class HashingUtils {
 
     static int nextPositivePowerOfTwo(final int value) {
         return 1 << (Integer.SIZE - Integer.numberOfLeadingZeros(value - 1));
+    }
+
+    /**
+     * A hash seed nobody can predict, different on every call: the SplitMix64 sequence (as in SplittableRandom) from a
+     * SecureRandom start.
+     */
+    static long randomSeed() {
+        long z = RandomSeeds.NEXT.addAndGet(0x9e3779b97f4a7c15L);
+        z = (z ^ (z >>> 30)) * 0xbf58476d1ce4e5b9L;
+        z = (z ^ (z >>> 27)) * 0x94d049bb133111ebL;
+        return z ^ (z >>> 31);
+    }
+
+    /** SecureRandom only when a random seed is asked for - not at the first use of a table */
+    private static final class RandomSeeds {
+        static final AtomicLong NEXT = new AtomicLong(new SecureRandom().nextLong());
     }
 
 

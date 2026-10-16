@@ -156,12 +156,35 @@ table.remove(42L);          // 1234 — returns the removed value
 table.size();               // 0
 table.put(0L, 5L);          // any key, 0 included
 
-// a missing key reads as the missingValue of the table instead of 0
-final LongLongHashtable prices = new LongLongHashtable(1_000, -1L);
+```
+
+Everything else is set with a builder — all parameters optional:
+
+```java
+final LongLongHashtable prices = LongLongHashtable.builder()
+        .expectedSize(1_000)
+        .missingValue(-1L)      // a missing key reads as -1 instead of 0
+        .build();
+
 prices.get(42L);            // -1
 prices.put(42L, 0L);        // -1 — was absent
 prices.get(42L);            // 0 — a regular value
 ```
+
+**Hash seed.** The hash function is public, so whoever chooses the keys (client order ids, account ids
+coming from outside) can pick thousands of them for one slot: they pile up into one cluster, and every
+operation on them walks it — microseconds turn into milliseconds. A seed mixed into the hash, unknown
+outside, prevents that. It is one for all tables of the JVM:
+
+```
+-Dexchange.hashtable.seed=random     # unpredictable, different in every JVM
+-Dexchange.hashtable.seed=0x5bd1e995 # fixed (hex or decimal)
+```
+
+The default is `0`, which keeps the slot order — and the iteration order — the same from run to run
+(replay, snapshots); `seed()` of any table reports the seed in use, to reproduce a random one. Being a
+constant for the JIT, seed `0` costs nothing; any other seed adds 1-3 instructions per operation — a
+fraction of a nanosecond, +5..15% in a benchmark of back-to-back operations.
 
 Compound operations, one probe each:
 
@@ -193,10 +216,10 @@ Do not modify the table from the `forEach` consumer or while a stream is being c
 **Notes**
 - any key can be stored; key `0` marks the empty slots, so its entry is kept in two fields of the
   table (one predictable branch per operation)
-- `get`, `put` and `remove` return `missingValue` (`0` unless given to the constructor) for a missing
+- `get`, `put` and `remove` return `missingValue` (`0` unless set in the builder) for a missing
   key, so through `get` a stored `missingValue` looks the same as a missing key — `containsKey` tells
   them apart. Free slots hold the missing value: a non-zero one costs a pass over every new array
-- the constructor argument (and the one of `ensureCapacity`) is the expected number of entries: that
+- the expected size (constructor, `expectedSize`, `ensureCapacity`) is the number of entries: that
   many fit without a resize, up to ~349 million (2^29 slots); a negative or larger value throws
   `IllegalArgumentException`
 - at the maximum capacity of 2^29 slots the table stops growing: it takes new keys up to load 0.9, then
@@ -234,6 +257,13 @@ A custom executor can be supplied for the migration work:
 
 ```java
 final LongLongLL2Hashtable table = new LongLongLL2Hashtable(1_000_000, myExecutor);
+
+final LongLongLL2Hashtable tuned = LongLongLL2Hashtable.builder()
+        .expectedSize(1_000_000)
+        .executor(myExecutor)
+        .syncResizeBelow(300)   // smaller tables resize synchronously (default 8200)
+        .missingValue(-1L)
+        .build();
 ```
 
 > **Warning:** the executor runs both the destination array allocation and the copying task, and the
@@ -242,8 +272,7 @@ final LongLongLL2Hashtable table = new LongLongLL2Hashtable(1_000_000, myExecuto
 > pass an unbounded / thread-per-task executor. The default one is exactly that, with daemon threads.
 
 **Notes**
-- same key/value rules as `LongLongHashtable`: any key, `missingValue` for a missing key
-  (`new LongLongLL2Hashtable(size, missingValue)` or the executor constructor with it)
+- same key/value rules, `missingValue` and hash seed as `LongLongHashtable`
 - the compound operations take one probe when no resize is in flight; during a migration they are
   made of the basic operations; `toString()` then shows only the size
 - `ensureCapacity` beyond the capacity of an in-flight migration finishes it first (like `close()`),
