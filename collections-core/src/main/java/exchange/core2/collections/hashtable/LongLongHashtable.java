@@ -2,7 +2,6 @@ package exchange.core2.collections.hashtable;
 
 
 import java.util.function.LongUnaryOperator;
-import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
@@ -280,11 +279,7 @@ public final class LongLongHashtable implements ILongLongHashtable {
      */
     @Override
     public LongStream keysStream() {
-        final long[] d = data;
-        final LongStream slots = IntStream.range(0, d.length >> 1)
-                .filter(i -> d[i << 1] != NOT_ALLOWED_KEY)
-                .mapToLong(i -> d[i << 1]);
-        return hasZeroKey ? LongStream.concat(LongStream.of(0L), slots) : slots;
+        return LinearProbing.keysStream(hasZeroKey, data);
     }
 
     /**
@@ -292,11 +287,7 @@ public final class LongLongHashtable implements ILongLongHashtable {
      */
     @Override
     public LongStream valuesStream() {
-        final long[] d = data;
-        final LongStream slots = IntStream.range(0, d.length >> 1)
-                .filter(i -> d[i << 1] != NOT_ALLOWED_KEY)
-                .mapToLong(i -> d[(i << 1) + 1]);
-        return hasZeroKey ? LongStream.concat(LongStream.of(zeroKeyValue), slots) : slots;
+        return LinearProbing.valuesStream(hasZeroKey, zeroKeyValue, data);
     }
 
     /**
@@ -304,16 +295,7 @@ public final class LongLongHashtable implements ILongLongHashtable {
      */
     @Override
     public void forEach(LongLongConsumer consumer) {
-        if (hasZeroKey) {
-            consumer.accept(0L, zeroKeyValue);
-        }
-        final long[] d = data;
-        for (int i = 0; i < d.length; i += 2) {
-            final long key = d[i];
-            if (key != NOT_ALLOWED_KEY) {
-                consumer.accept(key, d[i + 1]);
-            }
-        }
+        LinearProbing.forEach(hasZeroKey, zeroKeyValue, data, consumer);
     }
 
     @Override

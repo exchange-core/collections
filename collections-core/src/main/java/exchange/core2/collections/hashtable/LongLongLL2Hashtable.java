@@ -27,7 +27,8 @@ import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
  *     synchronously, like {@link LongLongHashtable}.</li>
  *     <li>The executor runs the allocation of the new array and the copying, which spins until its migration ends:
  *     it must not be bounded (see the constructors). {@link #close()} finishes an in-flight migration.</li>
- *     <li>{@link #clear()}, {@link #forEach}, {@link #keysStream()} and {@link #valuesStream()} are not supported.</li>
+ *     <li>{@link #clear()}, {@link #forEach}, {@link #keysStream()} and {@link #valuesStream()} finish an in-flight
+ *     migration first, as {@link #close()} does - a pause, for the set-up, snapshots or tests.</li>
  *     <li>Key {@code 0}, {@code missingValue} and the maximum capacity as in {@link LongLongHashtable}. The entry of
  *     key 0 is kept outside the arrays, migrations do not touch it.</li>
  * </ul>
@@ -962,24 +963,49 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         return (int) ((mask + 1) * blockThresholdPerc);
     }
 
+    /*
+     * Iteration and clear work on one array: an in-flight migration is finished first (blockOnResizing, as in close).
+     */
+
+    /**
+     * Removes all entries, keeping the current capacity. Finishes an in-flight migration first.
+     */
     @Override
     public void clear() {
-        throw new UnsupportedOperationException();
+        blockOnResizing();
+        LinearProbing.clear(data, missingValue);
+        size = 0;
+        hasZeroKey = false;
+        zeroKeyValue = 0L;
     }
 
+    /**
+     * Keys in the table order, key 0 first. Finishes an in-flight migration first. The stream reads the table lazily -
+     * do not modify the table until it is consumed.
+     */
     @Override
     public LongStream keysStream() {
-        throw new UnsupportedOperationException();
+        blockOnResizing();
+        return LinearProbing.keysStream(hasZeroKey, data);
     }
 
+    /**
+     * Values in the same order as {@link #keysStream()}, with the same restrictions.
+     */
     @Override
     public LongStream valuesStream() {
-        throw new UnsupportedOperationException();
+        blockOnResizing();
+        return LinearProbing.valuesStream(hasZeroKey, zeroKeyValue, data);
     }
 
+    /**
+     * Allocation-free iteration over all entries, key 0 first. Finishes an in-flight migration first. The consumer
+     * must not modify the table.
+     */
     @Override
     public void forEach(LongLongConsumer consumer) {
-        throw new UnsupportedOperationException();
+        blockOnResizing();
+        LinearProbing.forEach(hasZeroKey, zeroKeyValue, data, consumer);
     }
 
     @Override

@@ -1,5 +1,8 @@
 package exchange.core2.collections.hashtable;
 
+import java.util.stream.IntStream;
+import java.util.stream.LongStream;
+
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
 
 /**
@@ -72,6 +75,42 @@ final class LinearProbing {
      */
     static boolean canFillGap(int gap, int home, int pos, int mask) {
         return ((pos - home) & mask) >= ((pos - gap) & mask);
+    }
+
+    /**
+     * Iteration over the entries of a table: key 0 first (kept outside the array), then the occupied slots in the
+     * array order.
+     */
+    static void forEach(boolean hasZeroKey, long zeroKeyValue, long[] data, LongLongConsumer consumer) {
+        if (hasZeroKey) {
+            consumer.accept(0L, zeroKeyValue);
+        }
+        for (int i = 0; i < data.length; i += 2) {
+            final long key = data[i];
+            if (key != NOT_ALLOWED_KEY) {
+                consumer.accept(key, data[i + 1]);
+            }
+        }
+    }
+
+    /**
+     * Keys in the order of {@link #forEach}; the stream reads the array lazily.
+     */
+    static LongStream keysStream(boolean hasZeroKey, long[] data) {
+        final LongStream slots = IntStream.range(0, data.length >> 1)
+                .filter(i -> data[i << 1] != NOT_ALLOWED_KEY)
+                .mapToLong(i -> data[i << 1]);
+        return hasZeroKey ? LongStream.concat(LongStream.of(0L), slots) : slots;
+    }
+
+    /**
+     * Values in the order of {@link #forEach}; the stream reads the array lazily.
+     */
+    static LongStream valuesStream(boolean hasZeroKey, long zeroKeyValue, long[] data) {
+        final LongStream slots = IntStream.range(0, data.length >> 1)
+                .filter(i -> data[i << 1] != NOT_ALLOWED_KEY)
+                .mapToLong(i -> data[(i << 1) + 1]);
+        return hasZeroKey ? LongStream.concat(LongStream.of(zeroKeyValue), slots) : slots;
     }
 
     /**

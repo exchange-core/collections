@@ -240,6 +240,49 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         assertEquals(0, h.verify(ref, "compound"));
     }
 
+    /**
+     * forEach, the streams and clear in the middle of a migration finish it first - and then see each entry once,
+     * whichever array it was in.
+     */
+    @Test(timeout = 60_000)
+    public void iteration_and_clear_finish_the_migration() throws Exception {
+
+        final Harness h = new Harness(1000);
+        final Map<Long, Long> ref = new HashMap<>();
+        final Random rand = new Random(11L);
+        while (ARRAY_FEATURE.get(h.table) == null) {
+            final long key = rand.nextLong() | 1L;
+            h.table.put(key, key);
+            ref.put(key, key);
+        }
+        h.table.put(0L, 5L);
+        ref.put(0L, 5L);
+        final long[] old = (long[]) DATA.get(h.table);
+        h.table.get(keyWithSlot(1, (old.length >> 1) * 3 / 4, (old.length >> 1) - 1)); // starts the migration
+        h.resizer();
+        final Thread migrator = h.startMigrator(() -> {
+        });
+
+        final Map<Long, Long> visited = new HashMap<>();
+        h.table.forEach((k, v) -> assertEquals("duplicate key " + k, null, visited.put(k, v)));
+        assertEquals(ref, visited);
+        assertEquals(null, RESIZER.get(h.table));
+        assertEquals(4096, h.table.capacity());
+        assertEquals(ref.size(), h.table.keysStream().count());
+        assertEquals(ref.values().stream().mapToLong(Long::longValue).sum(), h.table.valuesStream().sum());
+
+        h.close(migrator);
+        assertEquals(0, h.verify(ref, "iteration"));
+
+        h.table.clear();
+        assertEquals(0, h.table.size());
+        assertFalse(h.table.containsKey(0L));
+        for (long key : ref.keySet()) {
+            assertFalse(h.table.containsKey(key));
+        }
+        assertEquals(0, h.verify(Map.of(), "clear"));
+    }
+
     /** @return null if the seed does not produce the scenario, otherwise whether no key was lost */
     private static Boolean insertAcrossFrontier(long seed) throws Exception {
 
