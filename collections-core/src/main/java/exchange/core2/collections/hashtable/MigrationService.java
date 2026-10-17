@@ -2,18 +2,22 @@ package exchange.core2.collections.hashtable;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
+import java.lang.ref.Reference;
+import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
-import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
 
 /**
- * The thread that resizes {@link LongLongLL2Hashtable}s: it allocates their new arrays and copies the old ones into
- * them, a segment at a time, for any number of tables in turn. A table registers when it is built and leaves at its
- * {@link LongLongLL2Hashtable#close()}.
+ * The threads that resize {@link LongLongLL2Hashtable}s: an allocator allocates their new arrays, a worker copies the
+ * old ones into them, a portion at a time, for any number of tables in turn. A table registers when it is built and
+ * leaves at its {@link LongLongLL2Hashtable#close()}.
  * <pre>
  * try (MigrationService service = MigrationService.builder().start()) {
  *     final LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().migrationService(service).build();
@@ -22,17 +26,22 @@ import java.util.function.Supplier;
  * }
  * </pre>
  * <ul>
- *     <li>One worker, a daemon thread, started by {@link Builder#start()}, which returns once the worker runs - after
- *     {@link Builder#threadInit}, which pins it to a core, for one. Without that the worker inherits the CPU affinity
- *     of the thread calling start(): start the service before that thread pins itself. Not from a static
- *     initializer of a class threadInit uses - see {@link Builder#start()}.</li>
- *     <li>Waiting for work: {@link WaitStrategy#SPIN_THEN_PARK} (the default) spins ~1-3ms, then parks - the table
- *     that brings work wakes it, an unpark on the table's thread, only after such a quiet period;
+ *     <li>Two daemon threads, started by {@link Builder#start()}, which returns once they run - after
+ *     {@link Builder#threadInit} and {@link Builder#allocatorThreadInit}, which pin them to cores, for one. Without
+ *     that a thread inherits the CPU affinity of the thread calling start(): start the service before that thread
+ *     pins itself. Not from a static initializer of a class threadInit uses - see {@link Builder#start()}.</li>
+ *     <li>The worker copies. Waiting for work: {@link WaitStrategy#SPIN_THEN_PARK} (the default) spins ~1-3ms, then
+ *     parks - the table that brings work wakes it, an unpark on the table's thread, only after such a quiet period;
  *     {@link WaitStrategy#BUSY_SPIN} spins all the time - for a core of its own, the shortest hand-over.</li>
- *     <li>Work goes in turns: one segment of one table (256 slots, ~2us), or one new array. A large allocation keeps
- *     the other tables waiting for its duration - they copy the segments they need themselves meanwhile.</li>
+ *     <li>Work goes in turns, over the tables with a migration in flight only: a portion of one table - ~256 slots
+ *     (~2us), to the end of the cluster there - then the next table. A table that has authorized more, the rest of its
+ *     migration at once, gets it portion by portion.</li>
+ *     <li>The allocator only allocates the large arrays - above 2^18 slots, 4MB - and parks in between: zeroing 256MB
+ *     takes tens of milliseconds, and the copying for the other tables does not wait for it, nor the small arrays -
+ *     the worker allocates those between portions (~0.2ms at most). {@link Builder#allocatorThread(boolean)} false
+ *     allocates all on the worker: one thread, and the copying waits for each allocation.</li>
  *     <li>The tables are closed first: {@link #close()} refuses while a table is registered - built, not closed and
- *     not garbage-collected (a forgotten table is dropped once the GC has collected it).</li>
+ *     not garbage-collected (a forgotten table is dropped once the GC has collected it, with its arrays).</li>
  * </ul>
  */
 public final class MigrationService implements AutoCloseable {
@@ -50,24 +59,57 @@ public final class MigrationService implements AutoCloseable {
     private static final int SPINS_BEFORE_PARK = 64 * 1024;
     /** the worker yields its core every 1024 spins: the application may share it */
     private static final int YIELD_SPIN_MASK = 1023;
+    /**
+     * Arrays up to 2^18 slots (4MB, ~0.2ms to zero) the worker allocates itself, between portions; larger ones the
+     * allocator thread - a large allocation then holds up only the large ones after it, not a small table's next array.
+     */
+    static final int SMALL_ARRAY_SLOTS = 1 << 18;
+
+    /** an idle worker looks for collected tables every 2^20 spins (~30ms), and before it parks */
+    private static final int PRUNE_SPIN_MASK = (1 << 20) - 1;
     /** parks are woken by the tables - the timeout only bounds a missed wake-up */
     private static final long PARK_NANOS = 100_000_000L;
 
+    private static final VarHandle COPY_QUEUE;
+    private static final VarHandle ALLOC_QUEUE;
+
+    static {
+        try {
+            final MethodHandles.Lookup lookup = MethodHandles.lookup();
+            COPY_QUEUE = lookup.findVarHandle(MigrationService.class, "copyQueue", Slot.class);
+            ALLOC_QUEUE = lookup.findVarHandle(MigrationService.class, "allocQueue", Slot.class);
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
     private final WaitStrategy waitStrategy;
-    /** null for a service without a worker - the tests run serveOnce() themselves */
+    /** null for a service without threads - the tests run serveOnce() themselves */
     private final Thread worker;
-    private final CountDownLatch ready = new CountDownLatch(1);
+    /** null: the worker allocates */
+    private final Thread allocator;
+    private final CountDownLatch ready;
     private volatile Throwable initFailure;
 
-    /** copy-on-write, changed under the lock of 'registry' */
-    private volatile Slot[] slots = new Slot[0];
-    private final Object registry = new Object();
+    /** all the tables (their slots), guarded by itself - O(1) to register and to leave, read by close() */
+    private final Set<Slot> registry = new HashSet<>();
+    /** where the GC puts the references of the tables it collected - see pruneCollected() */
+    private final ReferenceQueue<LongLongLL2Hashtable> collectedTables = new ReferenceQueue<>();
+
+    /** slots the tables gave the worker work since its last round - a stack, linked through Slot.nextCopy */
+    private volatile Slot copyQueue;
+    /** the worker's round: the slots with a migration in flight (worker only) */
+    private final ArrayList<Slot> active = new ArrayList<>();
+    /** slots with an array request for the allocator - a stack, linked through Slot.nextAlloc */
+    private volatile Slot allocQueue;
 
     private volatile boolean stopping;
-    /** the worker is parked, or about to park - see wake() */
-    private volatile boolean parked;
-    /** the worker was interrupted while parking - set again when it ends (worker thread only) */
-    private boolean interrupted;
+    /** the worker / the allocator is parked, or about to park - see wakeWorker(), wakeAllocator() */
+    private volatile boolean workerParked;
+    private volatile boolean allocatorParked;
+    /** interrupted while parking - set again when the thread ends (each field confined to its thread) */
+    private boolean workerInterrupted;
+    private boolean allocatorInterrupted;
 
     public static Builder builder() {
         return new Builder();
@@ -80,6 +122,8 @@ public final class MigrationService implements AutoCloseable {
 
         private WaitStrategy waitStrategy = WaitStrategy.SPIN_THEN_PARK;
         private Supplier<? extends AutoCloseable> threadInit;
+        private Supplier<? extends AutoCloseable> allocatorThreadInit;
+        private boolean allocatorThread = true;
         private String threadName = "ll2-migration";
         private long startTimeoutMillis = 10_000;
 
@@ -104,30 +148,51 @@ public final class MigrationService implements AutoCloseable {
         }
 
         /**
-         * Name of the worker thread (default "ll2-migration").
+         * The same for the allocator thread. Its work is memory zeroing, now and then: a housekeeping core is a good
+         * place for it, not the application's.
+         */
+        public Builder allocatorThreadInit(Supplier<? extends AutoCloseable> allocatorThreadInit) {
+            this.allocatorThreadInit = Objects.requireNonNull(allocatorThreadInit, "allocatorThreadInit");
+            return this;
+        }
+
+        /**
+         * A thread of its own for the allocations (default true). False: the worker allocates - one thread, and the
+         * copying for all the tables waits for each allocation.
+         */
+        public Builder allocatorThread(boolean allocatorThread) {
+            this.allocatorThread = allocatorThread;
+            return this;
+        }
+
+        /**
+         * Name of the worker thread (default "ll2-migration"); the allocator gets "-allocator" appended.
          */
         public Builder threadName(String threadName) {
             this.threadName = Objects.requireNonNull(threadName, "threadName");
             return this;
         }
 
-        /** how long start() waits for the worker - lower only in tests */
+        /** how long start() waits for the threads - lower only in tests */
         Builder startTimeoutMillis(long startTimeoutMillis) {
             this.startTimeoutMillis = startTimeoutMillis;
             return this;
         }
 
         /**
-         * Starts the worker and waits until it runs - at most 10s.
+         * Starts the threads and waits until they run - at most 10s.
          * <p>
          * Not from a static initializer of a class that {@link #threadInit} uses (a lambda in that class, say): the
          * worker would wait for the class, the class for the worker - start() fails after the 10s.
          *
-         * @throws IllegalStateException if {@link #threadInit} failed, or the worker has not run within 10s
+         * @throws IllegalStateException if a thread init failed, or the threads have not run within 10s
          */
         public MigrationService start() {
-            final MigrationService service = new MigrationService(waitStrategy, threadInit, threadName);
+            final MigrationService service = new MigrationService(this);
             service.worker.start();
+            if (service.allocator != null) {
+                service.allocator.start();
+            }
             final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(startTimeoutMillis);
             boolean interrupted = false;
             boolean ready = false;
@@ -143,85 +208,185 @@ public final class MigrationService implements AutoCloseable {
                 Thread.currentThread().interrupt();
             }
             if (!ready) {
-                service.stopping = true; // the worker ends as soon as it gets past threadInit
-                throw new IllegalStateException("the migration thread has not started within " + startTimeoutMillis
-                        + "ms: threadInit has not returned - is start() called from a static initializer of a class"
-                        + " that threadInit uses? The worker waits for that class, the class for the worker");
+                service.stopping = true; // the threads end as soon as they get past their init
+                throw new IllegalStateException("the migration threads have not started within " + startTimeoutMillis
+                        + "ms: a thread init has not returned - is start() called from a static initializer of a class"
+                        + " that the init uses? The thread waits for that class, the class for the thread");
             }
             if (service.initFailure != null) {
-                throw new IllegalStateException("the migration thread failed to start", service.initFailure);
+                service.stopping = true;
+                service.wakeWorker();
+                service.wakeAllocator();
+                throw new IllegalStateException("a migration thread failed to start", service.initFailure);
             }
             return service;
         }
     }
 
-    private MigrationService(WaitStrategy waitStrategy, Supplier<? extends AutoCloseable> threadInit, String name) {
-        this.waitStrategy = waitStrategy;
-        this.worker = new Thread(() -> run(threadInit), name);
+    private MigrationService(Builder builder) {
+        this.waitStrategy = builder.waitStrategy;
+        this.worker = new Thread(() -> runWorker(builder.threadInit), builder.threadName);
         this.worker.setDaemon(true);
+        if (builder.allocatorThread) {
+            this.allocator = new Thread(() -> runAllocator(builder.allocatorThreadInit),
+                    builder.threadName + "-allocator");
+            this.allocator.setDaemon(true);
+        } else {
+            this.allocator = null;
+        }
+        this.ready = new CountDownLatch(builder.allocatorThread ? 2 : 1);
     }
 
     /**
-     * A service without a worker: nothing is served unless {@link #serveOnce()} is called - for the tests, which
-     * play the worker step by step.
+     * A service without threads: nothing is served unless {@link #serveOnce()} is called - for the tests, which play
+     * the worker (the allocations included) step by step.
      */
     MigrationService() {
         this.waitStrategy = WaitStrategy.SPIN_THEN_PARK;
         this.worker = null;
-        this.ready.countDown();
+        this.allocator = null;
+        this.ready = new CountDownLatch(0);
     }
 
-    private void run(Supplier<? extends AutoCloseable> threadInit) {
-        final AutoCloseable init;
+    /** runs the init, counts down 'ready'; @return what the init returned, or a failure marker */
+    private AutoCloseable init(Supplier<? extends AutoCloseable> threadInit) throws InitFailed {
         try {
-            init = threadInit == null ? null : threadInit.get();
+            final AutoCloseable init = threadInit == null ? null : threadInit.get();
+            ready.countDown();
+            return init;
         } catch (Throwable e) {
             initFailure = e;
             ready.countDown();
+            throw new InitFailed();
+        }
+    }
+
+    private static final class InitFailed extends Exception {
+        InitFailed() {
+            super(null, null, false, false);
+        }
+    }
+
+    private static void close(AutoCloseable init) {
+        if (init != null) {
+            try {
+                init.close();
+            } catch (Exception ignored) {
+                // the thread ends anyway
+            }
+        }
+    }
+
+    private void runWorker(Supplier<? extends AutoCloseable> threadInit) {
+        final AutoCloseable init;
+        try {
+            init = init(threadInit);
+        } catch (InitFailed e) {
             return;
         }
-        ready.countDown();
         try {
             int idle = 0;
             while (!stopping) {
                 idle = serveOnce() ? 0 : idle(idle + 1);
             }
         } finally {
-            if (interrupted) {
+            active.clear(); // the collected tables' migrations, if any - the arrays go with them
+            if (workerInterrupted) {
                 Thread.currentThread().interrupt();
             }
-            if (init != null) {
-                try {
-                    init.close();
-                } catch (Exception ignored) {
-                    // the worker ends anyway
+            close(init);
+        }
+    }
+
+    private void runAllocator(Supplier<? extends AutoCloseable> threadInit) {
+        final AutoCloseable init;
+        try {
+            init = init(threadInit);
+        } catch (InitFailed e) {
+            return;
+        }
+        try {
+            while (!stopping) {
+                Slot slot = (Slot) ALLOC_QUEUE.getAndSet(this, null);
+                if (slot == null) {
+                    allocatorIdle();
+                    continue;
+                }
+                while (slot != null) {
+                    final Slot next = slot.nextAlloc;
+                    slot.nextAlloc = null;
+                    // cleared first: a request posted from now on queues the slot again
+                    slot.allocQueued = false;
+                    if (!slot.table.refersTo(null)) {
+                        slot.serveAllocation();
+                    }
+                    slot = next;
                 }
             }
+        } finally {
+            if (allocatorInterrupted) {
+                Thread.currentThread().interrupt();
+            }
+            close(init);
         }
     }
 
     /**
-     * One round: each registered table once - an array to allocate, a segment to copy. Drops the tables the GC has
-     * collected.
+     * One round of the worker: the slots the tables brought since the last round join the active ones; each active
+     * slot once - a portion to copy (and the requested array, if the worker allocates). A slot whose migration has
+     * ended leaves - the table brings it back with its next work - and so does one whose table the GC has collected.
      *
      * @return true if there was work
      */
     boolean serveOnce() {
+        if (copyQueue != null) {
+            Slot slot = (Slot) COPY_QUEUE.getAndSet(this, null);
+            while (slot != null) {
+                final Slot next = slot.nextCopy;
+                slot.nextCopy = null;
+                active.add(slot);
+                slot = next;
+            }
+        }
+        final boolean allocates = allocator == null;
         boolean worked = false;
         boolean collected = false;
-        for (Slot slot : slots) {
+        for (int i = 0; i < active.size(); ) {
+            final Slot slot = active.get(i);
             if (slot.table.refersTo(null)) {
                 collected = true;
-            } else if (slot.serve()) {
-                worked = true;
+                removeActive(i);
+                continue;
             }
+            if (slot.serve(allocates)) {
+                worked = true;
+                i++;
+                continue;
+            }
+            if (slot.hasWork(allocates)) {
+                i++; // a migration in flight, nothing authorized right now: the table authorizes more later
+                continue;
+            }
+            // Leaves. Dekker with Slot.activate(): the table publishes its work, then reads 'active'; the worker clears
+            // 'active', then looks for work. If the table saw 'active' set, the worker sees the work - and keeps the
+            // slot, unless the table queued it meanwhile (then it comes back with the queue).
+            slot.active = false;
+            if (slot.hasWork(allocates) && Slot.ACTIVE.compareAndSet(slot, false, true)) {
+                i++;
+                continue;
+            }
+            removeActive(i);
         }
         if (collected) {
-            synchronized (registry) {
-                slots = Arrays.stream(slots).filter(s -> !s.table.refersTo(null)).toArray(Slot[]::new);
-            }
+            pruneCollected();
         }
         return worked;
+    }
+
+    private void removeActive(int i) {
+        final int last = active.size() - 1;
+        active.set(i, active.get(last));
+        active.remove(last);
     }
 
     /**
@@ -236,29 +401,76 @@ public final class MigrationService implements AutoCloseable {
             Thread.onSpinWait();
             if ((spins & YIELD_SPIN_MASK) == 0) {
                 Thread.yield();
+                if ((spins & PRUNE_SPIN_MASK) == 0) {
+                    pruneCollected();
+                }
             }
             return spins;
         }
-        parked = true;
+        pruneCollected();
+        workerParked = true;
         if (!stopping && !serveOnce()) {
             // an interrupt does not stop the service - close() does - but with the status set parkNanos returns at once
             if (Thread.interrupted()) {
-                interrupted = true;
+                workerInterrupted = true;
             }
             LockSupport.parkNanos(this, PARK_NANOS);
         }
-        parked = false;
+        workerParked = false;
         return spins;
     }
 
+    /** the allocator has nothing to do: parks - the same handshake as the worker's, over the allocation queue */
+    private void allocatorIdle() {
+        allocatorParked = true;
+        if (!stopping && allocQueue == null) {
+            if (Thread.interrupted()) {
+                allocatorInterrupted = true;
+            }
+            LockSupport.parkNanos(this, PARK_NANOS);
+        }
+        allocatorParked = false;
+    }
+
     /**
-     * Called by a table after it published work (a volatile write): unparks a parked worker. A busy worker costs one
-     * volatile read. Dekker with idle(): one of the two sees the other's write.
+     * Called by a table after it published work for the worker (a volatile write): unparks a parked worker. A busy
+     * worker costs one volatile read. Dekker with idle(): one of the two sees the other's write.
      */
-    void wake() {
-        if (parked) {
+    void wakeWorker() {
+        if (workerParked) {
             LockSupport.unpark(worker);
         }
+    }
+
+    private void wakeAllocator() {
+        if (allocatorParked) {
+            LockSupport.unpark(allocator);
+        }
+    }
+
+    /** puts a slot on the worker's queue - a CAS push, no allocation */
+    private void queueCopy(Slot slot) {
+        Slot head;
+        do {
+            head = copyQueue;
+            slot.nextCopy = head;
+        } while (!COPY_QUEUE.compareAndSet(this, head, slot));
+    }
+
+    /** an array request: a small one, or any without an allocator thread, for the worker; a large one for the allocator */
+    private void arrayRequested(Slot slot, int capacity) {
+        if (allocator == null || capacity <= SMALL_ARRAY_SLOTS) {
+            slot.activate();
+            return;
+        }
+        if (!slot.allocQueued && Slot.ALLOC_QUEUED.compareAndSet(slot, false, true)) {
+            Slot head;
+            do {
+                head = allocQueue;
+                slot.nextAlloc = head;
+            } while (!ALLOC_QUEUE.compareAndSet(this, head, slot));
+        }
+        wakeAllocator();
     }
 
     Slot register(LongLongLL2Hashtable table, long missingValue) {
@@ -266,17 +478,30 @@ public final class MigrationService implements AutoCloseable {
             if (stopping) {
                 throw new IllegalStateException("the migration service is closed");
             }
-            final Slot slot = new Slot(this, table, missingValue);
-            final Slot[] grown = Arrays.copyOf(slots, slots.length + 1);
-            grown[slots.length] = slot;
-            slots = grown;
+            final Slot slot = new Slot(this, table, missingValue, collectedTables);
+            registry.add(slot);
             return slot;
         }
     }
 
     private void deregister(Slot slot) {
         synchronized (registry) {
-            slots = Arrays.stream(slots).filter(s -> s != slot).toArray(Slot[]::new);
+            registry.remove(slot);
+        }
+    }
+
+    /**
+     * Drops the slots of the tables the GC has collected - and with them an array allocated for one and not taken, or
+     * the arrays of a migration in flight. The GC queues their references: nothing to do costs one poll. The worker
+     * does it while idle - a table forgotten while its array was allocated never reaches its round - and close().
+     */
+    private void pruneCollected() {
+        Reference<? extends LongLongLL2Hashtable> ref;
+        while ((ref = collectedTables.poll()) != null) {
+            final Slot slot = ((TableRef) ref).slot;
+            synchronized (registry) {
+                registry.remove(slot);
+            }
         }
     }
 
@@ -284,35 +509,52 @@ public final class MigrationService implements AutoCloseable {
      * @return the tables registered - built, not closed, not collected by the GC yet
      */
     int registeredTables() {
-        int n = 0;
-        for (Slot slot : slots) {
-            if (!slot.table.refersTo(null)) {
-                n++;
+        synchronized (registry) {
+            int n = 0;
+            for (Slot slot : registry) {
+                if (!slot.table.refersTo(null)) {
+                    n++;
+                }
             }
+            return n;
         }
-        return n;
     }
 
     /** the requested arrays only, no copying - for the tests, which play the worker step by step */
     boolean serveAllocations() {
         boolean worked = false;
-        for (Slot slot : slots) {
+        for (Slot slot : slots()) {
             worked |= slot.serveAllocation();
         }
         return worked;
     }
 
-    /** the slots, collected tables included until the worker drops them - for the tests */
+    /** the registered slots, collected tables included until pruned - for the tests */
     Slot[] slots() {
-        return slots;
+        synchronized (registry) {
+            return registry.toArray(new Slot[0]);
+        }
     }
 
     int slotCount() {
-        return slots.length;
+        synchronized (registry) {
+            return registry.size();
+        }
+    }
+
+    /** the worker's round - for the tests */
+    int activeSlots() {
+        return active.size();
+    }
+
+    /** an unpark of a parked worker - for the tests */
+    void wake() {
+        wakeWorker();
     }
 
     /**
-     * Stops the worker and waits until it ends. The tables must be closed first.
+     * Stops the threads and waits until they end. The tables must be closed first. Forgets the tables the GC has
+     * collected, with the arrays of a migration they had in flight.
      *
      * @throws IllegalStateException if a table is still registered - built, not closed, not garbage-collected
      */
@@ -325,38 +567,65 @@ public final class MigrationService implements AutoCloseable {
                         + " first");
             }
             stopping = true;
+            registry.clear();
         }
-        if (worker != null && worker.isAlive() && worker != Thread.currentThread()) {
-            LockSupport.unpark(worker);
-            boolean interrupted = false;
-            while (worker.isAlive()) {
-                try {
-                    worker.join();
-                } catch (InterruptedException e) {
-                    interrupted = true;
-                }
+        while (collectedTables.poll() != null) {
+            // the slots are dropped already
+        }
+        join(worker);
+        join(allocator);
+        copyQueue = null;
+        allocQueue = null;
+        if (worker == null) {
+            active.clear(); // no worker thread: the caller played it, the round is its
+        }
+    }
+
+    private static void join(Thread thread) {
+        if (thread == null || !thread.isAlive() || thread == Thread.currentThread()) {
+            return;
+        }
+        LockSupport.unpark(thread);
+        boolean interrupted = false;
+        while (thread.isAlive()) {
+            try {
+                thread.join();
+            } catch (InterruptedException e) {
+                interrupted = true;
             }
-            if (interrupted) {
-                Thread.currentThread().interrupt();
-            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
         }
     }
 
     @Override
     public String toString() {
         return "MigrationService[" + waitStrategy + ", tables=" + registeredTables()
-                + (worker == null ? ", no worker" : ", worker " + worker.getName() + (worker.isAlive() ? "" : " ended"))
+                + (worker == null ? ", no threads" : ", worker " + worker.getName() + (worker.isAlive() ? "" : " ended"))
+                + (allocator == null ? "" : ", allocator" + (allocator.isAlive() ? "" : " ended"))
                 + (stopping ? ", closed" : "") + "]";
     }
 
+    /** the weak reference of a slot to its table: queued by the GC once the table is collected, the slot with it */
+    private static final class TableRef extends WeakReference<LongLongLL2Hashtable> {
+
+        private final Slot slot;
+
+        private TableRef(LongLongLL2Hashtable table, Slot slot, ReferenceQueue<LongLongLL2Hashtable> queue) {
+            super(table, queue);
+            this.slot = slot;
+        }
+    }
+
     /**
-     * What a table and the worker share: the request of a new array, and the migration in progress. Created once, when
+     * What a table and the service share: the request of a new array, and the migration in progress. Created once, when
      * the table is built - starting and ending a resize only publish into it. Holds the table weakly: nothing here, nor
      * in the migration, refers to the table, so a forgotten one can be collected.
      * <p>
-     * The array request is one word, generation and state: the table posts REQUESTED for a new generation; the worker
-     * takes it (ALLOCATING) and publishes the array (DONE); the table takes the array, or gives the request up (NONE)
-     * - then the worker drops an array it allocates late, and a late result never reaches a later request.
+     * The array request is one word, generation and state: the table posts REQUESTED for a new generation; the
+     * allocator takes it (ALLOCATING) and publishes the array (DONE); the table takes the array, or gives the request
+     * up (NONE) - then the allocator drops an array it allocates late, and a late result never reaches a later request.
      */
     static final class Slot {
 
@@ -365,17 +634,22 @@ public final class MigrationService implements AutoCloseable {
         private static final int ALLOCATING = 2;
         private static final int DONE = 3;
         private static final VarHandle ALLOC;
+        static final VarHandle ACTIVE;
+        static final VarHandle ALLOC_QUEUED;
 
         static {
             try {
-                ALLOC = MethodHandles.lookup().findVarHandle(Slot.class, "alloc", long.class);
+                final MethodHandles.Lookup lookup = MethodHandles.lookup();
+                ALLOC = lookup.findVarHandle(Slot.class, "alloc", long.class);
+                ACTIVE = lookup.findVarHandle(Slot.class, "active", boolean.class);
+                ALLOC_QUEUED = lookup.findVarHandle(Slot.class, "allocQueued", boolean.class);
             } catch (ReflectiveOperationException e) {
                 throw new ExceptionInInitializerError(e);
             }
         }
 
         private final MigrationService service;
-        private final WeakReference<LongLongLL2Hashtable> table;
+        private final TableRef table;
         private final long missingValue;
 
         /** generation << 2 | state */
@@ -388,9 +662,17 @@ public final class MigrationService implements AutoCloseable {
         /** the migration in progress, null between migrations */
         private volatile HashtableAsync2Resizer resizer;
 
-        private Slot(MigrationService service, LongLongLL2Hashtable table, long missingValue) {
+        /** on the worker's round or queue for it - set by the table (CAS), cleared by the worker */
+        private volatile boolean active;
+        private Slot nextCopy;
+        /** on the allocator's queue - set by the table (CAS), cleared by the allocator */
+        private volatile boolean allocQueued;
+        private Slot nextAlloc;
+
+        private Slot(MigrationService service, LongLongLL2Hashtable table, long missingValue,
+                     ReferenceQueue<LongLongLL2Hashtable> collected) {
             this.service = service;
-            this.table = new WeakReference<>(table);
+            this.table = new TableRef(table, this, collected);
             this.missingValue = missingValue;
         }
 
@@ -405,7 +687,7 @@ public final class MigrationService implements AutoCloseable {
             final int generation = (int) (alloc >>> 2) + 1;
             allocCapacity = capacity;
             alloc = ((long) generation << 2) | REQUESTED;
-            service.wake();
+            service.arrayRequested(this, capacity);
             return generation;
         }
 
@@ -423,7 +705,7 @@ public final class MigrationService implements AutoCloseable {
         }
 
         /**
-         * @return true if the worker has started allocating the array of the request (or has done it)
+         * @return true if the allocation of the array of the request has started (or is done)
          */
         boolean allocationStarted(int generation) {
             final long w = alloc;
@@ -441,15 +723,15 @@ public final class MigrationService implements AutoCloseable {
             }
         }
 
-        /** Publishes the migration to the worker - and wakes it. */
+        /** Publishes the migration to the worker - and puts the slot on its round. */
         void startCopying(HashtableAsync2Resizer resizer) {
             this.resizer = resizer;
-            service.wake();
+            activate();
         }
 
-        /** The table authorized the next segment: wakes the worker. */
+        /** The table authorized more of its migration: wakes the worker. The slot is on its round already. */
         void authorized() {
-            service.wake();
+            activate();
         }
 
         void endCopying() {
@@ -460,15 +742,27 @@ public final class MigrationService implements AutoCloseable {
             service.deregister(this);
         }
 
-        /* ---- the worker's side ---- */
+        /**
+         * After a volatile write of the work: queues the slot for the worker unless it is on the round already, and
+         * wakes the worker. One volatile read each when it is - per segment.
+         */
+        private void activate() {
+            if (!active && ACTIVE.compareAndSet(this, false, true)) {
+                service.queueCopy(this);
+            }
+            service.wakeWorker();
+        }
+
+        /* ---- the service's side ---- */
 
         /**
-         * One turn: the requested array, if any, and the authorized segment, if any.
+         * The worker's turn: a portion of the migration, and a requested array the worker allocates - a small one, any
+         * without an allocator thread.
          *
          * @return true if there was work
          */
-        boolean serve() {
-            boolean worked = serveAllocation();
+        boolean serve(boolean allocatesAll) {
+            boolean worked = serveAllocation(allocatesAll ? Integer.MAX_VALUE : SMALL_ARRAY_SLOTS);
             final HashtableAsync2Resizer r = resizer;
             if (r != null && r.doWork()) {
                 worked = true;
@@ -476,9 +770,20 @@ public final class MigrationService implements AutoCloseable {
             return worked;
         }
 
+        /** a migration in flight - or a requested array the worker allocates */
+        boolean hasWork(boolean allocatesAll) {
+            return resizer != null
+                    || ((alloc & 3) == REQUESTED && (allocatesAll || allocCapacity <= SMALL_ARRAY_SLOTS));
+        }
+
         boolean serveAllocation() {
+            return serveAllocation(Integer.MAX_VALUE);
+        }
+
+        /** the requested array, if its capacity is within the bound - read after the request, so it is the request's */
+        private boolean serveAllocation(int maxCapacity) {
             final long w = alloc;
-            return (w & 3) == REQUESTED && allocate(w);
+            return (w & 3) == REQUESTED && allocCapacity <= maxCapacity && allocate(w);
         }
 
         private boolean allocate(long requested) {
@@ -511,7 +816,8 @@ public final class MigrationService implements AutoCloseable {
 
         String state() {
             final long w = alloc;
-            return "array request #" + (w >>> 2) + " " + new String[]{"none", "requested", "allocating", "done"}[(int) (w & 3)];
+            return "array request #" + (w >>> 2) + " " + new String[]{"none", "requested", "allocating", "done"}[(int) (w & 3)]
+                    + (active ? ", on the worker's round" : "");
         }
     }
 }

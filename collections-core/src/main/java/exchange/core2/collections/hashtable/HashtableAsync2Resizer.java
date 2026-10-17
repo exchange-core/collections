@@ -157,7 +157,15 @@ final class HashtableAsync2Resizer {
     }
 
     /**
-     * The worker's turn: copies the authorized segment, unless there is none or the table is copying it.
+     * The worker's portion: ~256 slots, then on to the next free slot - a boundary no cluster crosses, like a segment
+     * end. When the table authorizes more at once - the rest of the migration, at its block threshold or at
+     * finishMigration() - the worker takes it portion by portion, the other tables get their turns in between, and the
+     * table can take the rest itself.
+     */
+    static final int WORKER_PORTION_LONGS = 512;
+
+    /**
+     * The worker's turn: copies a portion of what is authorized, unless there is nothing or the table is copying it.
      *
      * @return true if it copied
      */
@@ -169,7 +177,7 @@ final class HashtableAsync2Resizer {
         }
         final boolean copied;
         try {
-            copied = copyAuthorized();
+            copied = copyAuthorized(WORKER_PORTION_LONGS);
         } catch (Throwable e) {
             // nobody copies any more - the table rethrows it instead of waiting for the hang timeout
             failure = e;
@@ -191,7 +199,7 @@ final class HashtableAsync2Resizer {
             return false;
         }
         try {
-            copyAuthorized();
+            copyAuthorized(0);
         } finally {
             state = IDLE;
         }
@@ -199,17 +207,29 @@ final class HashtableAsync2Resizer {
     }
 
     /**
-     * Copies [toProcessPosition, allowedPosition) and publishes the progress - by the one that holds the state. Reads
-     * the positions only now: before the CAS the other one may have copied the segment, and the table may have ended
-     * the migration.
+     * Copies [toProcessPosition, allowedPosition) - or, given a budget, up to the first free slot past it if that comes
+     * first - and publishes the progress, by the one that holds the state. The end of a copy is always a free slot in
+     * the old array, so the progress stays a boundary no cluster crosses. Reads the positions only now: before the
+     * CAS the other one may have copied the segment, and the table may have ended the migration.
+     *
+     * @param budgetLongs 0: all that is authorized
      */
-    private boolean copyAuthorized() {
+    private boolean copyAuthorized(int budgetLongs) {
         final int allowed = allowedPosition;
         final int processed = toProcessPosition;
         if (allowed == FINISH_SIGNAL || processed == allowed) {
             return false;
         }
-        copySegment(processed, allowed);
+        int to = allowed;
+        final int ring = srcData.length - 1;
+        if (budgetLongs > 0 && ((allowed - processed) & ring) > budgetLongs) {
+            // the authorized range is old data no one writes while it waits for the copying: its gaps stay put
+            final int gap = findNextGapPos(srcData, (processed + budgetLongs) & ring);
+            if (((gap - processed) & ring) < ((allowed - processed) & ring)) {
+                to = gap;
+            }
+        }
+        copySegment(processed, to);
         return true;
     }
 

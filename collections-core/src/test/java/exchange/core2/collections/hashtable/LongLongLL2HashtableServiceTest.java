@@ -152,6 +152,163 @@ public class LongLongLL2HashtableServiceTest {
     }
 
     /**
+     * A table forgotten right after it requested its array: the allocator allocates it, nobody takes it. Once the GC
+     * has collected the table, the idle worker drops its slot - and the array.
+     */
+    @Test(timeout = 60_000)
+    public void forgotten_table_with_an_allocated_array_is_dropped() throws Exception {
+        try (MigrationService service = MigrationService.builder().start()) {
+            final java.lang.ref.WeakReference<LongLongLL2Hashtable> ref = new java.lang.ref.WeakReference<>(
+                    requestAnArray(table(service, 1000, 0)));
+            for (int i = 0; i < 100 && (!ref.refersTo(null) || service.slotCount() > 0); i++) {
+                System.gc();
+                Thread.sleep(20);
+                service.wake();
+            }
+            assertTrue("the table was collected", ref.refersTo(null));
+            assertThat(service.slotCount(), is(0));
+        }
+    }
+
+    /** puts up to the resize threshold of 2048 slots: the array requested, nothing more */
+    private static LongLongLL2Hashtable requestAnArray(LongLongLL2Hashtable table) {
+        for (long key = 1; !table.migrationInProgress(); key++) {
+            table.put(key, key);
+        }
+        return table;
+    }
+
+    /**
+     * close() forgets the tables the GC collected before the worker got to them - their slots held the arrays of their
+     * migrations, kept as long as the closed service was reachable.
+     */
+    @Test(timeout = 60_000)
+    public void close_forgets_collected_tables() throws Exception {
+        final MigrationService noWorker = new MigrationService();
+        final java.lang.ref.WeakReference<LongLongLL2Hashtable> ref = new java.lang.ref.WeakReference<>(
+                requestAnArray(table(noWorker, 1000, 0)));
+        noWorker.serveOnce(); // allocated: the slot holds the array
+        for (int i = 0; i < 100 && !ref.refersTo(null); i++) {
+            System.gc();
+            Thread.sleep(10);
+        }
+        assertTrue("the table was collected", ref.refersTo(null));
+        assertThat(noWorker.slotCount(), is(1));
+        assertThat(noWorker.registeredTables(), is(0));
+        noWorker.close();
+        assertThat(noWorker.slotCount(), is(0));
+        assertThat(noWorker.activeSlots(), is(0));
+    }
+
+    /**
+     * When a table authorizes the whole rest of its migration at once, the worker still takes ~256 slots per turn (to
+     * the next free slot), so the other tables get theirs in between; the table can copy the rest itself.
+     */
+    @Test
+    public void worker_takes_a_long_authorization_portion_by_portion() {
+        final int slots = 1 << 15;
+        final long[] src = new long[slots * 2];
+        final Random rand = new Random(7L);
+        for (int n = 0; n < slots * 6 / 10; n++) {
+            final long key = rand.nextLong() | 1L;
+            src[HashingUtils.findFreeOffset(key, src, slots - 1)] = key;
+        }
+        final int start = HashtableAsync2Resizer.findNextGapPos(src, 0);
+        final HashtableAsync2Resizer r = new HashtableAsync2Resizer(src, new long[slots * 4], start, start);
+        int portions = 0;
+        int longest = 0;
+        int processed = r.getProcessedPosition();
+        while (!r.isAllMigrated()) {
+            assertTrue(r.doWork());
+            final int now = r.getProcessedPosition();
+            longest = Math.max(longest, (now - processed) & (src.length - 1));
+            processed = now;
+            portions++;
+        }
+        assertTrue(portions + " portions", portions >= src.length / 1024);
+        assertTrue("longest portion " + longest + " longs", longest < 2048);
+
+        // the table, by contrast, copies all that is authorized at once
+        final HashtableAsync2Resizer t = new HashtableAsync2Resizer(src, new long[slots * 4], start, start);
+        assertTrue(t.copyIfIdle());
+        assertTrue(t.isAllMigrated());
+    }
+
+    /** The worker's round holds the tables with a migration in flight, not every registered one. */
+    @Test(timeout = 60_000)
+    public void only_migrating_tables_are_on_the_round() {
+        final MigrationService noWorker = new MigrationService();
+        final LongLongLL2Hashtable[] idle = new LongLongLL2Hashtable[100];
+        for (int i = 0; i < idle.length; i++) {
+            idle[i] = table(noWorker, 16, 0);
+            idle[i].put(i + 1L, i);
+        }
+        final LongLongLL2Hashtable migrating = requestAnArray(table(noWorker, 1000, 0));
+        noWorker.serveOnce(); // allocates
+        assertThat(noWorker.activeSlots(), is(1));
+        migrating.get(1L); // starts the copying
+        noWorker.serveOnce();
+        assertThat(noWorker.activeSlots(), is(1));
+        migrating.finishMigration();
+        noWorker.serveOnce(); // nothing left: the slot leaves the round
+        assertThat(noWorker.activeSlots(), is(0));
+        assertThat(noWorker.registeredTables(), is(101));
+        migrating.close();
+        for (LongLongLL2Hashtable t : idle) {
+            t.close();
+        }
+        noWorker.close();
+    }
+
+    /**
+     * Registering and closing a table is O(1): 10 000 of them allocate a few MB - their arrays and slots - not the
+     * hundreds of MB a copy of the registry per registration came to.
+     */
+    @Test(timeout = 60_000)
+    public void registering_many_tables_costs_linear_memory() {
+        final MigrationService noWorker = new MigrationService();
+        final com.sun.management.ThreadMXBean threads =
+                (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+        final long allocated0 = threads.getCurrentThreadAllocatedBytes();
+        final LongLongLL2Hashtable[] tables = new LongLongLL2Hashtable[10_000];
+        for (int i = 0; i < tables.length; i++) {
+            tables[i] = table(noWorker, 1, 0);
+        }
+        assertThat(noWorker.registeredTables(), is(10_000));
+        for (LongLongLL2Hashtable t : tables) {
+            t.close();
+        }
+        final long mb = (threads.getCurrentThreadAllocatedBytes() - allocated0) >> 20;
+        assertTrue(mb + "MB allocated", mb < 50);
+        assertThat(noWorker.slotCount(), is(0));
+        noWorker.close();
+    }
+
+    /** One thread: the worker allocates too. */
+    @Test(timeout = 60_000)
+    public void should_keep_all_entries_with_a_single_thread_service() {
+        try (MigrationService service = MigrationService.builder().allocatorThread(false).start()) {
+            checkAgainstReference(table(service, 16, 0), 300_000, 6L);
+        }
+    }
+
+    /** allocatorThreadInit runs on the allocator thread before start() returns, and is closed when it ends. */
+    @Test(timeout = 60_000)
+    public void allocator_thread_init_runs_on_the_allocator() {
+        final AtomicReference<Thread> initThread = new AtomicReference<>();
+        final AtomicBoolean closed = new AtomicBoolean();
+        final MigrationService service = MigrationService.builder().threadName("alloc-test").allocatorThreadInit(() -> {
+            initThread.set(Thread.currentThread());
+            return () -> closed.set(true);
+        }).start();
+        assertThat(initThread.get().getName(), is("alloc-test-allocator"));
+        checkAgainstReference(table(service, 16, 0), 100_000, 8L);
+        service.close();
+        assertTrue(closed.get());
+        assertFalse(initThread.get().isAlive());
+    }
+
+    /**
      * The array request: taken by the table, given up - an array allocated before or after that is dropped - and a
      * late result never reaches the next request.
      */

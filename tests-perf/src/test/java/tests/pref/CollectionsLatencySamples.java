@@ -51,8 +51,8 @@ import java.util.stream.Collectors;
  *     <li>{@code -Dsamples.count} - samples per CSV (default 100000)</li>
  *     <li>{@code -Dsamples.batch} - operations per service-time sample (default: 1, or enough to make a coarse
  *     clock tick worth under 1ns per operation - 128 on Windows, where nanoTime ticks every 100ns)</li>
- *     <li>{@code -Dsamples.groups} - comma-separated subset of the groups below; {@code ll2-scenarios} and
- *     {@code hashtable-collide} run only when named</li>
+ *     <li>{@code -Dsamples.groups} - comma-separated subset of the groups below; {@code ll2-scenarios},
+ *     {@code ll2-many-tables}, {@code ll2-big-allocation} and {@code hashtable-collide} run only when named</li>
  *     <li>{@code -Dsamples.warmup.ms} - warm-up limit per service-time series (default 3000); it ends earlier,
  *     once the JIT has been quiet for 300ms</li>
  *     <li>{@code -Daffinity.reserved} - hex mask of CPUs for the pinned threads (default: the kernel's isolated CPUs),
@@ -111,6 +111,10 @@ public class CollectionsLatencySamples {
 
     /** With the spinning migrator an async resize starts within microseconds - sync only for the smallest tables. */
     private static final int LL2_SYNC_RESIZE_BELOW = 300;
+
+    /** ll2-big-allocation: spinning workers on cores of their own, with an allocator thread and without */
+    private MigrationService bigAllocationSeparate;
+    private MigrationService bigAllocationOnWorker;
 
     /** ll2-scenarios: a parking worker (the default wait), unpinned - started with the instance, before the pinning */
     private final MigrationService ll2Parking = MigrationService.builder().threadName("ll2-parking").start();
@@ -190,6 +194,12 @@ public class CollectionsLatencySamples {
         writeEnvironment();
         pollutePolymorphicCalls();
 
+        if (GROUPS.contains("ll2-big-allocation")) {
+            // before the pinning: their allocator threads inherit the affinity of this one
+            bigAllocationSeparate = spinningService("ll2-alloc-separate", true);
+            bigAllocationOnWorker = spinningService("ll2-alloc-on-worker", false);
+        }
+
         try (CpuAffinity ignore = pinCurrentThread()) {
             if (GROUPS.contains("hashtable-get")) hashtableGet();
             if (GROUPS.contains("hashtable-put")) hashtablePut();
@@ -199,6 +209,8 @@ public class CollectionsLatencySamples {
             if (GROUPS.contains("art-keys")) artKeys();
             if (GROUPS.contains("ll2-scenarios")) ll2Scenarios();
             if (GROUPS.contains("hashtable-collide")) hashtableCollide();
+            if (GROUPS.contains("ll2-many-tables")) ll2ManyTables();
+            if (GROUPS.contains("ll2-big-allocation")) ll2BigAllocation();
         }
         log.info("done ({})", sink);
     }
@@ -378,6 +390,98 @@ public class CollectionsLatencySamples {
         final int[] picks = mixedPicks(keys.length, 16);
         fixedRate(group, "ll2-mixed", keys, () -> mixed(ll2(ll2Migrator, LL2_SYNC_RESIZE_BELOW), picks));
         fixedRate(group, "exchange-hashtable-mixed", keys, () -> mixed(new LongLongHashtable(INITIAL_CAPACITY), picks));
+    }
+
+    /**
+     * Many tables on one service - the spinning worker of ll2-put-tuned - at the put rate of hashtable-put:
+     * <ul>
+     *     <li>{@code 10k-idle-tables} - 10 000 small tables registered, idle, next to the measured one growing</li>
+     *     <li>{@code 64-tables} - 64 tables growing at once, the keys round-robin (62 500 each)</li>
+     * </ul>
+     * Uses only the API of the first MigrationService, so that the versions can be compared.
+     */
+    private void ll2ManyTables() throws IOException {
+        final String group = "ll2-many-tables";
+        final long[] keys = randomKeys(PUT_KEYS, 3);
+
+        fixedRate(group, "ll2-put-10k-idle-tables", keys, () -> {
+            final LongLongLL2Hashtable[] idle = new LongLongLL2Hashtable[10_000];
+            for (int t = 0; t < idle.length; t++) {
+                idle[t] = ll2(ll2Migrator, LL2_SYNC_RESIZE_BELOW);
+                idle[t].put(t + 1L, t);
+            }
+            final LongLongLL2Hashtable m = ll2(ll2Migrator, LL2_SYNC_RESIZE_BELOW);
+            return new Bench() {
+                @Override
+                public long run(long[] k, int from, int to) {
+                    return m.put(k[from], k[from]);
+                }
+
+                @Override
+                public void close() {
+                    m.close();
+                    for (LongLongLL2Hashtable t : idle) t.close();
+                }
+            };
+        });
+        fixedRate(group, "ll2-put-64-tables", keys,
+                () -> ll2PutTables(64, () -> ll2(ll2Migrator, LL2_SYNC_RESIZE_BELOW)));
+    }
+
+    /** the neighbour of ll2-big-allocation: 2^24 slots, filled to one entry below its resize */
+    private static final int NEIGHBOUR_SLOTS = 1 << 24;
+    private static final int NEIGHBOUR_ENTRIES = (int) (NEIGHBOUR_SLOTS * 0.65f) - 1;
+
+    /**
+     * A large allocation next to a growing table, at the put rate of hashtable-put. On the measured table's service a
+     * neighbour of 2^24 slots, filled to one entry below its resize, gets that entry with the first measured put: its
+     * request of a 2^25-slot array - 512MB, tens of milliseconds to zero - is served while the measured table grows
+     * through its migrations. With an allocator thread the worker goes on copying; without one it allocates first.
+     */
+    private void ll2BigAllocation() throws IOException {
+        final String group = "ll2-big-allocation";
+        final long[] keys = randomKeys(PUT_KEYS, 3);
+        final long[] neighbourKeys = randomKeys(NEIGHBOUR_ENTRIES + 1, 21);
+
+        fixedRate(group, "ll2-put-neighbour-allocates-on-allocator", keys,
+                () -> withBigNeighbour(bigAllocationSeparate, neighbourKeys));
+        fixedRate(group, "ll2-put-neighbour-allocates-on-worker", keys,
+                () -> withBigNeighbour(bigAllocationOnWorker, neighbourKeys));
+    }
+
+    private static Bench withBigNeighbour(MigrationService service, long[] neighbourKeys) {
+        final LongLongLL2Hashtable neighbour = LongLongLL2Hashtable.builder().migrationService(service)
+                .expectedSize(NEIGHBOUR_SLOTS / 2).build();
+        for (int i = 0; i < NEIGHBOUR_ENTRIES; i++) {
+            neighbour.put(neighbourKeys[i], i);
+        }
+        final long trigger = neighbourKeys[NEIGHBOUR_ENTRIES];
+        final LongLongLL2Hashtable m = ll2(service, LL2_SYNC_RESIZE_BELOW);
+        return new Bench() {
+            @Override
+            public long run(long[] k, int from, int to) {
+                if (from == 0) {
+                    neighbour.put(trigger, 0L); // its resize: the request of the large array
+                }
+                return m.put(k[from], k[from]);
+            }
+
+            @Override
+            public void close() {
+                m.close();
+                neighbour.close();
+            }
+        };
+    }
+
+    /** a worker spinning on a core of its own (pinned by its threadInit), the allocator unpinned or none */
+    private static MigrationService spinningService(String name, boolean allocatorThread) {
+        return MigrationService.builder().waitStrategy(MigrationService.WaitStrategy.BUSY_SPIN).threadName(name)
+                .allocatorThread(allocatorThread)
+                .threadInit(() -> {
+                    SPINNING.add(Thread.currentThread());
+                    return pinCurrentThread();
+                }).start();
     }
 
     private static LongLongLL2Hashtable ll2(MigrationService service, int syncResizeBelow) {
