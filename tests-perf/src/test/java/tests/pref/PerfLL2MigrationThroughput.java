@@ -2,6 +2,7 @@ package tests.pref;
 
 import exchange.core2.collections.affinity.CpuAffinity;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
+import exchange.core2.collections.hashtable.MigrationService;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,7 +10,6 @@ import org.slf4j.LoggerFactory;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.Random;
-import java.util.concurrent.Executor;
 
 /**
  * How fast can a large LongLongLL2Hashtable be inserted into while it migrates? One migration per trial: a table
@@ -60,7 +60,13 @@ public class PerfLL2MigrationThroughput {
         }
     }
 
-    private static final Executor MIGRATOR = spinningExecutorOnOwnCore("ll2-migrator");
+    /**
+     * A worker spinning on a core of its own, started (and pinned by its threadInit) with the instance, before the
+     * measuring thread pins - not in a static initializer: threadInit calls into this class.
+     */
+    private final MigrationService migrator = MigrationService.builder()
+            .waitStrategy(MigrationService.WaitStrategy.BUSY_SPIN).threadName("ll2-migrator")
+            .threadInit(PerfLL2MigrationThroughput::pinCurrentThread).start();
 
     private long sink;
 
@@ -87,7 +93,8 @@ public class PerfLL2MigrationThroughput {
     /** @param mops puts per microsecond, 0 = back to back */
     private void trial(long[] fill, long[] extra, double mops, String tag) {
         System.gc();
-        final LongLongLL2Hashtable table = new LongLongLL2Hashtable(EXPECTED, MIGRATOR, 1000);
+        final LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().migrationService(migrator)
+                .expectedSize(EXPECTED).syncResizeBelow(1000).build();
         for (long k : fill) table.put(k, k);
         final int capacity = table.capacity();
 
@@ -136,36 +143,6 @@ public class PerfLL2MigrationThroughput {
             keys[i] = (rand.nextLong() & Long.MAX_VALUE) | 1;
         }
         return keys;
-    }
-
-    /** One daemon thread on its own core, spinning on a single-task slot. */
-    private static Executor spinningExecutorOnOwnCore(String name) {
-        final Slot slot = new Slot();
-        final Thread thread = new Thread(() -> {
-            try (CpuAffinity ignore = pinCurrentThread()) {
-                while (true) {
-                    final Runnable task = slot.task;
-                    if (task != null) {
-                        slot.task = null;
-                        task.run();
-                    } else {
-                        Thread.onSpinWait();
-                    }
-                }
-            }
-        }, name);
-        thread.setDaemon(true);
-        thread.start();
-        return task -> {
-            while (slot.task != null) {
-                Thread.onSpinWait();
-            }
-            slot.task = task;
-        };
-    }
-
-    private static final class Slot {
-        volatile Runnable task;
     }
 
     private static CpuAffinity pinCurrentThread() {

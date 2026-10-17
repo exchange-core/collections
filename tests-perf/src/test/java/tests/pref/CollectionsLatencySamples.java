@@ -9,6 +9,7 @@ import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
 import exchange.core2.collections.hashtable.ILongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
+import exchange.core2.collections.hashtable.MigrationService;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import org.HdrHistogram.Histogram;
 import org.agrona.collections.Long2LongHashMap;
@@ -33,13 +34,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
-import java.util.Queue;
 import java.util.TreeMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -97,32 +93,27 @@ public class CollectionsLatencySamples {
     /** Added to every data-set seed: same shapes, other keys - e.g. for a PGO training run that must not see the measured keys. */
     private static final long SEED = Long.getLong("samples.seed", 0);
 
-    /**
-     * LL2 migration: one thread created here, before the measuring thread is pinned (a thread inherits its creator's
-     * affinity). It takes its own core and busy-polls for tasks, so a resize does not wait for a thread start and
-     * its pinning. One table at a time: the copy task spins until its migration is done.
-     */
+    /** the spinning threads: they burn their core all the time, ResourceUse leaves them out */
     private static final List<Thread> SPINNING = new CopyOnWriteArrayList<>();
-    private static final Executor LL2_MIGRATOR = spinningExecutorOnOwnCore("ll2-migrator");
 
-    static {
-        // LL2 starts its Cleaner thread at class init, and the thread inherits the initializing thread's affinity:
-        // initialize here, otherwise the first LL2 table created by the pinned thread puts the cleaner on its core
-        try {
-            MethodHandles.lookup().ensureInitialized(LongLongLL2Hashtable.class);
-        } catch (IllegalAccessException e) {
-            throw new ExceptionInInitializerError(e);
-        }
-    }
+    /**
+     * LL2 migration: a worker spinning on a core of its own - started with the instance, before the measuring thread
+     * is pinned (a thread inherits its creator's affinity), and pinned by its threadInit - so a migration starts
+     * within microseconds. One worker for all the tables. Not in a static initializer: start() waits for threadInit,
+     * which calls into this class - a deadlock while the class is being initialized.
+     */
+    private final MigrationService ll2Migrator = MigrationService.builder()
+            .waitStrategy(MigrationService.WaitStrategy.BUSY_SPIN).threadName("ll2-migrator")
+            .threadInit(() -> {
+                SPINNING.add(Thread.currentThread());
+                return pinCurrentThread();
+            }).start();
 
     /** With the spinning migrator an async resize starts within microseconds - sync only for the smallest tables. */
     private static final int LL2_SYNC_RESIZE_BELOW = 300;
 
-    /** ll2-scenarios: a thread per task, started by a helper created here - before the measuring thread is pinned */
-    private static final Executor LL2_THREAD_PER_TASK = LongLongLL2Hashtable.newMigratorExecutor();
-
-    /** ll2-scenarios: an executor whose tasks start 1ms late, each on a thread of its own (unpinned, as above) */
-    private static final Executor LL2_TASKS_1MS_LATE = delayedExecutor(1);
+    /** ll2-scenarios: a parking worker (the default wait), unpinned - started with the instance, before the pinning */
+    private final MigrationService ll2Parking = MigrationService.builder().threadName("ll2-parking").start();
 
     /** hashtable-collide: HashingUtils.hash - package-private in the library - and the seed the tables use */
     private static final MethodHandle TABLE_HASH;
@@ -228,7 +219,7 @@ public class CollectionsLatencySamples {
             };
         });
         serviceTime(group, "exchange-ll2-hashtable-get", hits, () -> {
-            final LongLongLL2Hashtable m = new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_MIGRATOR, LL2_SYNC_RESIZE_BELOW);
+            final LongLongLL2Hashtable m = ll2(ll2Migrator, LL2_SYNC_RESIZE_BELOW);
             for (long k : stored) m.put(k, k);
             return new Bench() {
                 @Override
@@ -322,7 +313,7 @@ public class CollectionsLatencySamples {
             return (k, from, to) -> m.put(k[from], k[from]);
         });
         fixedRate(group, "exchange-ll2-hashtable-put", keys, () -> {
-            final LongLongLL2Hashtable m = new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_MIGRATOR, LL2_SYNC_RESIZE_BELOW);
+            final LongLongLL2Hashtable m = ll2(ll2Migrator, LL2_SYNC_RESIZE_BELOW);
             return new Bench() {
                 @Override
                 public long run(long[] k, int from, int to) {
@@ -356,43 +347,46 @@ public class CollectionsLatencySamples {
      * LongLongLL2Hashtable configurations and situations, all at the put rate of hashtable-put (1M ops/s, response
      * time, the same 4M keys):
      * <ul>
-     *     <li>{@code tuned} - the one of hashtable-put: a spinning migrator on its own core, syncResizeBelow 300</li>
-     *     <li>{@code thread-per-task} - newMigratorExecutor() (created before the pinning), default syncResizeBelow</li>
-     *     <li>{@code defaults-pinned-app} - the no-executor constructor in a pinned application: the migrator threads
-     *     inherit the application's core and share it - the pitfall newMigratorExecutor() is there for</li>
-     *     <li>{@code tasks-1ms-late} - the executor starts every task 1ms late: until then the table copies itself</li>
-     *     <li>{@code 4-tables-*} - four tables growing at once (puts round-robin, 1M keys each): one shared spinning
-     *     migrator, whose copying task holds it for a whole migration, vs a thread per task</li>
+     *     <li>{@code tuned} - the one of hashtable-put: a spinning worker on its own core, syncResizeBelow 300</li>
+     *     <li>{@code parking} - a parking worker (the default wait), unpinned, the default syncResizeBelow</li>
+     *     <li>{@code service-of-pinned-app} - the service started by the pinned measuring thread, without a threadInit:
+     *     its worker inherits that core and shares it with the application - the pitfall</li>
+     *     <li>{@code 4-tables-*} - four tables growing at once (puts round-robin, 1M keys each) on one worker,
+     *     spinning or parking</li>
      *     <li>{@code mixed} - 50% puts of new keys, 30% gets and 20% removals of keys put before, LL2 vs
      *     LongLongHashtable: the table grows to ~1.2M entries</li>
      * </ul>
-     * The log adds what the measuring thread allocated and the CPU of the other threads (migrators, JIT, GC - and the
-     * spinning migrators, which burn their core whether there is work or not).
+     * The log adds what the measuring thread allocated and the CPU of the other threads (the workers, JIT, GC - not the
+     * spinning worker, which burns its core whether there is work or not).
      */
     private void ll2Scenarios() throws IOException {
         final String group = "ll2-scenarios";
         final long[] keys = randomKeys(PUT_KEYS, 3);
 
-        fixedRate(group, "ll2-put-tuned", keys,
-                () -> ll2Put(new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_MIGRATOR, LL2_SYNC_RESIZE_BELOW)));
-        fixedRate(group, "ll2-put-thread-per-task", keys,
-                () -> ll2Put(new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_THREAD_PER_TASK)));
-        fixedRate(group, "ll2-put-defaults-pinned-app", keys,
-                () -> ll2Put(new LongLongLL2Hashtable(INITIAL_CAPACITY)));
-        fixedRate(group, "ll2-put-tasks-1ms-late", keys,
-                () -> ll2Put(new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_TASKS_1MS_LATE, LL2_SYNC_RESIZE_BELOW)));
-        fixedRate(group, "ll2-put-4-tables-shared-migrator", keys, () -> ll2PutTables(4,
-                () -> new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_MIGRATOR, LL2_SYNC_RESIZE_BELOW)));
-        fixedRate(group, "ll2-put-4-tables-thread-per-task", keys, () -> ll2PutTables(4,
-                () -> new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_THREAD_PER_TASK, LL2_SYNC_RESIZE_BELOW)));
+        fixedRate(group, "ll2-put-tuned", keys, () -> ll2Put(ll2(ll2Migrator, LL2_SYNC_RESIZE_BELOW), null));
+        fixedRate(group, "ll2-put-parking", keys,
+                () -> ll2Put(ll2(ll2Parking, LongLongLL2Hashtable.DEFAULT_SYNC_RESIZE_BELOW), null));
+        fixedRate(group, "ll2-put-service-of-pinned-app", keys, () -> {
+            final MigrationService service = MigrationService.builder().threadName("ll2-pinned-app").start();
+            return ll2Put(ll2(service, LongLongLL2Hashtable.DEFAULT_SYNC_RESIZE_BELOW), service);
+        });
+        fixedRate(group, "ll2-put-4-tables-spinning", keys,
+                () -> ll2PutTables(4, () -> ll2(ll2Migrator, LL2_SYNC_RESIZE_BELOW)));
+        fixedRate(group, "ll2-put-4-tables-parking", keys,
+                () -> ll2PutTables(4, () -> ll2(ll2Parking, LL2_SYNC_RESIZE_BELOW)));
 
         final int[] picks = mixedPicks(keys.length, 16);
-        fixedRate(group, "ll2-mixed", keys,
-                () -> mixed(new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_MIGRATOR, LL2_SYNC_RESIZE_BELOW), picks));
+        fixedRate(group, "ll2-mixed", keys, () -> mixed(ll2(ll2Migrator, LL2_SYNC_RESIZE_BELOW), picks));
         fixedRate(group, "exchange-hashtable-mixed", keys, () -> mixed(new LongLongHashtable(INITIAL_CAPACITY), picks));
     }
 
-    private static Bench ll2Put(LongLongLL2Hashtable m) {
+    private static LongLongLL2Hashtable ll2(MigrationService service, int syncResizeBelow) {
+        return LongLongLL2Hashtable.builder().migrationService(service).expectedSize(INITIAL_CAPACITY)
+                .syncResizeBelow(syncResizeBelow).build();
+    }
+
+    /** puts into m; closes it - and then the service, if one is given */
+    private static Bench ll2Put(LongLongLL2Hashtable m, MigrationService service) {
         return new Bench() {
             @Override
             public long run(long[] k, int from, int to) {
@@ -402,6 +396,7 @@ public class CollectionsLatencySamples {
             @Override
             public void close() {
                 m.close();
+                if (service != null) service.close();
             }
         };
     }
@@ -479,7 +474,7 @@ public class CollectionsLatencySamples {
             };
         });
         serviceTime(group, "exchange-ll2-hashtable-get-colliding-" + seed, queries, () -> {
-            final LongLongLL2Hashtable m = new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_MIGRATOR, LL2_SYNC_RESIZE_BELOW);
+            final LongLongLL2Hashtable m = ll2(ll2Migrator, LL2_SYNC_RESIZE_BELOW);
             for (long k : stored) m.put(k, k);
             for (long k : colliding) m.put(k, k);
             m.finishMigration();
@@ -545,7 +540,7 @@ public class CollectionsLatencySamples {
             };
         });
         serviceTime(group, "exchange-ll2-hashtable-remove", removals, () -> {
-            final LongLongLL2Hashtable m = new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_MIGRATOR, LL2_SYNC_RESIZE_BELOW);
+            final LongLongLL2Hashtable m = ll2(ll2Migrator, LL2_SYNC_RESIZE_BELOW);
             for (long k : stored) m.put(k, k);
             return new Bench() {
                 @Override
@@ -816,42 +811,6 @@ public class CollectionsLatencySamples {
                 return (now - start) / 1_000_000;
             }
         }
-    }
-
-    /** Single daemon thread on its own core (no-op lock if none is free), spinning on a task queue. */
-    private static Executor spinningExecutorOnOwnCore(String name) {
-        final Queue<Runnable> tasks = new ConcurrentLinkedQueue<>();
-        final Thread thread = new Thread(() -> {
-            try (CpuAffinity ignore = pinCurrentThread()) {
-                while (true) {
-                    final Runnable task = tasks.poll();
-                    if (task != null) {
-                        task.run();
-                    } else {
-                        Thread.onSpinWait();
-                    }
-                }
-            }
-        }, name);
-        thread.setDaemon(true);
-        SPINNING.add(thread);
-        thread.start();
-        return tasks::add;
-    }
-
-    /** Every task on a new daemon thread, started delayMs late by a scheduler thread created here (unpinned). */
-    private static Executor delayedExecutor(long delayMs) {
-        final ScheduledThreadPoolExecutor scheduler = new ScheduledThreadPoolExecutor(1, r -> {
-            final Thread thread = new Thread(r, "ll2-delayer");
-            thread.setDaemon(true);
-            return thread;
-        });
-        scheduler.prestartAllCoreThreads();
-        return task -> scheduler.schedule(() -> {
-            final Thread thread = new Thread(task, "ll2-late-migrator");
-            thread.setDaemon(true);
-            thread.start();
-        }, delayMs, TimeUnit.MILLISECONDS);
     }
 
     /**

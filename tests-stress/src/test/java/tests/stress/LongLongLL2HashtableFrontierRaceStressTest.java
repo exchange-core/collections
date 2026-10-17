@@ -2,6 +2,7 @@ package tests.stress;
 
 import exchange.core2.collections.affinity.CpuAffinity;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
+import exchange.core2.collections.hashtable.MigrationService;
 import org.agrona.collections.Long2LongHashMap;
 import org.junit.Test;
 import org.slf4j.Logger;
@@ -12,11 +13,7 @@ import java.lang.invoke.VarHandle;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Arrays;
-import java.util.Queue;
 import java.util.Random;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.Executor;
 
 import static org.junit.Assert.assertEquals;
 
@@ -62,7 +59,7 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
     private static final VarHandle PROCESSED = resizerField("toProcessPosition", int.class);
     private static final VarHandle STARTING = resizerField("startingPosition", int.class);
     private static final VarHandle DST = resizerField("dstData", long[].class);
-    private static final VarHandle ARRAY_FEATURE = ll2Field("arrayFeature", CompletableFuture.class);
+    private static final VarHandle ALLOCATING = ll2Field("allocating", boolean.class);
     private static final VarHandle DATA = ll2Field("data", long[].class);
     private static final VarHandle ALLOWED = ll2Field("allowedPosition", int.class);
     private static final VarHandle BLOCK_THRESHOLD = ll2Field("blockThreshold", long.class);
@@ -87,10 +84,12 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
     @Test
     public void should_not_lose_keys_at_migration_frontier() {
 
-        // created before the application thread pins itself - a thread inherits its creator's affinity
-        final Executor migrator = spinningMigrator();
-
-        try (CpuAffinity ignore = pin("app")) {
+        // a worker spinning on its core, so a migration starts within microseconds - started before the application
+        // thread pins itself (a thread inherits its creator's affinity), and pinned by its own threadInit
+        try (MigrationService migrator = MigrationService.builder()
+                .waitStrategy(MigrationService.WaitStrategy.BUSY_SPIN).threadName("frontier-migrator")
+                .threadInit(() -> pin("migrator")).start();
+             CpuAffinity ignore = pin("app")) {
             long corrupted = 0;
             if (!MODE.equals("random")) {
                 final Stats crafted = crafted(migrator);
@@ -106,7 +105,7 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
         }
     }
 
-    private static Stats crafted(Executor migrator) {
+    private static Stats crafted(MigrationService migrator) {
 
         final Stats stats = new Stats();
         final Random rand = new Random(1L);
@@ -115,11 +114,12 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
 
         for (int t = 0; t < CRAFTED_TABLES; t++) {
 
-            final LongLongLL2Hashtable table = new LongLongLL2Hashtable(CRAFTED_EXPECTED_SIZE, migrator, 0);
+            final LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().migrationService(migrator)
+                    .expectedSize(CRAFTED_EXPECTED_SIZE).syncResizeBelow(0).build();
             final Long2LongHashMap ref = new Long2LongHashMap(0L);
             pool.reset();
 
-            while (ARRAY_FEATURE.get(table) == null) {
+            while (!(boolean) ALLOCATING.get(table)) {
                 final long key = rand.nextLong() | 1L;
                 final long value = rand.nextLong() | 1L;
                 table.put(key, value);
@@ -138,7 +138,7 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
             while (true) {
                 final Object r = RESIZER.get(table);
                 if (r == null) {
-                    if (ARRAY_FEATURE.get(table) == null) {
+                    if (!(boolean) ALLOCATING.get(table)) {
                         break; // migration finished
                     }
                     table.get(farKey); // starts the copying once the new array is allocated
@@ -181,7 +181,7 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
         return stats;
     }
 
-    private static Stats random(Executor migrator) {
+    private static Stats random(MigrationService migrator) {
 
         final Stats stats = new Stats();
         final Random rand = new Random(2L);
@@ -189,7 +189,8 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
 
         for (int t = 0; t < RANDOM_TABLES; t++) {
 
-            final LongLongLL2Hashtable table = new LongLongLL2Hashtable(16, migrator, RANDOM_SYNC_RESIZE_BELOW);
+            final LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().migrationService(migrator)
+                    .expectedSize(16).syncResizeBelow(RANDOM_SYNC_RESIZE_BELOW).build();
             final Long2LongHashMap ref = new Long2LongHashMap(0L);
             final long[] keys = new long[60_000];
             for (int i = 0; i < keys.length; i++) {
@@ -317,26 +318,6 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
         long take(int slot) {
             return used[slot] < perSlot ? keys[slot * perSlot + used[slot]++] : 0;
         }
-    }
-
-    /** one persistent thread polling for tasks, so a migration starts within microseconds */
-    private static Executor spinningMigrator() {
-        final Queue<Runnable> tasks = new ConcurrentLinkedQueue<>();
-        final Thread thread = new Thread(() -> {
-            try (CpuAffinity ignore = pin("migrator")) {
-                while (true) {
-                    final Runnable task = tasks.poll();
-                    if (task != null) {
-                        task.run();
-                    } else {
-                        Thread.onSpinWait();
-                    }
-                }
-            }
-        }, "frontier-migrator");
-        thread.setDaemon(true);
-        thread.start();
-        return tasks::add;
     }
 
     /** -Dstress.cpu.app / -Dstress.cpu.migrator, not pinned (null) otherwise */

@@ -1,127 +1,100 @@
 package tests.stress;
 
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
+import exchange.core2.collections.hashtable.MigrationService;
 import org.agrona.collections.Long2LongHashMap;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.VarHandle;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Random;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
 
 /**
- * The hand-over of the copying from the table to the migrator, with real threads: until the copying task starts, the
- * table copies the segments it needs itself, and the task, once started, continues from the table's progress. Here
- * each task starts after a random delay (up to {@code maxDelayUs}, plus the thread start), so that the start falls
- * anywhere in a migration - and the allocation may come too late as well: the table then allocates the array itself.
- * Every resize is a migration (syncResizeBelow 0), from 32 slots on.
+ * The work of the migrations shared between the tables and the worker of a {@link MigrationService}, with real
+ * threads: each segment is copied by whichever of the two takes it first - a table where an operation needs it, the
+ * worker in its turn - and each new array allocated by the worker, or by the table at its block threshold if the
+ * worker has not started it. Here four tables grow at once on one worker, so it is often busy with another one; every
+ * resize is a migration (syncResizeBelow 0), from 32 slots on, with segments of 16 to 256 slots. The rounds alternate
+ * a parking and a spinning worker.
  * <p>
- * Every table: random puts/removes/gets checked against a reference map, then all keys and integrityCheck().
- * A "late start" is a task that found segments copied by the table when it started (approximate - read racily).
+ * Every table: random puts/removes/gets checked against a reference map, then all keys, the size and
+ * integrityCheck().
  * <pre>
  * mvn test -Pstress -pl tests-stress -am -Dsurefire.failIfNoSpecifiedTests=false -Dtest=LongLongLL2HashtableHandoverStressTest
  * </pre>
- * {@code -Dstress.handover.tables} (default 2000), {@code -Dstress.handover.maxDelayUs} (default 1000).
+ * {@code -Dstress.handover.rounds} (default 1000).
  */
 public class LongLongLL2HashtableHandoverStressTest {
 
     private static final Logger log = LoggerFactory.getLogger(LongLongLL2HashtableHandoverStressTest.class);
 
-    private static final int TABLES = Integer.getInteger("stress.handover.tables", 2000);
-    private static final long MAX_DELAY_NS = Integer.getInteger("stress.handover.maxDelayUs", 1000) * 1000L;
-    private static final int OPS = 20_000;
+    private static final int ROUNDS = Integer.getInteger("stress.handover.rounds", 1000);
+    private static final int TABLES = 4;
+    private static final int OPS = 80_000;
 
-    private static final Class<?> RESIZER_CLASS = resizerClass();
-    private static final VarHandle RESIZER = ll2Field("resizer", RESIZER_CLASS);
-    private static final VarHandle PROCESSED = resizerField("toProcessPosition");
-    private static final VarHandle STARTING = resizerField("startingPosition");
-    private static final VarHandle DATA = ll2Field("data", long[].class);
     private static final Method INTEGRITY_CHECK = integrityCheckMethod();
 
     @Test
-    public void should_hand_the_copying_over_without_losing_keys() {
+    public void should_share_the_migrations_without_losing_keys() {
 
         final Random rand = new Random(4L);
-        final AtomicLong tasks = new AtomicLong();
-        final AtomicLong lateStarts = new AtomicLong();
         long wrongResults = 0;
         long corruptedTables = 0;
         final long t0 = System.nanoTime();
 
-        for (int t = 0; t < TABLES; t++) {
+        for (int round = 0; round < ROUNDS; round++) {
+            final MigrationService.WaitStrategy wait = round % 2 == 0
+                    ? MigrationService.WaitStrategy.SPIN_THEN_PARK : MigrationService.WaitStrategy.BUSY_SPIN;
+            try (MigrationService service = MigrationService.builder().waitStrategy(wait).start()) {
 
-            final AtomicReference<LongLongLL2Hashtable> tableRef = new AtomicReference<>();
-            final Executor delayed = task -> {
-                final long delayNs = ThreadLocalRandom.current().nextLong(MAX_DELAY_NS + 1);
-                final Thread thread = new Thread(() -> {
-                    final long until = System.nanoTime() + delayNs;
-                    while (System.nanoTime() < until) {
-                        Thread.onSpinWait();
-                    }
-                    tasks.incrementAndGet();
-                    if (copiedByTheTable(tableRef.get())) {
-                        lateStarts.incrementAndGet();
-                    }
-                    task.run();
-                }, "handover-migrator");
-                thread.setDaemon(true);
-                thread.start();
-            };
-            final LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().expectedSize(16).executor(delayed)
-                    .syncResizeBelow(0).build();
-            tableRef.set(table);
+                final LongLongLL2Hashtable[] tables = new LongLongLL2Hashtable[TABLES];
+                final Long2LongHashMap[] refs = new Long2LongHashMap[TABLES];
+                for (int t = 0; t < TABLES; t++) {
+                    tables[t] = LongLongLL2Hashtable.builder().migrationService(service).expectedSize(16)
+                            .syncResizeBelow(0).build();
+                    refs[t] = new Long2LongHashMap(0L);
+                }
+                final long[] keys = new long[OPS / 2];
+                for (int i = 0; i < keys.length; i++) {
+                    keys[i] = rand.nextLong() | 1L;
+                }
 
-            final Long2LongHashMap ref = new Long2LongHashMap(0L);
-            final long[] keys = new long[OPS / 2];
-            for (int i = 0; i < keys.length; i++) {
-                keys[i] = rand.nextLong() | 1L;
-            }
-            for (int op = 0; op < OPS; op++) {
-                final long key = keys[rand.nextInt(Math.min(keys.length, 16 + op / 2))];
-                final int kind = rand.nextInt(10);
-                if (kind < 6) {
-                    final long value = rand.nextLong();
-                    if (table.put(key, value) != ref.put(key, value)) {
+                for (int op = 0; op < OPS; op++) {
+                    final LongLongLL2Hashtable table = tables[op % TABLES];
+                    final Long2LongHashMap ref = refs[op % TABLES];
+                    final long key = keys[rand.nextInt(Math.min(keys.length, 16 + op / 2))];
+                    final int kind = rand.nextInt(10);
+                    if (kind < 6) {
+                        final long value = rand.nextLong();
+                        if (table.put(key, value) != ref.put(key, value)) {
+                            wrongResults++;
+                        }
+                    } else if (kind < 8) {
+                        if (table.remove(key) != ref.remove(key)) {
+                            wrongResults++;
+                        }
+                    } else if (table.get(key) != ref.get(key)) {
                         wrongResults++;
                     }
-                } else if (kind < 8) {
-                    if (table.remove(key) != ref.remove(key)) {
-                        wrongResults++;
+                }
+
+                for (int t = 0; t < TABLES; t++) {
+                    tables[t].close();
+                    if (!verify(tables[t], refs[t])) {
+                        corruptedTables++;
                     }
-                } else if (table.get(key) != ref.get(key)) {
-                    wrongResults++;
                 }
             }
-
-            table.close();
-            if (!verify(table, ref)) {
-                corruptedTables++;
-            }
         }
 
-        log.info("HANDOVER: tables={} tasks={} lateStarts={} wrongResults={} corruptedTables={} in {}ms", TABLES,
-                tasks.get(), lateStarts.get(), wrongResults, corruptedTables, (System.nanoTime() - t0) / 1_000_000);
+        log.info("HANDOVER: rounds={} tables={} wrongResults={} corruptedTables={} in {}ms", ROUNDS, ROUNDS * TABLES,
+                wrongResults, corruptedTables, (System.nanoTime() - t0) / 1_000_000);
         assertEquals("wrong results", 0, wrongResults);
         assertEquals("corrupted tables", 0, corruptedTables);
-    }
-
-    /** a migration in flight whose progress is past its first position: the table copied before the task started */
-    private static boolean copiedByTheTable(LongLongLL2Hashtable table) {
-        final Object r = RESIZER.getVolatile(table);
-        if (r == null) {
-            return false; // an allocation, or a task that comes after its migration
-        }
-        final int len = ((long[]) DATA.getVolatile(table)).length;
-        return (int) PROCESSED.getVolatile(r) != (((int) STARTING.getVolatile(r) + 2) & (len - 1));
     }
 
     private static boolean verify(LongLongLL2Hashtable table, Long2LongHashMap ref) {
@@ -146,32 +119,6 @@ public class LongLongLL2HashtableHandoverStressTest {
             return false;
         }
         return true;
-    }
-
-    private static VarHandle ll2Field(String name, Class<?> type) {
-        try {
-            return MethodHandles.privateLookupIn(LongLongLL2Hashtable.class, MethodHandles.lookup())
-                    .findVarHandle(LongLongLL2Hashtable.class, name, type);
-        } catch (ReflectiveOperationException e) {
-            throw new ExceptionInInitializerError(e);
-        }
-    }
-
-    private static Class<?> resizerClass() {
-        try {
-            return Class.forName("exchange.core2.collections.hashtable.HashtableAsync2Resizer");
-        } catch (ClassNotFoundException e) {
-            throw new ExceptionInInitializerError(e);
-        }
-    }
-
-    private static VarHandle resizerField(String name) {
-        try {
-            return MethodHandles.privateLookupIn(RESIZER_CLASS, MethodHandles.lookup())
-                    .findVarHandle(RESIZER_CLASS, name, int.class);
-        } catch (ReflectiveOperationException e) {
-            throw new ExceptionInInitializerError(e);
-        }
     }
 
     private static Method integrityCheckMethod() {

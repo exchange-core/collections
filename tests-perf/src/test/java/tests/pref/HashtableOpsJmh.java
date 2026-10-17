@@ -4,6 +4,7 @@ import exchange.core2.collections.affinity.CpuAffinity;
 import exchange.core2.collections.hashtable.ILongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
+import exchange.core2.collections.hashtable.MigrationService;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -48,6 +49,7 @@ public class HashtableOpsJmh {
     private static final int KEYS_MASK = KEYS - 1;
 
     private ILongLongHashtable table;
+    private MigrationService service;
     private final long[] present = new long[KEYS];
     private final long[] absent = new long[KEYS];
     private int i;
@@ -59,7 +61,12 @@ public class HashtableOpsJmh {
             affinity = CpuAffinity.acquireCore();
             System.out.println("benchmark thread: " + affinity);
         }
-        table = impl.equals("LongLongLL2Hashtable") ? new LongLongLL2Hashtable(size) : new LongLongHashtable(size);
+        if (impl.equals("LongLongLL2Hashtable")) {
+            service = MigrationService.builder().start();
+            table = LongLongLL2Hashtable.builder().migrationService(service).expectedSize(size).build();
+        } else {
+            table = new LongLongHashtable(size);
+        }
 
         final SplittableRandom rand = new SplittableRandom(42L);
         final long[] keys = new long[size];
@@ -81,6 +88,9 @@ public class HashtableOpsJmh {
     public void tearDown() throws Exception {
         if (table instanceof AutoCloseable closeable) {
             closeable.close();
+        }
+        if (service != null) {
+            service.close();
         }
         if (affinity != null) {
             affinity.close();
