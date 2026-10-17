@@ -249,9 +249,10 @@ try (LongLongLL2Hashtable table = new LongLongLL2Hashtable(1_000_000)) {
 ```
 
 `close()` blocks until an in-flight migration finishes and releases the migrator thread. The table
-stays fully usable after `close()` — it simply has no background work attached. A forgotten `close()`
-is not fatal (a `Cleaner` stops the migrator once the table becomes unreachable), but the thread —
-and, with an affinity-locked executor, its core — stays occupied until the next GC cycle notices.
+stays fully usable after `close()`; its later resizes are synchronous, like those of `LongLongHashtable`,
+so it never starts background work again. `finishMigration()` only finishes the migration. A forgotten
+`close()` is not fatal (a `Cleaner` stops the migrator once the table becomes unreachable), but the
+thread — and, with an affinity-locked executor, its core — stays occupied until the next GC cycle notices.
 
 A custom executor can be supplied for the migration work:
 
@@ -267,22 +268,30 @@ final LongLongLL2Hashtable tuned = LongLongLL2Hashtable.builder()
 ```
 
 > **Warning:** the executor runs both the destination array allocation and the copying task, and the
-> copying task spins while waiting for the application to authorize the next segment. A *bounded*
-> executor therefore deadlocks as soon as all of its threads are occupied by spinning migrators —
-> pass an unbounded / thread-per-task executor. The default one is exactly that, with daemon threads.
+> copying task spins while waiting for the application to authorize the next segment, until its
+> migration ends. Pass an unbounded / thread-per-task executor — the default one is exactly that, with
+> daemon threads. In a *bounded* one, once all threads are occupied by migrators, new tasks wait in the
+> queue and the application thread ends up doing their work.
+
+The table never waits for a task the executor has not started: if the executor rejects a task, runs it
+on the thread that started the migration (`Runnable::run`, `CallerRunsPolicy`, the application's own event
+loop) or simply has not run it yet, the table does that work on the calling thread — a synchronous
+resize, the allocation of the new array when the old one reaches 90% load, or the copying of the segment
+an operation needs. A copying task that starts late continues from there. No operation fails because of
+the executor.
 
 **Notes**
 - same key/value rules, `missingValue` and hash seed as `LongLongHashtable`
 - the compound operations take one probe when no resize is in flight; during a migration they are
   made of the basic operations; `toString()` then shows only the size
-- `ensureCapacity` beyond the capacity of an in-flight migration finishes it first (like `close()`),
-  then rehashes on the calling thread
+- `ensureCapacity` beyond the capacity of an in-flight migration finishes it first
+  (`finishMigration()`), then rehashes on the calling thread
 - `clear()`, `forEach()`, `keysStream()` and `valuesStream()` work on one array: an in-flight migration
-  is finished first (like `close()`) — a pause, meant for the set-up, snapshots or tests
+  is finished first (`finishMigration()`) — a pause, meant for the set-up, snapshots or tests
 - the public API is single-threaded: exactly one application thread, plus the internal migrator
-- waits for the migrator are bounded by `hangTimeout` (builder, default 10s): past it the operation throws
-  `IllegalStateException` with the migration state instead of hanging; interrupts do not fail operations,
-  the interrupt status is kept
+- waits for a started migrator are bounded by `hangTimeout` (builder, default 10s): past it the operation
+  throws `IllegalStateException` with the migration state instead of hanging; interrupts do not fail
+  operations, the interrupt status is kept
 - `-Dexchange.hashtable.verify=true` runs a full integrity check after every migration —
   for debugging migration corruption only, it is expensive
 
@@ -337,7 +346,7 @@ try (CpuAffinity affinity = CpuAffinity.acquireCore()) {   // or acquireCore(cpu
 - Run with `--enable-native-access=ALL-UNNAMED` to avoid the JDK's restricted-method warning.
 - Lock files: `exchange-core2-cpu-<n>.lock` in `-Daffinity.lockDir` (default `java.io.tmpdir`).
 - Threads started by a pinned thread inherit its single-CPU mask: start helper threads (e.g.
-  `LongLongLL2Hashtable.newMigratorExecutor()`) before pinning.
+  `LongLongLL2Hashtable.newMigratorExecutor()`, closed once its tables are) before pinning.
 
 ---
 

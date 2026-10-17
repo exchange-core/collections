@@ -1,6 +1,8 @@
 package exchange.core2.collections.hashtable;
 
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.concurrent.locks.LockSupport;
 
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
@@ -57,8 +59,32 @@ class HashtableAsync2Resizer {
     /** the migrator was interrupted while backing off - set again when copy() returns (migrator thread only) */
     private boolean interrupted;
 
+    /*
+     * Who copies. Until the copying task starts (NEW) the table copies the authorized segments itself, one at a time
+     * (TABLE), where it would otherwise wait for the migrator: the task may never start - the executor rejected it,
+     * runs it on the table's thread, or queues it behind busy threads. A task that starts (RUNNING) copies the rest.
+     */
+    private static final int NEW = 0;
+    private static final int RUNNING = 1;
+    private static final int TABLE = 2;
+    private static final VarHandle STATE;
 
-    public HashtableAsync2Resizer(long[] srcData, long[] dstData, int startingPosition, int allowedPosition) {
+    static {
+        try {
+            STATE = MethodHandles.lookup().findVarHandle(HashtableAsync2Resizer.class, "state", int.class);
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
+    private volatile int state = NEW;
+
+    /** the thread that started the migration - the copying task must not run there, see copy() */
+    private final Thread starter;
+
+
+    public HashtableAsync2Resizer(long[] srcData, long[] dstData, int startingPosition, int allowedPosition,
+                                  Thread starter) {
         this.srcData = srcData;
         this.dstData = dstData;
         this.newMask = srcData.length - 1;
@@ -66,6 +92,7 @@ class HashtableAsync2Resizer {
         // startingPosition is a gap and is never copied - start right after it (wrapping around)
         this.toProcessPosition = (startingPosition + 2) & (srcData.length - 1);
         this.allowedPosition = allowedPosition;
+        this.starter = starter;
     }
 
     /**
@@ -140,10 +167,49 @@ class HashtableAsync2Resizer {
         this.startingPosition = startingPosition;
     }
 
-    public void copy() {
-  //      log.info("(A) ----------- starting async migration capacity: {}->{} -----------------", srcData.length / 2, srcData.length);
+    /** true once the copying task has started - it copies the rest, and leaves copy() once signalled to finish */
+    public boolean isMigratorRunning() {
+        return state == RUNNING;
+    }
 
-        //   log.info("(A) Allocated new array, startingPosition={}, copying initial...", startingPosition);
+    /**
+     * Called by the table where it would wait for the migrator: if the copying task has not started, the table copies
+     * what it has authorized itself, as the task would. The task, if it starts later, continues from there.
+     *
+     * @return false if the task has started - it copies
+     */
+    public boolean copyIfNotStarted() {
+        if (state != NEW || !STATE.compareAndSet(this, NEW, TABLE)) {
+            return false;
+        }
+        try {
+            final int allowed = allowedPosition;
+            final int processed = toProcessPosition;
+            if (processed != allowed) {
+                copySegment(processed, allowed);
+            }
+        } finally {
+            state = NEW;
+        }
+        return true;
+    }
+
+    String stateName() {
+        final int s = state;
+        return s == NEW ? "not started" : s == RUNNING ? "running" : "copied by the table";
+    }
+
+    public void copy() {
+        if (Thread.currentThread() == starter) {
+            // the executor runs the task on the table's thread - right away (Runnable::run, CallerRunsPolicy) or later
+            // (the application's own event loop): waiting there for the next authorization would wait for itself.
+            // The table copies where it needs to.
+            return;
+        }
+        // the table may be copying a segment right now - it does until the task starts
+        while (!STATE.compareAndSet(this, NEW, RUNNING)) {
+            Thread.onSpinWait();
+        }
 
         migratorThread = Thread.currentThread();
         try {
@@ -177,21 +243,10 @@ class HashtableAsync2Resizer {
             }
 
             if (processedLocal != allowedLocal) {
-                copyInterval(processedLocal, allowedLocal);
-                processedLocal = allowedLocal;
-
-                if (processedLocal == startingPosition) {
-                    // wrapped back to the start - the whole table is copied. Publish the flag
-                    // BEFORE the progress, so nobody can observe the final (otherwise ambiguous)
-                    // toProcessPosition == startingPosition without also seeing allMigrated.
-                    allMigrated = true;
-                    toProcessPosition = allowedLocal;
-             //       log.debug("(A) Completed async processing at {}", startingPosition);
+                if (copySegment(processedLocal, allowedLocal)) {
                     return;
                 }
-
-                toProcessPosition = allowedLocal;
-//                log.debug("processedPosition = {} , allowedPosition={}", processedPosition, allowedPosition);
+                processedLocal = allowedLocal;
 
                 spins = 0;
                 parkNanos = 0;
@@ -239,6 +294,25 @@ class HashtableAsync2Resizer {
         if (thread != null) {
             LockSupport.unpark(thread);
         }
+    }
+
+    /**
+     * Copies [from, to) and publishes the progress.
+     *
+     * @return true if the whole table is copied
+     */
+    private boolean copySegment(int from, int to) {
+        copyInterval(from, to);
+        if (to == startingPosition) {
+            // wrapped back to the start - the whole table is copied. Publish the flag BEFORE the progress, so nobody
+            // can observe the final (otherwise ambiguous) toProcessPosition == startingPosition without also seeing
+            // allMigrated.
+            allMigrated = true;
+            toProcessPosition = to;
+            return true;
+        }
+        toProcessPosition = to;
+        return false;
     }
 
     public void copyInterval(final int from, int to) {

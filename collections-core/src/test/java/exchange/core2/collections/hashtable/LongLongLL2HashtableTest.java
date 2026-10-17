@@ -5,12 +5,14 @@ import org.junit.Test;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
@@ -43,25 +45,28 @@ public class LongLongLL2HashtableTest extends LongLongHashtableAbstractTest {
     }
 
     /**
-     * A put at the block threshold waits for the new array - allocated here 150ms late. An interrupt used to fail
-     * that put with IllegalStateException; now it waits, and the interrupt status stays set.
+     * A put at the block threshold needs the new array. The executor here starts the allocation a second late: the
+     * put does not wait for it, it allocates the array itself - the late task then skips the allocation. An interrupt
+     * does not fail the put, and its status stays set.
      */
     @Test(timeout = 60_000)
-    public void interrupt_does_not_fail_a_put_waiting_for_the_array() {
+    public void put_at_the_block_threshold_does_not_wait_for_an_allocation_not_started() {
 
         final AtomicInteger tasks = new AtomicInteger();
+        final AtomicBoolean allocationStarted = new AtomicBoolean();
         final Executor lateAllocation = task -> {
             final boolean allocation = tasks.getAndIncrement() == 0;
             final Thread thread = new Thread(() -> {
                 if (allocation) {
-                    LockSupport.parkNanos(150_000_000L);
+                    LockSupport.parkNanos(1_000_000_000L);
+                    allocationStarted.set(true);
                 }
                 task.run();
             }, "test-migrator");
             thread.setDaemon(true);
             thread.start();
         };
-        // 256 slots: the resize starts at 166 entries, a put finding 230 waits for the new array
+        // 256 slots: the resize starts at 166 entries, a put finding 230 needs the new array
         try (LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().expectedSize(100)
                 .executor(lateAllocation).syncResizeBelow(0).build()) {
             assertThat(table.capacity(), is(256));
@@ -70,11 +75,13 @@ public class LongLongLL2HashtableTest extends LongLongHashtableAbstractTest {
             }
             Thread.currentThread().interrupt();
             try {
-                table.put(231L, 231L); // at the block threshold: waits for the allocation
+                table.put(231L, 231L); // at the block threshold: allocates, migrates
                 assertTrue("interrupt status kept", Thread.currentThread().isInterrupted());
             } finally {
                 Thread.interrupted();
             }
+            assertFalse("did not wait for the allocation", allocationStarted.get());
+            assertThat(table.capacity(), is(512));
             for (long key = 1; key <= 231; key++) {
                 assertThat(table.get(key), is(key));
             }

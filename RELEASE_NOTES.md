@@ -74,6 +74,18 @@
   2^20 slots, where `LongLongHashtable` then copies the table for ~7 ms on the last pre-sized insert.
   Expected size 0 got a single slot, resized by the first put. Now the constructors (and `ensureCapacity`)
   take the smallest capacity that holds n entries without a resize.
+- **`LongLongLL2Hashtable` broke when the executor rejected a task.** A rejected allocation failed the put
+  that crossed the resize threshold - with its key already stored; the following puts did the same, until
+  the array was full and every lookup of a missing key failed. A rejected copying task left a migration
+  without a migrator: the operations waiting for it, and `close()`, failed after the hang timeout. Now a
+  rejected allocation means a synchronous resize, and the table copies a rejected migration itself.
+- **`LongLongLL2Hashtable` hung forever with an executor that runs tasks on the calling thread**
+  (`Runnable::run`, `CallerRunsPolicy`): the copying task, on the table's thread, waited for the next
+  segment, which only that thread could authorize. The hang timeout did not apply - the wait was the
+  migrator's. Now the task returns at once there, and the table copies itself; the same for the
+  application's own event loop as the executor, where the task runs later on the table's thread.
+- **`LongLongLL2Hashtable.newMigratorExecutor()` leaked a thread per call** - the `ll2-spawner` helper, with no
+  way to stop it. It now returns a `MigratorExecutor`, `AutoCloseable`.
 
 ### Removed
 
@@ -124,6 +136,16 @@
   status back when its task ends - the migration itself is completed either way, the table needs it.
 - **`LongLongLL2Hashtable`: a failed migrator is reported right away** - with its exception as the cause,
   within milliseconds, instead of a bare "stuck waiting for migration" after the 10 s hang detection.
+- **`LongLongLL2Hashtable` does not wait for a task the executor has not started.** Where an operation
+  would wait for the migrator to copy a segment and the copying task has not started yet (a thread being
+  created, a queue behind busy threads), the table copies that segment itself - one segment, microseconds -
+  and the task, once it starts, continues from there. A put that reaches 90% load before the new array is
+  allocated allocates it itself if the allocation has not started. The hang timeout applies only to a
+  started migrator; it is now checked every 1024 spins (was every ~1M spins: a 1 ms timeout fired after
+  ~100 ms).
+- **`LongLongLL2Hashtable`: `finishMigration()`; `close()` makes the later resizes synchronous.** `close()`
+  used to leave a table that started background work again at its next resize. `finishMigration()` does
+  what `close()` did. The builder rejects a `null` executor and a negative `syncResizeBelow`.
 - **Published artifacts are now compiled for Java 17 instead of Java 26.** `collections-core` and
   `collections-orderbook` no longer force consumers onto the latest JDK. 17 is the floor imposed by
   agrona 2.x (Java 17 class files) in `collections-orderbook`; `collections-core` has no

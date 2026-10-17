@@ -4,22 +4,37 @@ import org.agrona.collections.Long2LongHashMap;
 import org.junit.Test;
 
 import java.util.Random;
-import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
 
 public class LongLongLL2HashtableMigratorExecutorTest {
 
     /** ~16 async migrations through newMigratorExecutor(), checked against a reference map. */
     @Test
     public void should_keep_all_entries_with_migrator_executor() {
-        checkAgainstReference(new LongLongLL2Hashtable(16, LongLongLL2Hashtable.newMigratorExecutor()));
+        try (LongLongLL2Hashtable.MigratorExecutor executor = LongLongLL2Hashtable.newMigratorExecutor()) {
+            checkAgainstReference(new LongLongLL2Hashtable(16, executor));
+        }
     }
 
     /** Async resize from tiny tables on (sync only below 100 entries) - exercises the proportional segments. */
     @Test
     public void should_keep_all_entries_with_async_resize_of_small_tables() {
-        checkAgainstReference(new LongLongLL2Hashtable(16, LongLongLL2Hashtable.newMigratorExecutor(), 100));
+        try (LongLongLL2Hashtable.MigratorExecutor executor = LongLongLL2Hashtable.newMigratorExecutor()) {
+            checkAgainstReference(new LongLongLL2Hashtable(16, executor, 100));
+        }
+    }
+
+    /** A closed executor rejects the tasks: the table resizes synchronously. */
+    @Test
+    public void should_resize_synchronously_with_a_closed_executor() {
+        final LongLongLL2Hashtable.MigratorExecutor executor = LongLongLL2Hashtable.newMigratorExecutor();
+        executor.close();
+        assertThrows(RejectedExecutionException.class, () -> executor.execute(() -> {
+        }));
+        checkAgainstReference(new LongLongLL2Hashtable(16, executor, 0));
     }
 
     private static void checkAgainstReference(LongLongLL2Hashtable hashtable) {
