@@ -47,6 +47,42 @@ public class LongLongLL2HashtableTest extends LongLongHashtableAbstractTest {
                 .maxCapacity(maxCapacity).build();
     }
 
+    @Override
+    protected ILongLongHashtable createFixed(int expectedSize) {
+        return LongLongLL2Hashtable.builder().expectedSize(expectedSize).executor(NO_TASKS).syncResizeBelow(0)
+                .fixedCapacity().build();
+    }
+
+    /** the tables of fixed capacity must never start a migration */
+    private static final Executor NO_TASKS = task -> {
+        throw new AssertionError("a table of fixed capacity started a task");
+    };
+
+    /** Large enough for asynchronous migrations (syncResizeBelow 0): no task, no migration, up to the full load. */
+    @Test
+    public void fixed_capacity_starts_no_migration() {
+        try (LongLongLL2Hashtable table = (LongLongLL2Hashtable) createFixed(10_000)) {
+            final int limit = (int) (table.capacity() * HashingUtils.FULL_LOAD);
+            for (long key = 1; key <= limit; key++) {
+                table.put(key, key);
+                assertFalse(table.migrationInProgress());
+            }
+            assertThrows(IllegalStateException.class, () -> table.put(-1L, 1L));
+            assertThat(table.capacity(), is(16384));
+            checkIntegrity(table);
+        }
+    }
+
+    @Test
+    public void builder_should_validate_the_max_capacity() {
+        for (int invalid : new int[]{0, 1, 3, 100, -64, HashingUtils.MAX_CAPACITY * 2}) {
+            assertThrows(String.valueOf(invalid), IllegalArgumentException.class,
+                    () -> LongLongLL2Hashtable.builder().maxCapacity(invalid));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> LongLongLL2Hashtable.builder().expectedSize(100).maxCapacity(128).build());
+    }
+
     /**
      * A put at the block threshold needs the new array. The executor here starts the allocation a second late: the
      * put does not wait for it, it allocates the array itself - the late task then skips the allocation. An interrupt

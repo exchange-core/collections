@@ -213,7 +213,9 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         for (int i = 0; i < far.length; i++) {
             final long key = far[i];
             final long value = i;
+            assertEquals(-9L, h.table.getOrDefault(key, -9L));
             assertEquals(0L, h.table.putIfAbsent(key, value));
+            assertEquals(value, h.table.getOrDefault(key, -9L));
             assertEquals(value, h.table.putIfAbsent(key, -1L));
             assertEquals(value + 5, h.table.addAndGet(key, 5L));
             assertEquals(value + 5, h.table.computeIfAbsent(key, k -> -1L));

@@ -169,7 +169,17 @@ final LongLongHashtable prices = LongLongHashtable.builder()
 prices.get(42L);            // -1
 prices.put(42L, 0L);        // -1 — was absent
 prices.get(42L);            // 0 — a regular value
+prices.getOrDefault(43L, -2L); // -2 — absent, whatever missingValue is (one probe)
+
+final LongLongHashtable fixed = LongLongHashtable.builder()
+        .expectedSize(1_000_000)
+        .fixedCapacity()        // never resizes: refuses new keys at load 0.9 instead
+        .build();               // or .maxCapacity(1 << 22): grows up to 2^22 slots, then refuses
 ```
+
+A table that can not grow takes new keys up to load 0.9 of its capacity, with longer probes past the
+expected size; then `put` of a new key throws `IllegalStateException` and changes nothing — updates and
+removals go on working.
 
 **Hash seed.** The hash function is public, so whoever chooses the keys (client order ids, account ids
 coming from outside) can pick thousands of them for one slot: they pile up into one cluster, and every
@@ -186,7 +196,8 @@ The default is `0`, which keeps the slot order — and the iteration order — t
 constant for the JIT, seed `0` costs nothing; any other seed adds 1-3 instructions per operation — a
 fraction of a nanosecond, +5..15% in a benchmark of back-to-back operations.
 
-Compound operations, one probe each:
+Compound operations, one probe each (`computeIfAbsent` of a missing key: two — the function may change
+the table):
 
 ```java
 table.putIfAbsent(7L, 70L);              // 0 — was absent, now 70
@@ -222,11 +233,25 @@ Do not modify the table from the `forEach` consumer or while a stream is being c
 - the expected size (constructor, `expectedSize`, `ensureCapacity`) is the number of entries: that
   many fit without a resize, up to ~349 million (2^29 slots); a negative or larger value throws
   `IllegalArgumentException`
-- at the maximum capacity of 2^29 slots the table stops growing: it takes new keys up to load 0.9, then
-  `put` of a new key throws `IllegalStateException` and changes nothing
+- at the maximum capacity (2^29 slots, or `maxCapacity` / `fixedCapacity`) the table stops growing: it
+  takes new keys up to load 0.9, then `put` of a new key throws `IllegalStateException` and changes nothing
 - the table grows automatically at 65% load factor; that resize is synchronous and shows up as a
   latency spike — pre-size the table if this matters
 - not thread-safe
+
+**Cost of the operations** (both hashtables; `LongLongLL2Hashtable` adds the migration, below)
+
+| Operation | Cost |
+|---|---|
+| `get`, `containsKey`, `getOrDefault`, `put` (existing key) | one probe: the cluster of the key, from its home slot to the key or the first free slot |
+| `put` / `putIfAbsent` / `addAndGet` of a new key | one probe; may trigger a resize: a copy of the whole table |
+| `remove` | one probe, then the rest of the cluster shifts back by one slot |
+| `computeIfAbsent` | one probe if present, two if absent (plus the function) |
+| `forEach`, `keysStream`, `valuesStream`, `clear`, `toString` | the whole array |
+| `ensureCapacity` | a rehash of the whole table, if it grows |
+
+Clusters are short at load 0.65 with keys nobody picked to collide — 2000 keys picked for one slot
+make a cluster of 2000 under seed `0`: set a seed where keys come from outside.
 
 ---
 
@@ -280,10 +305,23 @@ resize, the allocation of the new array when the old one reaches 90% load, or th
 an operation needs. A copying task that starts late continues from there. No operation fails because of
 the executor.
 
+**Cost during a migration** — on top of the table above, which holds between migrations:
+
+| Operation | Cost |
+|---|---|
+| any single-key operation on a key whose home is in the segment being copied | waits for that segment: 256 slots (~2 µs), up to the end of the cluster at its boundary — a segment ends at a free slot |
+| `put` that reaches the start of the migration | copies the cluster before it into the new array, on the calling thread |
+| `put` that brings the old array to 90% load | waits for the whole rest of the migration |
+| the compound operations, `getOrDefault` | made of the basic operations: two or three lookups |
+| `clear`, `forEach`, the streams, `ensureCapacity` beyond the new capacity, `finishMigration`, `close` | finish the migration first: the copying of everything left |
+| the first operations after a resize threshold | the start of a migration: a task for the executor, `CompletableFuture` and `Cleaner` work (2-16 µs, mostly interpreted code) |
+
+During a migration both arrays are alive: three times the memory of the old one. `fixedCapacity()` (or a
+`maxCapacity` reached) makes a table that never migrates, with none of this.
+
 **Notes**
-- same key/value rules, `missingValue` and hash seed as `LongLongHashtable`
-- the compound operations take one probe when no resize is in flight; during a migration they are
-  made of the basic operations; `toString()` then shows only the size
+- same key/value rules, `missingValue`, hash seed, `maxCapacity` / `fixedCapacity` as `LongLongHashtable`
+- `toString()` during a migration shows only the size
 - `ensureCapacity` beyond the capacity of an in-flight migration finishes it first
   (`finishMigration()`), then rehashes on the calling thread
 - `clear()`, `forEach()`, `keysStream()` and `valuesStream()` work on one array: an in-flight migration

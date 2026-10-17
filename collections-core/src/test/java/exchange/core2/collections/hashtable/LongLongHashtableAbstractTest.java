@@ -56,6 +56,11 @@ public abstract class LongLongHashtableAbstractTest {
      */
     protected abstract ILongLongHashtable createLimited(int expectedSize, int maxCapacity);
 
+    /**
+     * A table that never resizes: the builder's fixedCapacity().
+     */
+    protected abstract ILongLongHashtable createFixed(int expectedSize);
+
     private ILongLongHashtable newHashtable(int expectedSize) {
         final ILongLongHashtable table = create(expectedSize);
         created.add(table);
@@ -569,6 +574,59 @@ public abstract class LongLongHashtableAbstractTest {
         assertThat(hashtable.put(refused, 1L), is(0L));
         assertThat(hashtable.size(), is((long) limit));
         assertThrows(IllegalStateException.class, () -> hashtable.put(refused + 1, 1L));
+        checkIntegrity(hashtable);
+    }
+
+    /**
+     * A fixed capacity: the capacity for the expected size, kept - past the expected size new keys go in up to load
+     * 0.9, then they are refused, as at the maximum capacity.
+     */
+    @Test
+    public void should_never_resize_with_a_fixed_capacity() {
+
+        hashtable = createFixed(SMALL_SIZE);
+        created.add(hashtable);
+        assertThat(hashtable.capacity(), is(SMALL_CAPACITY));
+        final int limit = (int) (SMALL_CAPACITY * HashingUtils.FULL_LOAD); // 14
+
+        for (long key = 1; key <= limit; key++) {
+            assertThat(hashtable.put(key, key * 10), is(0L));
+        }
+        assertThat(hashtable.capacity(), is(SMALL_CAPACITY));
+        final IllegalStateException e = assertThrows(IllegalStateException.class, () -> hashtable.put(100L, 1L));
+        assertTrue(e.getMessage(), e.getMessage().contains("table is full"));
+        assertThat(hashtable.size(), is((long) limit));
+        for (long key = 1; key <= limit; key++) {
+            assertThat(hashtable.get(key), is(key * 10));
+        }
+
+        // within the capacity ensureCapacity changes nothing, beyond it it refuses
+        hashtable.ensureCapacity(SMALL_SIZE);
+        assertThrows(IllegalArgumentException.class, () -> hashtable.ensureCapacity(SMALL_SIZE + 1));
+        assertThat(hashtable.capacity(), is(SMALL_CAPACITY));
+        checkIntegrity(hashtable);
+    }
+
+    @Test
+    public void should_get_or_default() {
+
+        hashtable = create(SMALL_SIZE, -1L);
+        created.add(hashtable);
+        hashtable.put(5L, -1L);   // the missing value, stored
+        hashtable.put(6L, 60L);
+        hashtable.put(0L, 7L);
+        hashtable.put(HashingUtils.SEED, 8L); // the entry kept outside the array (key 0 under seed 0)
+
+        assertThat(hashtable.getOrDefault(5L, 99L), is(-1L));
+        assertThat(hashtable.getOrDefault(6L, 99L), is(60L));
+        assertThat(hashtable.getOrDefault(7L, 99L), is(99L));
+        assertThat(hashtable.getOrDefault(0L, 99L), is(HashingUtils.SEED == 0 ? 8L : 7L));
+        assertThat(hashtable.getOrDefault(HashingUtils.SEED, 99L), is(8L));
+
+        hashtable.remove(6L);
+        hashtable.remove(HashingUtils.SEED);
+        assertThat(hashtable.getOrDefault(6L, 99L), is(99L));
+        assertThat(hashtable.getOrDefault(HashingUtils.SEED, 99L), is(99L));
         checkIntegrity(hashtable);
     }
 

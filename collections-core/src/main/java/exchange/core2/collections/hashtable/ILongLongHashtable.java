@@ -7,10 +7,17 @@ import java.util.stream.LongStream;
 /**
  * Primitive {@code long} to {@code long} map. Any key can be stored, {@code 0} included.
  * <p>
- * A missing key reads as {@link #missingValue()} ({@code 0} unless set in the constructor), so a key stored with that
- * value looks the same through {@link #get} - use {@link #containsKey} to tell them apart.
+ * A missing key reads as {@link #missingValue()} ({@code 0} unless set in the builder), so a key stored with that
+ * value looks the same through {@link #get} - {@link #containsKey} or {@link #getOrDefault} tell them apart.
  * <p>
- * The default methods are compositions of the basic operations, the implementations do them in one probe.
+ * The default methods are compositions of the basic operations, two or three probes. The hashtables override them
+ * with one probe - {@code computeIfAbsent} of a missing key takes two, the function may change the table - except
+ * {@link LongLongLL2Hashtable} during a migration, which uses the compositions.
+ * <p>
+ * Cost. A single-key operation probes the cluster of its key: the longer, the fuller the table and the more its keys
+ * collide - short at load 0.65 with keys nobody picked to collide (see the hash seed). A removal also shifts back the
+ * rest of the cluster. A put of a new key may resize the table (see the implementations). {@link #clear},
+ * {@link #forEach}, the streams and {@code toString} walk the whole array; {@link #ensureCapacity} rehashes it.
  */
 public interface ILongLongHashtable {
 
@@ -61,6 +68,14 @@ public interface ILongLongHashtable {
     long get(long key);
 
     /**
+     * @return the value, or defaultValue if the key is absent - presence and value in one probe, where {@link #get}
+     * can not tell a missing key from one stored with missingValue
+     */
+    default long getOrDefault(long key, long defaultValue) {
+        return containsKey(key) ? get(key) : defaultValue;
+    }
+
+    /**
      * @return true if the key is present, whatever its value - missingValue included
      */
     boolean containsKey(long key);
@@ -107,7 +122,8 @@ public interface ILongLongHashtable {
      * Grows the table, if needed, to take expectedSize entries in total without a resize. One rehash on the calling
      * thread instead of a series of resizes - for the set-up, not for the latency-critical path.
      *
-     * @throws IllegalArgumentException if expectedSize is negative or needs more than the maximum capacity
+     * @throws IllegalArgumentException if expectedSize is negative or needs more than the maximum capacity (with a
+     *                                  fixed capacity: more than the table has)
      */
     void ensureCapacity(int expectedSize);
 
