@@ -44,6 +44,12 @@
   a missing key from one stored with the missing value. The cost of each operation (probes, waits, passes over
   the array) is now documented in the README and the javadoc - "one probe" in `ILongLongHashtable` was too
   broad.
+- **`CollectionsLatencySamples`: groups `ll2-scenarios` and `hashtable-collide`** (run only when named).
+  `ll2-scenarios`: the put latency of `LongLongLL2Hashtable` configurations - spinning migrator, thread per
+  task, the default executor in a pinned application, tasks started late, four tables growing at once, mixed
+  operations against `LongLongHashtable` - plus what the measuring thread allocated and the CPU of the other
+  threads. `hashtable-collide`: gets of keys picked to collide, under seed 0 and a random seed. Results in the
+  README.
 - **`HashtableOpsJmh`** (`tests-perf`, JMH 1.34): average time of the single-key hashtable operations, hits
   and misses, from an L1-resident table to one in DRAM - for A/B runs of `collections-core` builds.
 - **`Automatic-Module-Name`** in the published jars: `exchange.core2.collections`,
