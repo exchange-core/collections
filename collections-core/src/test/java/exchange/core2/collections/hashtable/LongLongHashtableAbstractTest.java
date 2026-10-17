@@ -70,7 +70,7 @@ public abstract class LongLongHashtableAbstractTest {
         if (table instanceof LongLongHashtable t) {
             t.integrityCheck();
         } else if (table instanceof LongLongLL2Hashtable t) {
-            t.close();
+            t.finishMigration();
             t.integrityCheck();
         }
     }

@@ -4,11 +4,14 @@ import org.junit.Test;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
+import java.lang.reflect.Field;
+import java.util.Arrays;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.ObjLongConsumer;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
@@ -145,6 +148,87 @@ public class LongLongLL2HashtableTest extends LongLongHashtableAbstractTest {
             migrator.join(10_000);
             assertThat(interruptedAfterCopy.get(), is(true));
         }
+    }
+
+    /**
+     * Lookups of a key that stays in the old array until the last segment - homed in the last eighth, the migration
+     * starts at the beginning - advance the migration too. They used to stall it: only the operations that reached the
+     * migrated area authorized the next segment.
+     */
+    @Test(timeout = 60_000)
+    public void reads_of_keys_in_the_old_array_finish_the_migration() throws Exception {
+        checkMigrationFinishesUnder(LongLongLL2Hashtable::get);
+    }
+
+    /** The same for removals (of a missing key - in a table where it would be present, the same path). */
+    @Test(timeout = 60_000)
+    public void removals_of_keys_in_the_old_array_finish_the_migration() throws Exception {
+        checkMigrationFinishesUnder(LongLongLL2Hashtable::remove);
+    }
+
+    private static void checkMigrationFinishesUnder(ObjLongConsumer<LongLongLL2Hashtable> operation) throws Exception {
+        try (LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().expectedSize(1000)
+                .executor(THREAD_PER_TASK).syncResizeBelow(0).build()) {
+            final int slots = table.capacity();
+            final long farKey = keyWithSlot(1L << 40, slots * 7 / 8, slots - 1);
+            for (long key = 1; !table.migrationInProgress(); key++) {
+                table.put(key, key);
+            }
+            Thread.sleep(20); // the new array is allocated: the next operation starts the copying
+            int operations = 0;
+            while (table.migrationInProgress() && operations < 1_000_000) {
+                operation.accept(table, farKey);
+                operations++;
+            }
+            assertFalse("migration still in progress after " + operations + " operations",
+                    table.migrationInProgress());
+            assertThat(table.capacity(), is(slots * 2));
+            checkIntegrity(table);
+        }
+    }
+
+    /**
+     * After a quiet period the migrator sleeps - parks, up to 1ms at a time. The operation that authorizes the next
+     * segment wakes it: one that needs the segment right after waits for the copying, not for the rest of a park.
+     */
+    @Test(timeout = 60_000)
+    public void sleeping_migrator_is_woken_by_the_next_authorization() throws Exception {
+
+        final Field allowedPosition = LongLongLL2Hashtable.class.getDeclaredField("allowedPosition");
+        allowedPosition.setAccessible(true);
+        // 32768 slots: 128 segments of 256 slots
+        try (LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().expectedSize(20_000)
+                .executor(THREAD_PER_TASK).syncResizeBelow(0).build()) {
+            final int slotMask = table.capacity() - 1;
+            for (long key = 1; !table.migrationInProgress(); key++) {
+                table.put(key, key);
+            }
+            Thread.sleep(20);
+            table.get(1L); // starts the copying
+
+            final long[] waits = new long[15];
+            for (int t = 0; t < waits.length; t++) {
+                Thread.sleep(30); // the migrator copies its segment, spins, then parks
+                final int nextSegment = allowedPosition.getInt(table);
+                table.get(1L); // authorizes the next segment
+                final long key = keyWithSlot(1L << 40, ((nextSegment + 2) >> 1) & slotMask, slotMask);
+                final long t0 = System.nanoTime();
+                table.get(key); // needs that segment: waits until it is copied
+                waits[t] = System.nanoTime() - t0;
+            }
+            Arrays.sort(waits);
+            final long medianUs = waits[waits.length / 2] / 1000;
+            assertTrue("median wait " + medianUs + "us, all: " + Arrays.toString(waits), medianUs < 300);
+            assertTrue(table.migrationInProgress());
+        }
+    }
+
+    private static long keyWithSlot(long from, int slot, int slotMask) {
+        long key = from;
+        while ((key ^ HashingUtils.SEED) == 0 || (HashingUtils.hash(key ^ HashingUtils.SEED) & slotMask) != slot) {
+            key++;
+        }
+        return key;
     }
 
     /**

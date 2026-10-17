@@ -28,6 +28,10 @@ import static exchange.core2.collections.hashtable.HashingUtils.SEED;
  *     arrays, so the table is not safe even for concurrent readers.</li>
  *     <li>An operation on a key whose home is in the segment being copied waits for that segment (a 256-slot segment
  *     copies in ~2us). A put that brings the old array to 90% load before the migration ends waits for all of it.</li>
+ *     <li>The application drives the migration: every operation authorizes the next segment once the migrator has
+ *     copied the current one, whatever its key - and wakes the migrator if it went to sleep while the application
+ *     was quiet. A table nobody uses keeps its migration where it is; {@link #migrationInProgress()} tells, and
+ *     {@link #finishMigration()} completes it.</li>
  *     <li>During a migration both arrays are alive: three times the memory of the old one.</li>
  *     <li>Tables with fewer than {@code syncResizeBelow} entries (default {@value #DEFAULT_SYNC_RESIZE_BELOW}) resize
  *     synchronously, like {@link LongLongHashtable}.</li>
@@ -600,10 +604,11 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
 
         if (resizer == null || resizer.isInOldData(pos, allowedPosition)) {
             // in old data
-//            setAction(key, 36);
-
-            final int offset = HashingUtils.findFreeOffset(key, pos, data);
-            return data[offset + cell];
+            final long value = data[HashingUtils.findFreeOffset(key, pos, data) + cell];
+            if (resizer != null) {
+                advanceMigration();
+            }
+            return value;
         }
 
         // not in old data - either migrated already or still under processing
@@ -623,13 +628,20 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         pos = (hash & resizer.getNewMask()) << 1;
         final int offset = HashingUtils.findFreeOffset(key, pos, newData);
         final long val = newData[offset + cell];
+        advanceMigration();
+        return val;
+    }
 
+    /**
+     * Authorizes the next segment once the migrator has copied the current one. Every operation does it during a
+     * migration, whatever its key: when only the operations that reached the migrated area did, a stream of reads and
+     * removals of keys in the old array stalled the migration - with both arrays and the migrator kept alive.
+     */
+    private void advanceMigration() {
         knownProgressCached = resizer.getProcessedPosition();
         if (knownProgressCached == allowedPosition) {
             enableNextMigrationSegmentOrFinishMigration();
         }
-
-        return val;
     }
 
     @Override
@@ -677,11 +689,10 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         int pos = (hash & mask) << 1;
 
         if (resizer.isInOldData(pos, allowedPosition)) {
-
-            // in old data 34
-//            setAction(key, 56);
-
-            return removeInternal(key, hash, data, mask);
+            // in old data - authorized after the removal: that publishes it to the migrator, which may copy here next
+            final long value = removeInternal(key, hash, data, mask);
+            advanceMigration();
+            return value;
         }
 
         // not in old data - either migrated already or still under processing
@@ -702,14 +713,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
 
         // log.debug("REMOVE {}: migrated, removing from new", key);
         final long val = removeInternal(key, hash, dataNew, resizer.getNewMask());
-        //    log.debug("REMOVE {}: Returning val={}", key, val);
-        // migrated now
-
-        knownProgressCached = resizer.getProcessedPosition();
-        if (knownProgressCached == allowedPosition) {
-            enableNextMigrationSegmentOrFinishMigration();
-        }
-
+        advanceMigration();
         return val;
     }
 
@@ -1336,6 +1340,14 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         if (++size >= upsizeThreshold) {
             resize(offset);
         }
+    }
+
+    /**
+     * @return true while a resize is in flight: the new array is being allocated, or the entries copied into it. Then
+     * the operations may wait for the migrator, and the old array is alive next to the new one. Two field reads.
+     */
+    public boolean migrationInProgress() {
+        return arrayFeature != null || resizer != null;
     }
 
     /**
