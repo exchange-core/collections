@@ -288,6 +288,9 @@ the executor.
   (`finishMigration()`), then rehashes on the calling thread
 - `clear()`, `forEach()`, `keysStream()` and `valuesStream()` work on one array: an in-flight migration
   is finished first (`finishMigration()`) — a pause, meant for the set-up, snapshots or tests
+- the application drives a migration: every operation authorizes the next segment once the migrator has
+  copied the current one, whatever its key, and wakes the migrator if it went to sleep while the
+  application was quiet; `migrationInProgress()` tells whether one is in flight
 - the public API is single-threaded: exactly one application thread, plus the internal migrator
 - waits for a started migrator are bounded by `hangTimeout` (builder, default 10s): past it the operation
   throws `IllegalStateException` with the migration state instead of hanging; interrupts do not fail

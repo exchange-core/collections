@@ -17,7 +17,7 @@ class HashtableAsync2Resizer {
 
     /**
      * Spin budget before the migrator starts backing off. Long enough to cover the usual gap
-     * between two consecutive setAllowedPosition() calls, so a busy table never parks.
+     * between two consecutive setAllowedPosition() calls, so a busy table never parks the migrator.
      */
     private static final int SPINS_BEFORE_PARK = 64 * 1024;
     private static final long PARK_INITIAL_NANOS = 1_000L;
@@ -58,6 +58,9 @@ class HashtableAsync2Resizer {
 
     /** the migrator was interrupted while backing off - set again when copy() returns (migrator thread only) */
     private boolean interrupted;
+
+    /** the migrator is parked, or about to park - setAllowedPosition() wakes it */
+    private volatile boolean parked;
 
     /*
      * Who copies. Until the copying task starts (NEW) the table copies the authorized segments itself, one at a time
@@ -150,8 +153,20 @@ class HashtableAsync2Resizer {
     }
 
 
+    /**
+     * Authorizes the migrator up to allowedPosition - and wakes it if it is backing off: the operations after this one
+     * may need the segment right away. Only a parked migrator is unparked, a busy table pays one volatile read.
+     */
     public void setAllowedPosition(int allowedPosition) {
-        this.allowedPosition = allowedPosition; // TODO Lazyset
+        this.allowedPosition = allowedPosition;
+        // Dekker with doCopy(): the migrator publishes parked, then reads allowedPosition - one of the two threads sees
+        // the other's write, so the authorization is not missed (an unpark before the park makes it return at once)
+        if (parked) {
+            final Thread thread = migratorThread;
+            if (thread != null) {
+                LockSupport.unpark(thread);
+            }
+        }
     }
 
     // only gaps
@@ -265,10 +280,9 @@ class HashtableAsync2Resizer {
             // idle table used to pin its migrator (and, with an affinity-locked executor, its core)
             // for as long as the table existed.
             //
-            // Deliberately parkNanos and not park+unpark-from-setAllowedPosition: the latter would
-            // put a syscall on the latency-critical thread once per migration segment. The wake-up
-            // delay costs nothing here - the migrator only sleeps once the authorized segment is
-            // fully copied, so the application is not waiting on it at that point.
+            // The table unparks a parked migrator when it authorizes the next segment (setAllowedPosition): the
+            // operations after the authorizing one may need that segment, and used to wait out the rest of a park of
+            // up to 1ms. The unpark syscall is paid once after a quiet period, a busy table never parks the migrator.
             parkNanos = (parkNanos == 0)
                     ? PARK_INITIAL_NANOS
                     : Math.min(parkNanos * PARK_BACKOFF_FACTOR, PARK_MAX_NANOS);
@@ -280,7 +294,11 @@ class HashtableAsync2Resizer {
             if (Thread.interrupted()) {
                 interrupted = true;
             }
-            LockSupport.parkNanos(this, parkNanos);
+            parked = true;
+            if (allowedPosition == allowedLocal) { // not authorized since - see setAllowedPosition
+                LockSupport.parkNanos(this, parkNanos);
+            }
+            parked = false;
         }
     }
 

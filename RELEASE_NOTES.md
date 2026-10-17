@@ -86,6 +86,18 @@
   application's own event loop as the executor, where the task runs later on the table's thread.
 - **`LongLongLL2Hashtable.newMigratorExecutor()` leaked a thread per call** - the `ll2-spawner` helper, with no
   way to stop it. It now returns a `MigratorExecutor`, `AutoCloseable`.
+- **A `LongLongLL2Hashtable` migration stalled under lookups and removals.** Only puts and the operations on
+  keys already in the migrated area authorized the next segment: lookups or removals of keys still in the old
+  array never moved the migration on - both arrays and the migrator stayed alive for as long as they went on.
+  Now every operation during a migration authorizes the next segment once the migrator has copied the current
+  one (one volatile read). New `migrationInProgress()` tells whether a migration is in flight.
+- **Operations after a quiet period waited up to ~1 ms for a sleeping migrator.** After a few milliseconds
+  without new segments the migrator backs off, parking up to 1 ms at a time, and an authorization did not wake
+  it: the operations needing the new segment waited out the rest of the park. Now the authorizing operation
+  unparks a parked migrator - one volatile read per segment otherwise, the wake-up syscall only after a quiet
+  period. In the new `PerfLL2IdleBurst` (`tests-perf`: 200 lookups after 20 ms quiet in the middle of a
+  migration) the slowest lookup of a burst went from ~920 us to 3.4 us (median of 900 bursts), p99.9 of all
+  lookups from ~930 us to 4 us; the put latency benchmark is unchanged.
 
 ### Removed
 
