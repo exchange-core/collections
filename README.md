@@ -294,28 +294,35 @@ try (MigrationService service = MigrationService.builder().start()) {        // 
 }
 ```
 
-**The migration service** — one worker thread, a daemon, that allocates the new arrays and copies the old
-ones, a segment at a time, for any number of tables in turn:
+**The migration service** — two daemon threads for any number of tables: a worker that copies the old
+arrays into the new ones, a portion at a time, in turns, and an allocator that allocates the new arrays:
 
 ```java
 final MigrationService service = MigrationService.builder()
         .waitStrategy(MigrationService.WaitStrategy.BUSY_SPIN)   // default SPIN_THEN_PARK
         .threadInit(() -> CpuAffinity.acquireCore(5))           // runs on the worker, before start() returns
-        .threadName("ll2-migration")
-        .start();                                                 // the worker runs when this returns
+        .allocatorThreadInit(() -> ...)                          // the same for the allocator
+        .threadName("ll2-migration")                             // the allocator: "ll2-migration-allocator"
+        .start();                                                // the threads run when this returns
 ```
 
-- `start()` starts the worker and returns once it runs — after `threadInit`, which pins it to a core, for
-  one (what it returns is closed when the worker ends). Without that, the worker inherits the CPU affinity
-  of the thread calling `start()`: start the service before that thread pins itself to a core.
+- `start()` starts the threads and returns once they run — after `threadInit` / `allocatorThreadInit`, which
+  pin them, for one (what they return is closed when the thread ends). Without that, a thread inherits the
+  CPU affinity of the thread calling `start()`: start the service before that thread pins itself to a core.
+  The allocator zeroes memory now and then — a housekeeping core is a good place for it.
 - Waiting for work: `SPIN_THEN_PARK` (default) spins ~1-3 ms, then parks; the table that brings work wakes
   it — an unpark on the table's thread, only after such a quiet period. `BUSY_SPIN` spins all the time:
-  a core of its own, the shortest hand-over.
-- Work goes in turns: one segment of one table (256 slots, ~2 µs) or one new array. A large allocation keeps
-  the other tables waiting for its duration — they copy the segments they need themselves meanwhile.
+  a core of its own, the shortest hand-over. The allocator only parks.
+- The worker goes round the tables with a migration in flight — not every registered one — and takes a
+  portion of each in turn: ~256 slots (~2 µs), on to the end of the cluster there. A table that authorizes
+  the whole rest of its migration at once still gets it portion by portion.
+- The allocator takes the large arrays — above 2^18 slots, 4 MB; zeroing 256 MB takes tens of
+  milliseconds — off the worker: the copying goes on for the other tables, and so do their small arrays,
+  which the worker allocates between portions (~0.2 ms at most). `allocatorThread(false)` makes it one
+  thread, the worker allocating all, and then the copying waits for each allocation.
 - A table registers when it is built and leaves at `close()`. Close the tables first: `service.close()`
   throws while a table is registered — built, not closed, and not garbage-collected (a forgotten table is
-  dropped once collected, with the arrays of its migration).
+  dropped once collected, with the arrays of its migration; `close()` drops the rest).
 
 **Who does the work.** Each authorized segment is copied by whichever gets to it first: the worker in its
 turn, or the table, where an operation needs a segment the worker has not taken — the table waits only for
@@ -341,24 +348,31 @@ finishes the migration.
 During a migration both arrays are alive: three times the memory of the old one. `fixedCapacity()` (or a
 `maxCapacity` reached) makes a table that never migrates, with none of this.
 
-**Measured** — `CollectionsLatencySamples -Dsamples.groups=ll2-scenarios`: 1M operations/s, latency from the
-planned arrival (a stall is charged to every operation queued behind it), the table growing from 16 to 4M
-entries; Xeon Gold 6244, application pinned to an isolated core, JDK 27, one run (the first row: four):
+**Measured** — `CollectionsLatencySamples -Dsamples.groups=ll2-scenarios,ll2-many-tables,ll2-big-allocation`:
+1M operations/s, latency from the planned arrival (a stall is charged to every operation queued behind it),
+the measured table growing from 16 to 4M entries; Xeon Gold 6244, application pinned to an isolated core,
+JDK 27, two runs:
 
 | Configuration | p50 | p99 | p99.9 | max |
 |---|---|---|---|---|
-| `BUSY_SPIN` worker on its own core, `syncResizeBelow(300)` | 124 ns | 344-347 ns | 491-497 ns | 1.0-7.8 µs |
-| `SPIN_THEN_PARK` worker, unpinned, default `syncResizeBelow` | 124 ns | 346 ns | 502 ns | 283 µs (the synchronous resizes below 8200 entries) |
-| the service started by the pinned application thread: the worker shares its core | 146 ns | 12.5 **ms** | 37.5 ms | 41 ms |
-| 4 tables growing at once on one `BUSY_SPIN` worker | 130 ns | 358 ns | 491 ns | 37 µs |
-| 4 tables growing at once on one `SPIN_THEN_PARK` worker | 130 ns | 357 ns | 501 ns | 2.9 µs |
-| 50% puts, 30% gets, 20% removals | 154 ns | 396 ns | 543 ns | 0.9 µs |
-| the same with `LongLongHashtable` (synchronous resizes) | 166 ns | 1.6 ms | 18 ms | 22 ms |
+| `BUSY_SPIN` worker on its own core, `syncResizeBelow(300)` | 124-126 ns | 343-345 ns | 483-501 ns | 3.7-4.1 µs |
+| `SPIN_THEN_PARK` worker, unpinned, default `syncResizeBelow` | 124-126 ns | 345 ns | 504-506 ns | 81-143 µs (the synchronous resizes below 8200 entries) |
+| the service started by the pinned application thread: the worker shares its core | 145 ns | 11.6-11.9 **ms** | 31-33 ms | 35-36 ms |
+| 4 tables growing at once on one `BUSY_SPIN` worker | 94-100 ns | 306-316 ns | 470-473 ns | 1.3-5.1 µs |
+| 4 tables growing at once on one `SPIN_THEN_PARK` worker | 94-101 ns | 306-314 ns | 468-479 ns | 2.1-2.5 µs |
+| 64 tables growing at once on one `BUSY_SPIN` worker | 126-128 ns | 347-351 ns | 533-564 ns | 56-58 µs (one worker for 64 migrations at once: tables at 90% load finish their own) |
+| one table growing next to 10 000 idle ones, `BUSY_SPIN` | 123-125 ns | 344-351 ns | 484-493 ns | 5.7-6.9 µs |
+| a neighbour's 512 MB allocation starts with the run, `BUSY_SPIN`, allocator thread | 128 ns | 346-354 ns | 497-506 ns | 23-28 µs |
+| the same with `allocatorThread(false)` | 128 ns | 356-358 ns | 545-553 ns | 0.98 **ms** (the measured table's next array waits behind the large one: at 90% load it allocates and copies itself) |
+| 50% puts, 30% gets, 20% removals | 145-150 ns | 381-387 ns | 531-535 ns | 1.2-1.7 µs |
+| the same with `LongLongHashtable` (synchronous resizes) | 151-153 ns | 1.3-1.4 ms | 18 ms | 21 ms |
 
 Against the executor-based version this service replaced (same machine, interleaved, three runs of
 `hashtable-put`): samples over 1 µs per 100 000 puts 7-12 → 1-6, over 5 µs 1-5 → 0-1, max 12-16 µs → 1-8 µs.
 Those were the start and the end of the migrations - a task for the executor, a `CompletableFuture`, a
 `Cleaner`, all of it interpreted code on the application thread; now a few volatile writes.
+With 10 000 idle tables registered the worker no longer goes over each of them every round: p99.9 541-543 →
+484-493 ns against the first version of the service, and registering them allocates 8 MB instead of 712 MB.
 
 The application and the worker yield the CPU to each other while they wait: where they share a core, the
 other one runs. Sharing still costs the application the CPU of the allocation and the copying - give the

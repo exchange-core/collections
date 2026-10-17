@@ -162,8 +162,9 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         final int s = r.getStartingPosition();
         final long firstSegmentKey = keyWithSlot(1, ((s + 2) & (old.length - 1)) >> 1, (old.length >> 1) - 1);
 
-        // an odd allowed position: copyInterval rejects it, the worker fails (the test plays it here)
-        ALLOWED.setVolatile(r, 3);
+        // an odd allowed position, within one portion of the worker: copyInterval rejects it, the worker fails (the test
+        // plays it here)
+        ALLOWED.setVolatile(r, (int) TO_PROCESS.getVolatile(r) + 5);
         h.service.serveOnce();
 
         final long t0 = System.nanoTime();

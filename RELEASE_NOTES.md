@@ -201,7 +201,15 @@
   - `threadInit` (e.g. `CpuAffinity::acquireCore`) runs on the worker before `start()` returns;
     `WaitStrategy.SPIN_THEN_PARK` (default) or `BUSY_SPIN`.
   - The tables are closed first: `service.close()` throws while one is registered; a forgotten table is
-    dropped once collected by the GC.
+    dropped once collected by the GC, and `close()` drops those left.
+  - Many tables: the worker goes round the tables with a migration in flight only - a table joins with a CAS
+    when it brings work - and takes a portion of ~256 slots of each in turn, also when a table authorizes the
+    whole rest of its migration at once (at 90% load, `finishMigration()`). A second thread, the allocator
+    (`allocatorThread(false)` to do without, `allocatorThreadInit` to pin it), allocates the arrays above 4 MB,
+    so a large allocation does not hold up the copying for the other tables, nor their small arrays - the worker
+    allocates those between portions. Registering and closing a table are O(1) (10 000 tables: 8 MB allocated, was
+    712 MB), the GC's reference queue tells the worker which tables it collected. Measured: one table growing next to
+    10 000 idle ones p99.9 541-543 -> 484-493 ns; a neighbour's 512 MB allocation max 1 ms -> 23-28 us.
 - **Published artifacts are now compiled for Java 17 instead of Java 26.** `collections-core` and
   `collections-orderbook` no longer force consumers onto the latest JDK. 17 is the floor imposed by
   agrona 2.x (Java 17 class files) in `collections-orderbook`; `collections-core` has no
