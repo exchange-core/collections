@@ -313,8 +313,9 @@ final LongLongLL2Hashtable tuned = LongLongLL2Hashtable.builder()
 > queue and the application thread ends up doing their work.
 
 > **Warning:** in an application whose thread is pinned to a core, the default executor's threads inherit
-> that core and time-share it with the application: puts then wait hundreds of milliseconds (measured
-> below). Create `newMigratorExecutor()` before pinning, or pass an executor of your own.
+> that core and time-share it with the application: the allocation and the copying take its CPU, puts
+> wait tens of milliseconds at p99 (measured below). Create `newMigratorExecutor()` before pinning, or pass
+> an executor of your own.
 
 The table never waits for a task the executor has not started: if the executor rejects a task, runs it
 on the thread that started the migration (`Runnable::run`, `CallerRunsPolicy`, the application's own event
@@ -343,17 +344,19 @@ entries; Xeon Gold 6244, application pinned to an isolated core, JDK 27, two run
 
 | Configuration | p50 | p99 | p99.9 | max |
 |---|---|---|---|---|
-| spinning migrator on its own core, `syncResizeBelow(300)` | 124 ns | 350 ns | 490-500 ns | 16-21 µs |
-| `newMigratorExecutor()` (thread per task), default `syncResizeBelow` | 124 ns | 350 ns | 510-530 ns | 150-280 µs (the synchronous resizes below 8200 entries) |
-| default executor, application pinned | 270-350 **ms** | 0.8-1 s | | |
-| tasks started 1 ms late (the table copies until then) | 124 ns | 350 ns | 500-515 ns | 16-37 µs |
-| 4 tables growing at once, one shared spinning migrator | 130 ns | 357 ns | 510 ns | 6-9 µs |
-| 4 tables growing at once, thread per task (unpinned threads on the 2 housekeeping CPUs) | 130 ns | 370 ns | 0.6-2.8 ms | 0.7-5.6 ms |
-| 50% puts, 30% gets, 20% removals | 150-159 ns | 400 ns | 535-545 ns | 1.3-2.1 µs |
-| the same with `LongLongHashtable` (synchronous resizes) | 168-173 ns | 1.5 ms | 18 ms | 21 ms |
+| spinning migrator on its own core, `syncResizeBelow(300)` | 124 ns | 347 ns | 500-505 ns | 8-10 µs |
+| `newMigratorExecutor()` (thread per task), default `syncResizeBelow` | 125 ns | 350 ns | 506-508 ns | 155-161 µs (the synchronous resizes below 8200 entries) |
+| default executor, application pinned: the migrator shares its core | 144 ns | 25-27 **ms** | 53-57 ms | 57-61 ms |
+| tasks started 1 ms late (the table copies until then) | 125 ns | 350 ns | 493-515 ns | 21-41 µs |
+| 4 tables growing at once, one shared spinning migrator | 130 ns | 355-362 ns | 494-503 ns | 4-7 µs |
+| 4 tables growing at once, thread per task (unpinned, on the 2 housekeeping CPUs) | 130 ns | 358-360 ns | 510-513 ns | 137-192 µs |
+| 50% puts, 30% gets, 20% removals | 137-152 ns | 368-395 ns | 528-540 ns | 0.9-2.0 µs |
+| the same with `LongLongHashtable` (synchronous resizes) | 159 ns | 1.3-1.4 ms | 18 ms | 21 ms |
 
-A migrator that runs, but on a CPU it shares, can be descheduled in the middle of a segment, and an
-operation that needs that segment waits for it: give the migrator a core of its own.
+The application and the migrator yield the CPU to each other while they wait: where they share a core, the
+other one runs (without that, a put waited hundreds of milliseconds at p50 in the pinned configuration).
+Sharing still costs the application the CPU of the allocation and the copying - give the migrator a core of
+its own.
 
 **Notes**
 - same key/value rules, `missingValue`, hash seed, `maxCapacity` / `fixedCapacity` as `LongLongHashtable`
