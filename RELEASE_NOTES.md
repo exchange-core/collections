@@ -183,6 +183,25 @@
 - **`LongLongLL2Hashtable`: `finishMigration()`; `close()` makes the later resizes synchronous.** `close()`
   used to leave a table that started background work again at its next resize. `finishMigration()` does
   what `close()` did. The builder rejects a `null` executor and a negative `syncResizeBelow`.
+- **`LongLongLL2Hashtable`: a `MigrationService` instead of an executor** (breaking). One worker thread,
+  started (`MigrationService.builder().start()`) and closed by the application, does the background work of
+  any number of tables: it allocates their new arrays and copies them, a segment at a time, in turns. The
+  table needs one: `LongLongLL2Hashtable.builder().migrationService(service)` - the constructors,
+  `Builder.executor(...)`, `newMigratorExecutor()` and `MigratorExecutor` are gone; the executor entries in
+  this list are about that API.
+  - Starting and ending a migration are writes into the table's slot of the service, set up once when the
+    table is built: no task, no `CompletableFuture`, no `Cleaner` - their interpreted code cost 2-16 us at the
+    start and the end of every migration. Put latency (`hashtable-put`, three interleaved runs against the
+    executor version): samples over 5 us per 100 000 puts 1-5 -> 0-1, max 12-16 us -> 1-8 us.
+  - `start()` waits for the worker at most 10 s: started from a static initializer of a class that `threadInit`
+    needs, it fails instead of deadlocking.
+  - Each segment is copied by whichever gets to it first, the worker or the table where an operation needs
+    it; the table waits only for a segment the worker is copying at that moment. A put at 90% load allocates
+    the new array itself if the worker has not started it.
+  - `threadInit` (e.g. `CpuAffinity::acquireCore`) runs on the worker before `start()` returns;
+    `WaitStrategy.SPIN_THEN_PARK` (default) or `BUSY_SPIN`.
+  - The tables are closed first: `service.close()` throws while one is registered; a forgotten table is
+    dropped once collected by the GC.
 - **Published artifacts are now compiled for Java 17 instead of Java 26.** `collections-core` and
   `collections-orderbook` no longer force consumers onto the latest JDK. 17 is the floor imposed by
   agrona 2.x (Java 17 class files) in `collections-orderbook`; `collections-core` has no

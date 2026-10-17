@@ -271,92 +271,98 @@ make a cluster of 2000 under seed `0`: set a seed where keys come from outside.
 
 ### LongLongLL2Hashtable
 
-Same `long` → `long` contract as `LongLongHashtable`, but the resize happens **asynchronously** on a
-background thread. The application thread keeps serving `put`/`get`/`remove` while a migrator copies
-the old array into the new one segment by segment, which removes the stop-the-world resize pause.
+Same `long` → `long` contract as `LongLongHashtable`, but the resize happens **asynchronously**: the
+application thread keeps serving `put`/`get`/`remove` while the worker of a `MigrationService` copies the old
+array into the new one segment by segment, which removes the stop-the-world resize pause.
 
 ```java
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
+import exchange.core2.collections.hashtable.MigrationService;
 
-try (LongLongLL2Hashtable table = new LongLongLL2Hashtable(1_000_000)) {
+try (MigrationService service = MigrationService.builder().start()) {        // one for many tables
 
-    table.put(42L, 1234L);
-    table.get(42L);         // 1234
-    table.remove(42L);      // 1234
-    table.size();           // 0
+    try (LongLongLL2Hashtable table = LongLongLL2Hashtable.builder()
+            .migrationService(service)                                       // required
+            .expectedSize(1_000_000)
+            .build()) {
+
+        table.put(42L, 1234L);
+        table.get(42L);         // 1234
+        table.remove(42L);      // 1234
+        table.size();           // 0
+    }
 }
 ```
 
-`close()` blocks until an in-flight migration finishes and releases the migrator thread. The table
-stays fully usable after `close()`; its later resizes are synchronous, like those of `LongLongHashtable`,
-so it never starts background work again. `finishMigration()` only finishes the migration. A forgotten
-`close()` is not fatal (a `Cleaner` stops the migrator once the table becomes unreachable), but the
-thread — and, with an affinity-locked executor, its core — stays occupied until the next GC cycle notices.
-
-A custom executor can be supplied for the migration work:
+**The migration service** — one worker thread, a daemon, that allocates the new arrays and copies the old
+ones, a segment at a time, for any number of tables in turn:
 
 ```java
-final LongLongLL2Hashtable table = new LongLongLL2Hashtable(1_000_000, myExecutor);
-
-final LongLongLL2Hashtable tuned = LongLongLL2Hashtable.builder()
-        .expectedSize(1_000_000)
-        .executor(myExecutor)
-        .syncResizeBelow(300)   // smaller tables resize synchronously (default 8200)
-        .missingValue(-1L)
-        .build();
+final MigrationService service = MigrationService.builder()
+        .waitStrategy(MigrationService.WaitStrategy.BUSY_SPIN)   // default SPIN_THEN_PARK
+        .threadInit(() -> CpuAffinity.acquireCore(5))           // runs on the worker, before start() returns
+        .threadName("ll2-migration")
+        .start();                                                 // the worker runs when this returns
 ```
 
-> **Warning:** the executor runs both the destination array allocation and the copying task, and the
-> copying task spins while waiting for the application to authorize the next segment, until its
-> migration ends. Pass an unbounded / thread-per-task executor — the default one is exactly that, with
-> daemon threads. In a *bounded* one, once all threads are occupied by migrators, new tasks wait in the
-> queue and the application thread ends up doing their work.
+- `start()` starts the worker and returns once it runs — after `threadInit`, which pins it to a core, for
+  one (what it returns is closed when the worker ends). Without that, the worker inherits the CPU affinity
+  of the thread calling `start()`: start the service before that thread pins itself to a core.
+- Waiting for work: `SPIN_THEN_PARK` (default) spins ~1-3 ms, then parks; the table that brings work wakes
+  it — an unpark on the table's thread, only after such a quiet period. `BUSY_SPIN` spins all the time:
+  a core of its own, the shortest hand-over.
+- Work goes in turns: one segment of one table (256 slots, ~2 µs) or one new array. A large allocation keeps
+  the other tables waiting for its duration — they copy the segments they need themselves meanwhile.
+- A table registers when it is built and leaves at `close()`. Close the tables first: `service.close()`
+  throws while a table is registered — built, not closed, and not garbage-collected (a forgotten table is
+  dropped once collected, with the arrays of its migration).
 
-> **Warning:** in an application whose thread is pinned to a core, the default executor's threads inherit
-> that core and time-share it with the application: the allocation and the copying take its CPU, puts
-> wait tens of milliseconds at p99 (measured below). Create `newMigratorExecutor()` before pinning, or pass
-> an executor of your own.
+**Who does the work.** Each authorized segment is copied by whichever gets to it first: the worker in its
+turn, or the table, where an operation needs a segment the worker has not taken — the table waits only for
+a segment the worker is copying at that very moment. A put that brings the old array to 90% load allocates
+the new array itself if the worker has not started it. So a busy, slow or absent worker costs the
+application the work, never an unbounded wait for work nobody has started.
 
-The table never waits for a task the executor has not started: if the executor rejects a task, runs it
-on the thread that started the migration (`Runnable::run`, `CallerRunsPolicy`, the application's own event
-loop) or simply has not run it yet, the table does that work on the calling thread — a synchronous
-resize, the allocation of the new array when the old one reaches 90% load, or the copying of the segment
-an operation needs. A copying task that starts late continues from there. No operation fails because of
-the executor.
+`close()` finishes an in-flight migration and leaves the service. The table stays fully usable after
+`close()`; its later resizes are synchronous, like those of `LongLongHashtable`. `finishMigration()` only
+finishes the migration.
 
 **Cost during a migration** — on top of the table above, which holds between migrations:
 
 | Operation | Cost |
 |---|---|
-| any single-key operation on a key whose home is in the segment being copied | waits for that segment: 256 slots (~2 µs), up to the end of the cluster at its boundary — a segment ends at a free slot |
+| any single-key operation on a key whose home is in an authorized segment not copied yet | copies the segment itself: 256 slots (~2 µs), up to the end of the cluster at its boundary — a segment ends at a free slot; or, if the worker is copying it right now, waits for it |
 | `put` that reaches the start of the migration | copies the cluster before it into the new array, on the calling thread |
-| `put` that brings the old array to 90% load | waits for the whole rest of the migration |
+| `put` that brings the old array to 90% load | the whole rest of the migration: copies it, or waits for the segment the worker is copying; allocates the new array if the worker has not started it |
 | the compound operations, `getOrDefault` | made of the basic operations: two or three lookups |
 | `clear`, `forEach`, the streams, `ensureCapacity` beyond the new capacity, `finishMigration`, `close` | finish the migration first: the copying of everything left |
-| the first operations after a resize threshold | the start of a migration: a task for the executor, `CompletableFuture` and `Cleaner` work (2-16 µs, mostly interpreted code) |
+| the operations that start and end a migration | a request in the table's slot of the service: volatile writes, an unpark if the worker sleeps |
 
 During a migration both arrays are alive: three times the memory of the old one. `fixedCapacity()` (or a
 `maxCapacity` reached) makes a table that never migrates, with none of this.
 
 **Measured** — `CollectionsLatencySamples -Dsamples.groups=ll2-scenarios`: 1M operations/s, latency from the
 planned arrival (a stall is charged to every operation queued behind it), the table growing from 16 to 4M
-entries; Xeon Gold 6244, application pinned to an isolated core, JDK 27, two runs:
+entries; Xeon Gold 6244, application pinned to an isolated core, JDK 27, one run (the first row: four):
 
 | Configuration | p50 | p99 | p99.9 | max |
 |---|---|---|---|---|
-| spinning migrator on its own core, `syncResizeBelow(300)` | 124 ns | 347 ns | 500-505 ns | 8-10 µs |
-| `newMigratorExecutor()` (thread per task), default `syncResizeBelow` | 125 ns | 350 ns | 506-508 ns | 155-161 µs (the synchronous resizes below 8200 entries) |
-| default executor, application pinned: the migrator shares its core | 144 ns | 25-27 **ms** | 53-57 ms | 57-61 ms |
-| tasks started 1 ms late (the table copies until then) | 125 ns | 350 ns | 493-515 ns | 21-41 µs |
-| 4 tables growing at once, one shared spinning migrator | 130 ns | 355-362 ns | 494-503 ns | 4-7 µs |
-| 4 tables growing at once, thread per task (unpinned, on the 2 housekeeping CPUs) | 130 ns | 358-360 ns | 510-513 ns | 137-192 µs |
-| 50% puts, 30% gets, 20% removals | 137-152 ns | 368-395 ns | 528-540 ns | 0.9-2.0 µs |
-| the same with `LongLongHashtable` (synchronous resizes) | 159 ns | 1.3-1.4 ms | 18 ms | 21 ms |
+| `BUSY_SPIN` worker on its own core, `syncResizeBelow(300)` | 124 ns | 344-347 ns | 491-497 ns | 1.0-7.8 µs |
+| `SPIN_THEN_PARK` worker, unpinned, default `syncResizeBelow` | 124 ns | 346 ns | 502 ns | 283 µs (the synchronous resizes below 8200 entries) |
+| the service started by the pinned application thread: the worker shares its core | 146 ns | 12.5 **ms** | 37.5 ms | 41 ms |
+| 4 tables growing at once on one `BUSY_SPIN` worker | 130 ns | 358 ns | 491 ns | 37 µs |
+| 4 tables growing at once on one `SPIN_THEN_PARK` worker | 130 ns | 357 ns | 501 ns | 2.9 µs |
+| 50% puts, 30% gets, 20% removals | 154 ns | 396 ns | 543 ns | 0.9 µs |
+| the same with `LongLongHashtable` (synchronous resizes) | 166 ns | 1.6 ms | 18 ms | 22 ms |
 
-The application and the migrator yield the CPU to each other while they wait: where they share a core, the
-other one runs (without that, a put waited hundreds of milliseconds at p50 in the pinned configuration).
-Sharing still costs the application the CPU of the allocation and the copying - give the migrator a core of
-its own.
+Against the executor-based version this service replaced (same machine, interleaved, three runs of
+`hashtable-put`): samples over 1 µs per 100 000 puts 7-12 → 1-6, over 5 µs 1-5 → 0-1, max 12-16 µs → 1-8 µs.
+Those were the start and the end of the migrations - a task for the executor, a `CompletableFuture`, a
+`Cleaner`, all of it interpreted code on the application thread; now a few volatile writes.
+
+The application and the worker yield the CPU to each other while they wait: where they share a core, the
+other one runs. Sharing still costs the application the CPU of the allocation and the copying - give the
+worker a core of its own.
 
 **Notes**
 - same key/value rules, `missingValue`, hash seed, `maxCapacity` / `fixedCapacity` as `LongLongHashtable`
@@ -365,13 +371,13 @@ its own.
   (`finishMigration()`), then rehashes on the calling thread
 - `clear()`, `forEach()`, `keysStream()` and `valuesStream()` work on one array: an in-flight migration
   is finished first (`finishMigration()`) — a pause, meant for the set-up, snapshots or tests
-- the application drives a migration: every operation authorizes the next segment once the migrator has
-  copied the current one, whatever its key, and wakes the migrator if it went to sleep while the
-  application was quiet; `migrationInProgress()` tells whether one is in flight
-- the public API is single-threaded: exactly one application thread, plus the internal migrator
-- waits for a started migrator are bounded by `hangTimeout` (builder, default 10s): past it the operation
-  throws `IllegalStateException` with the migration state instead of hanging; interrupts do not fail
-  operations, the interrupt status is kept
+- the application drives a migration: every operation authorizes the next segment once the current one is
+  copied, whatever its key, and wakes the worker if it went to sleep while the application was quiet;
+  `migrationInProgress()` tells whether one is in flight
+- the public API is single-threaded: exactly one application thread, plus the worker of the service
+- a wait for the segment the worker is copying is bounded by `hangTimeout` (builder, default 10s): past it
+  the operation throws `IllegalStateException` with the migration state instead of hanging; the waits spin,
+  interrupts do not end them
 - `-Dexchange.hashtable.verify=true` runs a full integrity check after every migration —
   for debugging migration corruption only, it is expensive
 
@@ -425,8 +431,8 @@ try (CpuAffinity affinity = CpuAffinity.acquireCore()) {   // or acquireCore(cpu
 - `close()` restores the thread's previous mask and releases the core — call it from the pinned thread.
 - Run with `--enable-native-access=ALL-UNNAMED` to avoid the JDK's restricted-method warning.
 - Lock files: `exchange-core2-cpu-<n>.lock` in `-Daffinity.lockDir` (default `java.io.tmpdir`).
-- Threads started by a pinned thread inherit its single-CPU mask: start helper threads (e.g.
-  `LongLongLL2Hashtable.newMigratorExecutor()`, closed once its tables are) before pinning.
+- Threads started by a pinned thread inherit its single-CPU mask: start helper threads before pinning, or
+  let them pin themselves - e.g. `MigrationService.builder().threadInit(() -> CpuAffinity.acquireCore(5))`.
 
 ---
 

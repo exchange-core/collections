@@ -12,7 +12,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -24,10 +23,10 @@ import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 /**
- * Interleavings of the application thread with the migrator, set up step by step: the copying task the table
- * submits is held back, the test copies segments itself (as {@link HashtableAsync2Resizer#copyInterval} and doCopy
- * would) and hands over to the real task when the scenario is set up. Where the migrator pauses, the real one can
- * be preempted - or its stores can still sit in the store buffer.
+ * Interleavings of the application thread with the migrator, set up step by step: the table's migration service has
+ * no worker, the test plays it - copies segments itself (as {@link HashtableAsync2Resizer#copyInterval} does) in the
+ * worker's state, and hands over to the service's own serving when the scenario is set up. Where the migrator
+ * pauses, the real worker can be preempted - or its stores can still sit in the store buffer.
  * <p>
  * The same interleavings with real threads: LongLongLL2HashtableFrontierRaceStressTest in tests-stress.
  */
@@ -36,14 +35,14 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
     private static final Logger log = LoggerFactory.getLogger(LongLongLL2HashtableMigrationInterleavingTest.class);
 
     private static final Field RESIZER = field("resizer");
-    private static final Field ARRAY_FEATURE = field("arrayFeature");
+    private static final Field ALLOCATING = field("allocating");
     private static final Field DATA = field("data");
 
     private static final VarHandle TO_PROCESS = resizerField("toProcessPosition");
     private static final VarHandle ALLOWED = resizerField("allowedPosition");
     private static final VarHandle STATE = resizerField("state");
-    private static final int NOT_STARTED = 0;
-    private static final int RUNNING = 1;
+    private static final int IDLE = 0;
+    private static final int WORKER = 1;
 
     /** how long a paused migrator waits for the application before it carries on anyway */
     private static final long MIGRATOR_PAUSE_MS = 100;
@@ -96,7 +95,8 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
                 ref.put(key, (long) slot);
             }
         }
-        assertNotNull(ARRAY_FEATURE.get(h.table));
+        assertTrue(h.allocationRequested());
+        h.allocate();
 
         // the first put starts the migration; 15 keys homed at slot 17 fill slots 49..63 of the old array
         final long[] fill = new long[16];
@@ -148,10 +148,11 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         final Harness h = new Harness(1000);
         final Random rand = new Random(5L);
         long migratedKey = 0;
-        while (ARRAY_FEATURE.get(h.table) == null) {
+        while (!h.allocationRequested()) {
             migratedKey = rand.nextLong() | 1L;
             h.table.put(migratedKey, 1L);
         }
+        h.allocate();
         final long[] old = (long[]) DATA.get(h.table);
         final long farKey = keyWithSlot(1, (old.length >> 1) * 3 / 4, (old.length >> 1) - 1);
         h.table.get(farKey); // starts the migration
@@ -161,11 +162,9 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         final int s = r.getStartingPosition();
         final long firstSegmentKey = keyWithSlot(1, ((s + 2) & (old.length - 1)) >> 1, (old.length >> 1) - 1);
 
-        // an odd allowed position: copyInterval rejects it, the copying task fails
+        // an odd allowed position: copyInterval rejects it, the worker fails (the test plays it here)
         ALLOWED.setVolatile(r, 3);
-        final Thread migrator = h.startMigrator(() -> {
-        });
-        migrator.join();
+        h.service.serveOnce();
 
         final long t0 = System.nanoTime();
         try {
@@ -191,11 +190,12 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         final Harness h = new Harness(1000);
         final Map<Long, Long> ref = new HashMap<>();
         final Random rand = new Random(9L);
-        while (ARRAY_FEATURE.get(h.table) == null) {
+        while (!h.allocationRequested()) {
             final long key = rand.nextLong() | 1L;
             h.table.put(key, key);
             ref.put(key, key);
         }
+        h.allocate();
 
         // keys homed in the last quarter of the old array - the migration starts at its beginning
         final long[] old = (long[]) DATA.get(h.table);
@@ -257,11 +257,12 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         final Harness h = new Harness(1000);
         final Map<Long, Long> ref = new HashMap<>();
         final Random rand = new Random(11L);
-        while (ARRAY_FEATURE.get(h.table) == null) {
+        while (!h.allocationRequested()) {
             final long key = rand.nextLong() | 1L;
             h.table.put(key, key);
             ref.put(key, key);
         }
+        h.allocate();
         h.table.put(0L, 5L);
         ref.put(0L, 5L);
         final long[] old = (long[]) DATA.get(h.table);
@@ -317,12 +318,12 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
     }
 
     /**
-     * A copying task the executor has not started - here held back, as by a queue that does not move - is not waited
-     * for: a lookup that needs the first segment copies it itself, and so do the operations after it. The task, run
-     * late, continues from there.
+     * A segment the worker has not taken - here it does not come at all - is not waited for: a lookup that needs the
+     * first segment copies it itself, and so do the operations after it. The worker, coming late, continues from
+     * there.
      */
     @Test(timeout = 60_000)
-    public void copying_not_started_is_done_by_the_table() throws Exception {
+    public void segment_the_worker_has_not_taken_is_copied_by_the_table() throws Exception {
 
         final Harness h = new Harness(1000);
         final Map<Long, Long> ref = new HashMap<>();
@@ -344,7 +345,7 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
             ref.put(key, key);
         }
 
-        h.close(null); // the held-back task runs late: it continues from there, or finds the migration finished
+        h.close(null); // the worker comes late: it continues from there, or finds the migration finished
         assertEquals(4096, h.table.capacity());
         assertEquals(0, h.verify(ref, "copied by the table"));
     }
@@ -365,7 +366,7 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         try {
             assertEquals(0L, h.table.get(firstSegmentKey)); // missing - known only once its segment is copied
             assertTrue("interrupt status kept", Thread.currentThread().isInterrupted());
-            h.table.close(); // finishes the migration - and waits for the copying task to end, interrupted too
+            h.table.close(); // finishes the migration
             assertTrue("interrupt status kept", Thread.currentThread().isInterrupted());
         } finally {
             Thread.interrupted();
@@ -375,17 +376,18 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
     }
 
     /**
-     * Fills the harness table up to the resize, then starts the migration (the copying task held back).
+     * Fills the harness table up to the resize, then starts the migration (no worker serving it).
      *
      * @return a key homed in the first segment of the migration - its lookup waits for the migrator
      */
     private static long startMigrationHeldBack(Harness h, Map<Long, Long> ref) throws Exception {
         final Random rand = new Random(5L);
-        while (ARRAY_FEATURE.get(h.table) == null) {
+        while (!h.allocationRequested()) {
             final long key = rand.nextLong() | 1L;
             h.table.put(key, 1L);
             ref.put(key, 1L);
         }
+        h.allocate();
         final long[] old = (long[]) DATA.get(h.table);
         final int slotMask = (old.length >> 1) - 1;
         h.table.get(keyWithSlot(1, (old.length >> 1) * 3 / 4, slotMask)); // starts the migration
@@ -402,12 +404,13 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         final Map<Long, Long> ref = new HashMap<>();
         final Random rand = new Random(seed);
 
-        while (ARRAY_FEATURE.get(h.table) == null) {
+        while (!h.allocationRequested()) {
             final long key = rand.nextLong() | 1L;
             final long value = rand.nextLong();
             h.table.put(key, value);
             ref.put(key, value);
         }
+        h.allocate();
 
         final long[] old = (long[]) DATA.get(h.table);
         final int len = old.length;              // longs in the old array
@@ -501,54 +504,58 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         return lost == 0;
     }
 
-    /** A table whose copying task is held back for the test, plus the helpers to drive and check it. */
+    /** A table whose migration service has no worker - the test plays it - plus the helpers to drive and check it. */
     private static final class Harness {
 
-        final AtomicReference<Runnable> copyTask = new AtomicReference<>();
+        final MigrationService service = new MigrationService();
         final AtomicReference<Throwable> migratorError = new AtomicReference<>();
         final LongLongLL2Hashtable table;
+        private volatile boolean stopMigrator;
 
         Harness(int expectedSize) {
             this(expectedSize, LongLongLL2Hashtable.DEFAULT_HANG_TIMEOUT);
         }
 
         Harness(int expectedSize, Duration hangTimeout) {
-            // the first task allocates the new array (run here), the second one is the copying - held back
-            final AtomicInteger executions = new AtomicInteger();
-            final Executor executor = task -> {
-                if (executions.getAndIncrement() % 2 == 0) {
-                    task.run();
-                } else {
-                    copyTask.set(task);
-                }
-            };
-            table = LongLongLL2Hashtable.builder().expectedSize(expectedSize).executor(executor).syncResizeBelow(0)
-                    .hangTimeout(hangTimeout).build();
+            table = LongLongLL2Hashtable.builder().migrationService(service).expectedSize(expectedSize)
+                    .syncResizeBelow(0).hangTimeout(hangTimeout).build();
+        }
+
+        boolean allocationRequested() throws IllegalAccessException {
+            return ALLOCATING.getBoolean(table);
+        }
+
+        /** the worker's allocation of the requested array - without copying anything */
+        void allocate() {
+            assertTrue("allocated", service.serveAllocations());
         }
 
         HashtableAsync2Resizer resizer() throws IllegalAccessException {
             final HashtableAsync2Resizer r = (HashtableAsync2Resizer) RESIZER.get(table);
             assertNotNull("migration not started", r);
-            assertNotNull("copying task not submitted", copyTask.get());
             return r;
         }
 
         /**
-         * Runs the steps, then the real copying task, which continues from the published progress. The steps count as
-         * the started task: the table waits for them instead of copying itself.
+         * Runs the steps as the worker in the middle of a segment - the table waits for them instead of copying
+         * itself - then serves the table as the worker does, continuing from the published progress, until close().
          */
         Thread startMigrator(Steps steps) throws IllegalAccessException {
             final HashtableAsync2Resizer r = (HashtableAsync2Resizer) RESIZER.get(table);
             if (r != null) {
-                STATE.setVolatile(r, RUNNING);
+                STATE.setVolatile(r, WORKER);
             }
             final Thread thread = new Thread(() -> {
                 try {
                     steps.run();
                     if (r != null) {
-                        STATE.setVolatile(r, NOT_STARTED); // the real task starts it again
+                        STATE.setVolatile(r, IDLE);
                     }
-                    copyTask.get().run();
+                    while (!stopMigrator) {
+                        if (!service.serveOnce()) {
+                            Thread.onSpinWait();
+                        }
+                    }
                 } catch (Throwable e) {
                     migratorError.set(e);
                 }
@@ -558,11 +565,12 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
             return thread;
         }
 
-        /** completes the migration; without a migrator thread the real task runs on a helper */
+        /** completes the migration; without a migrator thread one is started */
         void close(Thread migrator) throws InterruptedException, IllegalAccessException {
             final Thread m = migrator != null ? migrator : startMigrator(() -> {
             });
             table.close();
+            stopMigrator = true;
             m.join(TimeUnit.SECONDS.toMillis(20));
             if (migratorError.get() != null) {
                 throw new AssertionError("migrator failed", migratorError.get());

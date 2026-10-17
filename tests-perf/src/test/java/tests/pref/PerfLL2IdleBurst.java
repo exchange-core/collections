@@ -1,6 +1,7 @@
 package tests.pref;
 
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
+import exchange.core2.collections.hashtable.MigrationService;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,20 +10,19 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.Arrays;
 import java.util.Random;
-import java.util.concurrent.CompletableFuture;
 
 /**
- * Lookups right after the application was quiet in the middle of a migration. The migrator, done with its segment,
- * backs off - parks, up to 1 ms at a time; the lookups after the quiet period authorize the next segments and wait
- * for the migrator whenever they need one of them.
+ * Lookups right after the application was quiet in the middle of a migration. The worker, done with its segment,
+ * backs off - parks, with the default wait; the lookups after the quiet period authorize the next segments and need
+ * them copied, by the worker or by themselves.
  * <p>
- * A trial: a table of 4096 slots (segments of 1/16) in its first migration, the default executor (a daemon thread per
- * task), quiet for {@code idleMs}, then a burst of lookups of random present keys, each one timed. Reported: the
- * percentiles over all burst lookups, and those of the slowest lookup per burst.
+ * A trial: a table of 4096 slots (segments of 1/16) in its first migration, on a migration service of its own, quiet
+ * for {@code idleMs}, then a burst of lookups of random present keys, each one timed. Reported: the percentiles over
+ * all burst lookups, and those of the slowest lookup per burst.
  * <pre>
- * -Dburst.trials (default 300), -Dburst.idleMs (default 20), -Dburst.size (default 200)
+ * -Dburst.trials (default 300), -Dburst.idleMs (default 20), -Dburst.size (default 200), -Dburst.wait (default
+ * SPIN_THEN_PARK, or BUSY_SPIN)
  * </pre>
- * Uses no API newer than the builder, so it runs against older collections-core builds too.
  */
 public class PerfLL2IdleBurst {
 
@@ -34,7 +34,9 @@ public class PerfLL2IdleBurst {
     private static final int BURST = Integer.getInteger("burst.size", 200);
 
     private static final VarHandle RESIZER = field("resizer", resizerClass());
-    private static final VarHandle ARRAY_FEATURE = field("arrayFeature", CompletableFuture.class);
+    private static final VarHandle ALLOCATING = field("allocating", boolean.class);
+    private static final MigrationService.WaitStrategy WAIT =
+            MigrationService.WaitStrategy.valueOf(System.getProperty("burst.wait", "SPIN_THEN_PARK"));
 
     private long sink;
 
@@ -46,11 +48,12 @@ public class PerfLL2IdleBurst {
         final Random rand = new Random(7L);
 
         for (int t = -WARMUP_TRIALS; t < TRIALS; t++) {
-            try (LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().expectedSize(2000).syncResizeBelow(0)
-                    .build()) {
+            try (MigrationService service = MigrationService.builder().waitStrategy(WAIT).start();
+                 LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().migrationService(service).expectedSize(2000)
+                         .syncResizeBelow(0).build()) {
                 final long[] keys = new long[4096];
                 int n = 0;
-                while (ARRAY_FEATURE.get(table) == null && RESIZER.get(table) == null) {
+                while (!(boolean) ALLOCATING.get(table) && RESIZER.get(table) == null) {
                     final long key = rand.nextLong() | 1L;
                     table.put(key, key);
                     keys[n++] = key;

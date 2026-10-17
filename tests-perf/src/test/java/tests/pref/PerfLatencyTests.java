@@ -13,6 +13,7 @@ import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
 import exchange.core2.collections.hashtable.ILongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
+import exchange.core2.collections.hashtable.MigrationService;
 import javolution.util.FastMap;
 import org.HdrHistogram.Histogram;
 import org.agrona.collections.Long2LongHashMap;
@@ -26,7 +27,6 @@ import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.function.BiFunction;
 import java.util.function.Function;
@@ -55,15 +55,9 @@ public class PerfLatencyTests {
     private static final int WARMUP_ENTRIES = 20_000_000;
 
 
-    final Executor CORE_LOCK_EXECUTOR = task -> {
-        Thread thread = new Thread(() -> {
-            try (CpuAffinity affinity = CpuAffinity.acquireCore()) {
-                Thread.currentThread().setName("AFC" + affinity.cpu());
-                task.run();
-            }
-        });
-        thread.start();
-    };
+    /** LL2 migration: a worker spinning on a core of its own */
+    final MigrationService LL2_SERVICE = MigrationService.builder()
+            .waitStrategy(MigrationService.WaitStrategy.BUSY_SPIN).threadInit(CpuAffinity::acquireCore).start();
 
     @Test
     public void benchmarkBasic() {
@@ -85,7 +79,7 @@ public class PerfLatencyTests {
 
         benchmarkAbstract(
                 (long[] kv) -> {
-                    final ILongLongHashtable hashtable = new LongLongLL2Hashtable(CORE_LOCK_EXECUTOR);
+                    final ILongLongHashtable hashtable = LongLongLL2Hashtable.builder().migrationService(LL2_SERVICE).build();
                     for (long l : kv) hashtable.put(l, l);
                     return hashtable;
                 },
@@ -691,7 +685,7 @@ public class PerfLatencyTests {
         //try {
         try (CpuAffinity ignore = CpuAffinity.acquireCore()) {
             final int prefills = 5;
-            final ILongLongHashtable map = new LongLongLL2Hashtable(1000000, CORE_LOCK_EXECUTOR);
+            final ILongLongHashtable map = LongLongLL2Hashtable.builder().migrationService(LL2_SERVICE).expectedSize(1000000).build();
             //ILongLongHashtable map = new LongLongHashtable();
             //Long2LongHashMap map = new Long2LongHashMap(0L);
             //final LongAdaptiveRadixTreeMap<Long> map = new LongAdaptiveRadixTreeMap<>();
@@ -702,7 +696,7 @@ public class PerfLatencyTests {
                 for (long key : buf) {
                     map.put(key, key);
                 }
-                //map = new LongLongLL2Hashtable(CORE_LOCK_EXECUTOR);
+                //map = LongLongLL2Hashtable.builder().migrationService(LL2_SERVICE).build();
             }
             log.debug("Prefilling done");
 

@@ -1,6 +1,7 @@
 package tests.stress;
 
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
+import exchange.core2.collections.hashtable.MigrationService;
 import org.agrona.BitUtil;
 import org.agrona.collections.Long2LongHashMap;
 import org.agrona.collections.MutableInteger;
@@ -23,6 +24,9 @@ import static org.junit.Assert.assertTrue;
 public class LongLongLL2HashtableStressTest {
 
     private static final Logger log = LoggerFactory.getLogger(LongLongLL2HashtableStressTest.class);
+
+    /** one worker for the tables of all the test threads */
+    private static final MigrationService SERVICE = MigrationService.builder().start();
 
     @Test
     public void should_upsize_single_thread() {
@@ -69,7 +73,7 @@ public class LongLongLL2HashtableStressTest {
 
         for (int iteration = 0; iteration < iterations; iteration++) {
 
-            final LongLongLL2Hashtable hashtable = new LongLongLL2Hashtable();
+            final LongLongLL2Hashtable hashtable = LongLongLL2Hashtable.builder().migrationService(SERVICE).build();
 //            final LongLongHashtable hashtable = new LongLongHashtable();
             //final Map<Long, Long> refMap = new HashMap<>();
             final Long2LongHashMap refMap = new Long2LongHashMap(0L);

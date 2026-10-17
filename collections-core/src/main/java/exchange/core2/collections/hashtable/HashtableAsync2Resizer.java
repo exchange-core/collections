@@ -3,36 +3,47 @@ package exchange.core2.collections.hashtable;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
-import java.util.concurrent.locks.LockSupport;
 
 import static exchange.core2.collections.hashtable.HashingUtils.NOT_ALLOWED_KEY;
 
-class HashtableAsync2Resizer {
-
+/**
+ * One migration of a {@link LongLongLL2Hashtable}: the old array copied into the new one, a segment at a time. The
+ * table authorizes a segment (allowedPosition); whoever gets to it first copies it - the worker of the
+ * {@link MigrationService} ({@link #doWork()}), or the table itself where an operation needs the segment
+ * ({@link #copyIfIdle()}). The state makes that exclusive: a CAS from IDLE takes the segment, the copier sets IDLE
+ * again. The table waits only for a segment the worker is copying at that moment.
+ * <p>
+ * A new instance per migration - it doubles as its generation: a worker late on an old migration touches only the old
+ * instance. Holds the arrays, never the table.
+ */
+final class HashtableAsync2Resizer {
 
     /**
      * allowedPosition value meaning "stop now" - published by the hashtable in switchToNewArray().
      */
     public static final int FINISH_SIGNAL = -1;
 
-    /**
-     * Spin budget before the migrator starts backing off. Long enough to cover the usual gap
-     * between two consecutive setAllowedPosition() calls, so a busy table never parks the migrator.
-     */
-    private static final int SPINS_BEFORE_PARK = 64 * 1024;
-    private static final int YIELD_SPIN_MASK = 1023;
-    private static final long PARK_INITIAL_NANOS = 1_000L;
-    private static final long PARK_BACKOFF_FACTOR = 100L;
-    private static final long PARK_MAX_NANOS = 1_000_000L; // 1ms - migration progress only
+    private static final int IDLE = 0;
+    private static final int WORKER = 1;
+    private static final int TABLE = 2;
+    private static final int FAILED = 3;
+    private static final VarHandle STATE;
+
+    static {
+        try {
+            STATE = MethodHandles.lookup().findVarHandle(HashtableAsync2Resizer.class, "state", int.class);
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
 
     private final long[] srcData;
     private final long[] dstData;
     private final int newMask;
 
     /**
-     * Written by the application (backwards cluster extension), read by the migrator - it is the
-     * termination condition of {@link #copy()}, so a non-published write means the migrator would
-     * never stop.
+     * Written by the application (backwards cluster extension), read by the copier - the end of the
+     * migration.
      */
     private volatile int startingPosition;
 
@@ -54,41 +65,14 @@ class HashtableAsync2Resizer {
      */
     private volatile boolean allMigrated = false;
 
-    /** the thread currently running {@link #copy()}, null before it starts and after it returns */
-    private volatile Thread migratorThread;
+    /** who copies right now: IDLE, WORKER, TABLE - or FAILED, for good */
+    private volatile int state = IDLE;
 
-    /** the migrator was interrupted while backing off - set again when copy() returns (migrator thread only) */
-    private boolean interrupted;
-
-    /** the migrator is parked, or about to park - setAllowedPosition() wakes it */
-    private volatile boolean parked;
-
-    /*
-     * Who copies. Until the copying task starts (NEW) the table copies the authorized segments itself, one at a time
-     * (TABLE), where it would otherwise wait for the migrator: the task may never start - the executor rejected it,
-     * runs it on the table's thread, or queues it behind busy threads. A task that starts (RUNNING) copies the rest.
-     */
-    private static final int NEW = 0;
-    private static final int RUNNING = 1;
-    private static final int TABLE = 2;
-    private static final VarHandle STATE;
-
-    static {
-        try {
-            STATE = MethodHandles.lookup().findVarHandle(HashtableAsync2Resizer.class, "state", int.class);
-        } catch (ReflectiveOperationException e) {
-            throw new ExceptionInInitializerError(e);
-        }
-    }
-
-    private volatile int state = NEW;
-
-    /** the thread that started the migration - the copying task must not run there, see copy() */
-    private final Thread starter;
+    /** what the worker failed with - the table rethrows it */
+    private volatile Throwable failure;
 
 
-    public HashtableAsync2Resizer(long[] srcData, long[] dstData, int startingPosition, int allowedPosition,
-                                  Thread starter) {
+    HashtableAsync2Resizer(long[] srcData, long[] dstData, int startingPosition, int allowedPosition) {
         this.srcData = srcData;
         this.dstData = dstData;
         this.newMask = srcData.length - 1;
@@ -96,7 +80,6 @@ class HashtableAsync2Resizer {
         // startingPosition is a gap and is never copied - start right after it (wrapping around)
         this.toProcessPosition = (startingPosition + 2) & (srcData.length - 1);
         this.allowedPosition = allowedPosition;
-        this.starter = starter;
     }
 
     /**
@@ -153,21 +136,11 @@ class HashtableAsync2Resizer {
         return newMask;
     }
 
-
     /**
-     * Authorizes the migrator up to allowedPosition - and wakes it if it is backing off: the operations after this one
-     * may need the segment right away. Only a parked migrator is unparked, a busy table pays one volatile read.
+     * Authorizes the copying up to allowedPosition. The table wakes the worker after it (Slot.authorized()).
      */
     public void setAllowedPosition(int allowedPosition) {
         this.allowedPosition = allowedPosition;
-        // Dekker with doCopy(): the migrator publishes parked, then reads allowedPosition - one of the two threads sees
-        // the other's write, so the authorization is not missed (an unpark before the park makes it return at once)
-        if (parked) {
-            final Thread thread = migratorThread;
-            if (thread != null) {
-                LockSupport.unpark(thread);
-            }
-        }
     }
 
     // only gaps
@@ -183,142 +156,76 @@ class HashtableAsync2Resizer {
         this.startingPosition = startingPosition;
     }
 
-    /** true once the copying task has started - it copies the rest, and leaves copy() once signalled to finish */
-    public boolean isMigratorRunning() {
-        return state == RUNNING;
+    /**
+     * The worker's turn: copies the authorized segment, unless there is none or the table is copying it.
+     *
+     * @return true if it copied
+     */
+    boolean doWork() {
+        final int allowed = allowedPosition;
+        if (allowed == FINISH_SIGNAL || allowed == toProcessPosition || state != IDLE
+                || !STATE.compareAndSet(this, IDLE, WORKER)) {
+            return false;
+        }
+        final boolean copied;
+        try {
+            copied = copyAuthorized();
+        } catch (Throwable e) {
+            // nobody copies any more - the table rethrows it instead of waiting for the hang timeout
+            failure = e;
+            state = FAILED;
+            return true;
+        }
+        state = IDLE;
+        return copied;
     }
 
     /**
-     * Called by the table where it would wait for the migrator: if the copying task has not started, the table copies
-     * what it has authorized itself, as the task would. The task, if it starts later, continues from there.
+     * The table's turn, where it would wait for the worker: copies the authorized segment itself, unless the worker is
+     * copying it right now.
      *
-     * @return false if the task has started - it copies
+     * @return false if the worker is copying (or has failed) - the table waits
      */
-    public boolean copyIfNotStarted() {
-        if (state != NEW || !STATE.compareAndSet(this, NEW, TABLE)) {
+    boolean copyIfIdle() {
+        if (state != IDLE || !STATE.compareAndSet(this, IDLE, TABLE)) {
             return false;
         }
         try {
-            final int allowed = allowedPosition;
-            final int processed = toProcessPosition;
-            if (processed != allowed) {
-                copySegment(processed, allowed);
-            }
+            copyAuthorized();
         } finally {
-            state = NEW;
+            state = IDLE;
         }
         return true;
     }
 
+    /**
+     * Copies [toProcessPosition, allowedPosition) and publishes the progress - by the one that holds the state. Reads
+     * the positions only now: before the CAS the other one may have copied the segment, and the table may have ended
+     * the migration.
+     */
+    private boolean copyAuthorized() {
+        final int allowed = allowedPosition;
+        final int processed = toProcessPosition;
+        if (allowed == FINISH_SIGNAL || processed == allowed) {
+            return false;
+        }
+        copySegment(processed, allowed);
+        return true;
+    }
+
+    /** the failure of the worker, null if none */
+    Throwable failure() {
+        return failure;
+    }
+
+    /** the table ended the migration: the worker does nothing more here */
+    void finish() {
+        allowedPosition = FINISH_SIGNAL;
+    }
+
     String stateName() {
         final int s = state;
-        return s == NEW ? "not started" : s == RUNNING ? "running" : "copied by the table";
-    }
-
-    public void copy() {
-        if (Thread.currentThread() == starter) {
-            // the executor runs the task on the table's thread - right away (Runnable::run, CallerRunsPolicy) or later
-            // (the application's own event loop): waiting there for the next authorization would wait for itself.
-            // The table copies where it needs to.
-            return;
-        }
-        // the table may be copying a segment right now - it does until the task starts
-        while (!STATE.compareAndSet(this, NEW, RUNNING)) {
-            Thread.onSpinWait();
-        }
-
-        migratorThread = Thread.currentThread();
-        try {
-            doCopy();
-        } finally {
-            migratorThread = null;
-            if (interrupted) {
-                Thread.currentThread().interrupt();
-            }
-        }
-    }
-
-    private void doCopy() {
-
-        int allowedLocal;
-        int processedLocal = toProcessPosition;
-
-      //  log.info("allowedPosition={} toProcessPosition={}", allowedPosition, toProcessPosition);
-
-        int spins = 0;
-        long parkNanos = 0;
-
-        while (true) {
-
-            allowedLocal = allowedPosition;
-
-            if (allowedLocal == FINISH_SIGNAL) {
-                // switchToNewArray() gave up on us - the table no longer reads dstData through
-                // this resizer, so stop immediately instead of copying into a detached array
-                return;
-            }
-
-            if (processedLocal != allowedLocal) {
-                if (copySegment(processedLocal, allowedLocal)) {
-                    return;
-                }
-                processedLocal = allowedLocal;
-
-                spins = 0;
-                parkNanos = 0;
-                continue;
-            }
-
-            // Nothing authorized yet. Spin first - the hand-over is normally sub-microsecond, and
-            // the migrator usually runs on its own pinned core, so spinning is the cheap case.
-            if (spins < SPINS_BEFORE_PARK) {
-                spins++;
-                Thread.onSpinWait();
-                if ((spins & YIELD_SPIN_MASK) == 0) {
-                    // the application may share this core (threads started by a pinned application inherit its
-                    // core): it can authorize the next segment only when it gets the core back. On a core of its own
-                    // the yield returns at once - a syscall every ~1024 spins
-                    Thread.yield();
-                }
-                continue;
-            }
-
-            // The application went quiet. Back off instead of holding a core forever: a live but
-            // idle table used to pin its migrator (and, with an affinity-locked executor, its core)
-            // for as long as the table existed.
-            //
-            // The table unparks a parked migrator when it authorizes the next segment (setAllowedPosition): the
-            // operations after the authorizing one may need that segment, and used to wait out the rest of a park of
-            // up to 1ms. The unpark syscall is paid once after a quiet period, a busy table never parks the migrator.
-            parkNanos = (parkNanos == 0)
-                    ? PARK_INITIAL_NANOS
-                    : Math.min(parkNanos * PARK_BACKOFF_FACTOR, PARK_MAX_NANOS);
-
-            // An interrupt does not stop the migration: entries put into the new array exist only there, the
-            // table needs it complete (the hang detection on the application side covers a migrator that never
-            // gets authorized). But with the interrupt status set parkNanos returns at once - a busy loop. Clear
-            // it here, set it again when copy() returns.
-            if (Thread.interrupted()) {
-                interrupted = true;
-            }
-            parked = true;
-            if (allowedPosition == allowedLocal) { // not authorized since - see setAllowedPosition
-                LockSupport.parkNanos(this, parkNanos);
-            }
-            parked = false;
-        }
-    }
-
-    /**
-     * Tells the migrator to stop and wakes it if it is backing off, so a shutdown does not have to
-     * wait out the current park interval. Safe to call repeatedly and after the migrator finished.
-     */
-    public void signalFinish() {
-        allowedPosition = FINISH_SIGNAL;
-        final Thread thread = migratorThread;
-        if (thread != null) {
-            LockSupport.unpark(thread);
-        }
+        return s == IDLE ? "idle" : s == WORKER ? "worker copying" : s == TABLE ? "table copying" : "worker failed";
     }
 
     /**
@@ -341,7 +248,6 @@ class HashtableAsync2Resizer {
     }
 
     public void copyInterval(final int from, int to) {
-       // log.debug("(A) Copying range {}..{} ...", from, to);
 
         // 'to' is only ever reached by even wrapping increments - anything else (notably the
         // FINISH_SIGNAL) would make the loop below run forever
@@ -355,8 +261,6 @@ class HashtableAsync2Resizer {
             final long key = srcData[pos];
             if (key != NOT_ALLOWED_KEY) {
                 final int offset = HashingUtils.findFreeOffset(key, dstData, newMask);
-                // TODO // TODO non epmty gp piblem - should not put anything into FROM ??
-
                 dstData[offset] = key;
                 dstData[offset + 1] = srcData[pos + 1];
             }
@@ -366,7 +270,6 @@ class HashtableAsync2Resizer {
                 pos = 0;
             }
         } while (pos != to);
-        // log.debug("(A) Copied range {}..{}", from, to);
     }
 
 

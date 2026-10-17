@@ -5,6 +5,7 @@ import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
 import exchange.core2.collections.hashtable.ILongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
+import exchange.core2.collections.hashtable.MigrationService;
 import org.agrona.collections.Long2LongHashMap;
 import org.junit.Test;
 import org.slf4j.Logger;
@@ -20,6 +21,8 @@ import java.util.function.Function;
 
 public class PerfThroughputTests {
     private static final Logger log = LoggerFactory.getLogger(PerfThroughputTests.class);
+
+    private static final MigrationService SERVICE = MigrationService.builder().start();
 
     @Test
     public void benchmarkBasic() {
@@ -40,7 +43,7 @@ public class PerfThroughputTests {
     public void benchmarkLL2() {
         benchmarkAbstract(
                 (long[] kv) -> {
-                    final ILongLongHashtable hashtable = new LongLongLL2Hashtable();
+                    final ILongLongHashtable hashtable = LongLongLL2Hashtable.builder().migrationService(SERVICE).build();
                     for (long l : kv) hashtable.put(l, l);
                     return hashtable;
                 },
