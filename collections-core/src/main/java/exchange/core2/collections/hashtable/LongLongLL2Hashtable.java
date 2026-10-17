@@ -896,6 +896,10 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
      * authorized segment itself. Otherwise spins, and every 1024 spins rethrows a failure of the migrator and checks
      * the hang timeout. The clock starts at the first check: the usual wait - a segment, a microsecond or two - does
      * not read it, and the timeout starts at most 1024 spins late.
+     * <p>
+     * Every 1024 spins it also yields: the migrator may share this core - the default executor's threads started by a
+     * pinned application inherit its core - and then it runs only when this thread gives the core up. Without that,
+     * the wait lasted until the scheduler preempted this thread: a put took hundreds of milliseconds at p50.
      *
      * @param spins of this wait, from 1
      * @return true if the migrator is stuck: the hang timeout is over
@@ -908,6 +912,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         }
         Thread.onSpinWait();
         if ((spins & HANG_CHECK_SPIN_MASK) == 0) {
+            Thread.yield();
             rethrowMigratorFailure();
             final long now = System.nanoTime();
             if (spins == HANG_CHECK_SPIN_MASK + 1) {

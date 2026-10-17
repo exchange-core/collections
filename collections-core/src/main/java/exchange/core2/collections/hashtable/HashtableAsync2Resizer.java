@@ -20,6 +20,7 @@ class HashtableAsync2Resizer {
      * between two consecutive setAllowedPosition() calls, so a busy table never parks the migrator.
      */
     private static final int SPINS_BEFORE_PARK = 64 * 1024;
+    private static final int YIELD_SPIN_MASK = 1023;
     private static final long PARK_INITIAL_NANOS = 1_000L;
     private static final long PARK_BACKOFF_FACTOR = 100L;
     private static final long PARK_MAX_NANOS = 1_000_000L; // 1ms - migration progress only
@@ -273,6 +274,12 @@ class HashtableAsync2Resizer {
             if (spins < SPINS_BEFORE_PARK) {
                 spins++;
                 Thread.onSpinWait();
+                if ((spins & YIELD_SPIN_MASK) == 0) {
+                    // the application may share this core (threads started by a pinned application inherit its
+                    // core): it can authorize the next segment only when it gets the core back. On a core of its own
+                    // the yield returns at once - a syscall every ~1024 spins
+                    Thread.yield();
+                }
                 continue;
             }
 

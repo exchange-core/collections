@@ -108,6 +108,14 @@
   array never moved the migration on - both arrays and the migrator stayed alive for as long as they went on.
   Now every operation during a migration authorizes the next segment once the migrator has copied the current
   one (one volatile read). New `migrationInProgress()` tells whether a migration is in flight.
+- **`LongLongLL2Hashtable` stalled for hundreds of milliseconds when the migrator shared the application's
+  core** - the default executor in a pinned application, whose threads inherit its core. The application
+  spun waiting for the migrator, which could run only once the scheduler preempted it; then the migrator spun
+  waiting for the next segment. Both now yield the CPU every 1024 spins (a `sched_yield` that returns at once
+  on a core of their own). In the new `ll2-scenarios` benchmark: the pinned default configuration went from
+  270-350 ms to 144 ns at p50 (p99 25 ms: the allocation and the copying still take the application's CPU);
+  four tables growing at once with a thread per task on two shared CPUs from 0.6-2.8 ms to 510 ns at p99.9;
+  the spinning migrator on its own core unchanged.
 - **Operations after a quiet period waited up to ~1 ms for a sleeping migrator.** After a few milliseconds
   without new segments the migrator backs off, parking up to 1 ms at a time, and an authorization did not wake
   it: the operations needing the new segment waited out the rest of the park. Now the authorizing operation
