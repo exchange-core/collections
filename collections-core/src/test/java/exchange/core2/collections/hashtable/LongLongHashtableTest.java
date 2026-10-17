@@ -30,6 +30,23 @@ public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
         return LongLongHashtable.builder().expectedSize(expectedSize).maxCapacity(maxCapacity).build();
     }
 
+    @Override
+    protected ILongLongHashtable createFixed(int expectedSize) {
+        return LongLongHashtable.builder().expectedSize(expectedSize).fixedCapacity().build();
+    }
+
+    @Test
+    public void builder_should_validate_the_max_capacity() {
+        for (int invalid : new int[]{0, 1, 3, 100, -64, HashingUtils.MAX_CAPACITY * 2}) {
+            assertThrows(String.valueOf(invalid), IllegalArgumentException.class,
+                    () -> LongLongHashtable.builder().maxCapacity(invalid));
+        }
+        // smaller than the expected size needs
+        assertThrows(IllegalArgumentException.class,
+                () -> LongLongHashtable.builder().expectedSize(100).maxCapacity(128).build());
+        assertThat(LongLongHashtable.builder().expectedSize(100).maxCapacity(256).build().capacity(), is(256));
+    }
+
     /**
      * integrityCheck is the oracle of other tests here - it must catch what it claims to.
      */

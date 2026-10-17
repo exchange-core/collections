@@ -34,6 +34,14 @@
   was dropped: it cost 1.4-7.3% even at `0`, the XOR with a field can not be folded. `seed()` reports the seed
   in use; `0` keeps the iteration order the same from run to run. The core tests run a second time under a
   seed.
+- **Hashtables: `maxCapacity(int)` and `fixedCapacity()` in the builders** - a table that grows only up to a
+  given capacity, or never resizes at all (the capacity for the expected size). There it takes new keys up to
+  load 0.9, then `put` of a new key throws `IllegalStateException` and changes nothing. A
+  `LongLongLL2Hashtable` of fixed capacity never migrates: no background task, no wait, no second array.
+- **Hashtables: `getOrDefault(key, defaultValue)`** - presence and value in one probe, where `get` can not tell
+  a missing key from one stored with the missing value. The cost of each operation (probes, waits, passes over
+  the array) is now documented in the README and the javadoc - "one probe" in `ILongLongHashtable` was too
+  broad.
 - **`HashtableOpsJmh`** (`tests-perf`, JMH 1.34): average time of the single-key hashtable operations, hits
   and misses, from an L1-resident table to one in DRAM - for A/B runs of `collections-core` builds.
 - **`Automatic-Module-Name`** in the published jars: `exchange.core2.collections`,
@@ -57,7 +65,7 @@
   straight into the new array, while the migrator copies the next segment into the same array. When such a
   key's cluster grew past the migration frontier, both threads wrote the same slots without synchronization:
   the entry of one of them was lost, and `size()` no longer matched the contents. Inserts and removals that
-  reach the frontier now wait until the migrator finishes its segment (at most 1024 slots). Rare with random
+  reach the frontier now wait until the migrator finishes its segment (256 slots, see below). Rare with random
   keys and the default settings — about one write in 20 000 during a migration reaches the frontier — but in
   a stress test that kept growing clusters across the frontier, 15% of the tables lost keys.
 - **`LongLongLL2Hashtable.put` could fail with `IllegalStateException` ("stuck waiting for migration")**
@@ -135,8 +143,8 @@
   flight is separated from the migration code: `put` shrank from 625 to 121 bytes of bytecode, below the JIT's
   inlining limit (FreqInlineSize = 325).
 - **`LongLongLL2Hashtable`: shorter waits during a migration.** An operation on a key whose home is in the
-  segment being copied waits until the migrator finishes the segment. Segments are now at most 256 slots
-  instead of 1024: in the put benchmark (1M puts/s, growing to 4M entries) p99.99 went from 4.6 us to 1.0 us,
+  segment being copied waits until the migrator finishes the segment. Segments are now 256 slots instead
+  of 1024 (each goes on to the end of the cluster at its boundary): in the put benchmark (1M puts/s, growing to 4M entries) p99.99 went from 4.6 us to 1.0 us,
   puts slower than 2 us halved, p99 +1.5%. Each segment costs a hand-over, so copying a large table takes 25%
   longer; the new `PerfLL2MigrationThroughput` benchmark measures that.
 - **`LongLongLL2Hashtable`: configurable hang timeout, interrupts handled.** `Builder.hangTimeout(Duration)`

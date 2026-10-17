@@ -19,8 +19,9 @@ import static exchange.core2.collections.hashtable.HashingUtils.SEED;
  *     <li>Grows by doubling at load factor 0.65. The resize copies the whole table on the calling thread (~7ns per
  *     slot: ~7ms at 2^20 slots) - pre-size the table ({@link Builder#expectedSize}, {@link #ensureCapacity}), or use
  *     {@link LongLongLL2Hashtable} where that pause matters.</li>
- *     <li>Maximum capacity: 2^29 slots, a {@code long[2^30]} (8 GB). There the table stops growing and takes new keys
- *     up to load 0.9, after that a {@code put} of a new key throws {@link IllegalStateException}.</li>
+ *     <li>Maximum capacity: 2^29 slots, a {@code long[2^30]} (8 GB), or lower ({@link Builder#maxCapacity},
+ *     {@link Builder#fixedCapacity} - no resize at all). There the table stops growing and takes new keys up to load
+ *     0.9, after that a {@code put} of a new key throws {@link IllegalStateException} and changes nothing.</li>
  *     <li>Not thread-safe.</li>
  * </ul>
  * The array holds every key XOR-ed with the seed - hashing it then hashes key ^ seed. Stored key 0 marks the empty
@@ -60,8 +61,8 @@ public final class LongLongHashtable implements ILongLongHashtable {
 
         this.upsizeThresholdPerc = 0.65f;
         this.missingValue = builder.missingValue;
-        this.maxCapacity = builder.maxCapacity;
-        final int arraySize = HashingUtils.capacityFor(builder.expectedSize, upsizeThresholdPerc, maxCapacity);
+        final int arraySize = HashingUtils.capacityFor(builder.expectedSize, upsizeThresholdPerc, builder.maxCapacity);
+        this.maxCapacity = builder.fixedCapacity ? arraySize : builder.maxCapacity;
 
         this.data = LinearProbing.newArray(arraySize, missingValue);
         this.mask = (this.data.length / 2) - 1;
@@ -80,6 +81,7 @@ public final class LongLongHashtable implements ILongLongHashtable {
         private int expectedSize = DEFAULT_ARRAY_SIZE;
         private long missingValue = 0L;
         private int maxCapacity = HashingUtils.MAX_CAPACITY;
+        private boolean fixedCapacity;
 
         private Builder() {
         }
@@ -102,10 +104,21 @@ public final class LongLongHashtable implements ILongLongHashtable {
         }
 
         /**
-         * Capacity in slots the table stops growing at - lower than the real maximum only in tests.
+         * Capacity in slots the table grows up to: a power of two, at most and by default 2^29. There it stops
+         * growing - it takes new keys up to load 0.9, then a put of a new key throws {@link IllegalStateException}
+         * and changes nothing; updates and removals go on working.
          */
-        Builder maxCapacity(int maxCapacity) {
-            this.maxCapacity = maxCapacity;
+        public Builder maxCapacity(int maxCapacity) {
+            this.maxCapacity = HashingUtils.checkMaxCapacity(maxCapacity);
+            return this;
+        }
+
+        /**
+         * No resize, ever: the capacity for {@link #expectedSize} is also the maximum ({@link #maxCapacity}). Past
+         * expectedSize the table takes new keys up to load 0.9, with longer probes, then refuses them.
+         */
+        public Builder fixedCapacity() {
+            this.fixedCapacity = true;
             return this;
         }
 
@@ -213,6 +226,14 @@ public final class LongLongHashtable implements ILongLongHashtable {
         final long k = key ^ SEED;
         if (k == NOT_ALLOWED_KEY) return hasZeroKey;
         return data[HashingUtils.findFreeOffset(k, data, mask)] == k;
+    }
+
+    @Override
+    public long getOrDefault(long key, long defaultValue) {
+        final long k = key ^ SEED;
+        if (k == NOT_ALLOWED_KEY) return hasZeroKey ? zeroKeyValue : defaultValue;
+        final int offset = HashingUtils.findFreeOffset(k, data, mask);
+        return data[offset] == k ? data[offset + 1] : defaultValue;
     }
 
     @Override

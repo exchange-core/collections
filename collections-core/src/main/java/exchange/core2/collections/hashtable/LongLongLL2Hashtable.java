@@ -26,8 +26,11 @@ import static exchange.core2.collections.hashtable.HashingUtils.SEED;
  * <ul>
  *     <li>One application thread. Every operation, {@link #get} included, may advance the migration and switch
  *     arrays, so the table is not safe even for concurrent readers.</li>
- *     <li>An operation on a key whose home is in the segment being copied waits for that segment (a 256-slot segment
- *     copies in ~2us). A put that brings the old array to 90% load before the migration ends waits for all of it.</li>
+ *     <li>An operation on a key whose home is in the segment being copied waits for that segment: 256 slots, ~2us to
+ *     copy - and up to the end of the cluster there, a segment ends at a free slot. A put whose probe reaches the
+ *     start of the migration copies the cluster before it on the calling thread. A put that brings the old array to
+ *     90% load before the migration ends waits for all of it. {@link Builder#fixedCapacity} makes a table that
+ *     never resizes, with none of this.</li>
  *     <li>The application drives the migration: every operation authorizes the next segment once the migrator has
  *     copied the current one, whatever its key - and wakes the migrator if it went to sleep while the application
  *     was quiet. A table nobody uses keeps its migration where it is; {@link #migrationInProgress()} tells, and
@@ -214,9 +217,9 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         this.executor = builder.executor;
         this.syncResizeBelow = builder.syncResizeBelow;
         this.hangTimeoutNanos = builder.hangTimeout.toNanos();
-        this.maxCapacity = builder.maxCapacity;
         this.upsizeThresholdPerc = 0.65f;
-        final int arraySize = HashingUtils.capacityFor(builder.expectedSize, upsizeThresholdPerc, maxCapacity);
+        final int arraySize = HashingUtils.capacityFor(builder.expectedSize, upsizeThresholdPerc, builder.maxCapacity);
+        this.maxCapacity = builder.fixedCapacity ? arraySize : builder.maxCapacity;
 
         this.data = LinearProbing.newArray(arraySize, missingValue);
         //this.blockThresholdPerc = 0.6501f;
@@ -241,6 +244,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         private int syncResizeBelow = DEFAULT_SYNC_RESIZE_BELOW;
         private Duration hangTimeout = DEFAULT_HANG_TIMEOUT;
         private int maxCapacity = HashingUtils.MAX_CAPACITY;
+        private boolean fixedCapacity;
 
         private Builder() {
         }
@@ -311,10 +315,19 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         }
 
         /**
-         * Capacity in slots the table stops growing at - lower than the real maximum only in tests.
+         * Capacity in slots the table grows up to - see {@link LongLongHashtable.Builder#maxCapacity}.
          */
-        Builder maxCapacity(int maxCapacity) {
-            this.maxCapacity = maxCapacity;
+        public Builder maxCapacity(int maxCapacity) {
+            this.maxCapacity = HashingUtils.checkMaxCapacity(maxCapacity);
+            return this;
+        }
+
+        /**
+         * No resize, ever - see {@link LongLongHashtable.Builder#fixedCapacity}: no migration, no background task,
+         * no wait for the migrator.
+         */
+        public Builder fixedCapacity() {
+            this.fixedCapacity = true;
             return this;
         }
 
@@ -1041,8 +1054,11 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
 
     /**
      * Segment = 1/16 of the table, clamped: small tables get small segments (async migration works for any size),
-     * large ones keep a bounded segment - an access to a position authorized but not yet copied waits for the
-     * migrator to copy up to it, so the segment size bounds that wait. At 256 slots (was 1024) the put benchmark's
+     * large ones a bounded step - an access to a position authorized but not yet copied waits for the migrator to
+     * copy up to it, so the segment size bounds that wait. The step is not a hard bound: the segment goes on to the
+     * next free slot, a cluster across the step extends it (no cluster may cross a boundary - the migrator and the
+     * application would both write it). Clusters stay short at load 0.65 with keys nobody picked to collide - see
+     * the hash seed. At 256 slots (was 1024) the put benchmark's
      * p99.99 went from 4.6us to 1.0us. The price is a hand-over per segment (~0.3-0.5us of migrator idle time):
      * copying 2^23 slots takes 74ms instead of 58ms, still ~3x faster than one thread fills the table
      * (PerfLL2MigrationThroughput).
@@ -1247,6 +1263,20 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
      * The compound operations take one probe, like put, when no resize is in flight. During a resize they are made of
      * the basic operations, which deal with the migration.
      */
+
+    @Override
+    public long getOrDefault(long key, long defaultValue) {
+
+        final long k = key ^ SEED;
+        if (k == NOT_ALLOWED_KEY) return hasZeroKey ? zeroKeyValue : defaultValue;
+
+        if (arrayFeature != null || resizer != null) {
+            return containsKey(key) ? get(key) : defaultValue;
+        }
+
+        final int offset = HashingUtils.findFreeOffset(k, data, mask);
+        return data[offset] == k ? data[offset + 1] : defaultValue;
+    }
 
     @Override
     public long putIfAbsent(long key, long value) {

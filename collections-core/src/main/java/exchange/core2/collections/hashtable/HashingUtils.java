@@ -46,6 +46,17 @@ final class HashingUtils {
     static final float FULL_LOAD = 0.9f;
 
     /**
+     * @return maxCapacity, if it is a power of two from 2 to {@link #MAX_CAPACITY}
+     */
+    static int checkMaxCapacity(int maxCapacity) {
+        if (maxCapacity < 2 || maxCapacity > MAX_CAPACITY || Integer.bitCount(maxCapacity) != 1) {
+            throw new IllegalArgumentException("max capacity must be a power of two from 2 to " + MAX_CAPACITY
+                    + ": " + maxCapacity);
+        }
+        return maxCapacity;
+    }
+
+    /**
      * Number of slots (a power of two) for a table to hold expectedSize entries without a resize. The tables resize
      * when the size reaches (int) (capacity * loadFactor), so that has to be above expectedSize.
      *
