@@ -6,6 +6,7 @@ import com.koloboke.collect.map.hash.HashLongLongMap;
 import com.koloboke.collect.map.hash.HashLongLongMaps;
 import exchange.core2.collections.affinity.CpuAffinity;
 import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
+import exchange.core2.collections.hashtable.ILongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
@@ -17,7 +18,9 @@ import org.slf4j.LoggerFactory;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.management.CompilationMXBean;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
@@ -33,7 +36,10 @@ import java.util.Set;
 import java.util.Queue;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -49,7 +55,8 @@ import java.util.stream.Collectors;
  *     <li>{@code -Dsamples.count} - samples per CSV (default 100000)</li>
  *     <li>{@code -Dsamples.batch} - operations per service-time sample (default: 1, or enough to make a coarse
  *     clock tick worth under 1ns per operation - 128 on Windows, where nanoTime ticks every 100ns)</li>
- *     <li>{@code -Dsamples.groups} - comma-separated subset of the groups below</li>
+ *     <li>{@code -Dsamples.groups} - comma-separated subset of the groups below; {@code ll2-scenarios} and
+ *     {@code hashtable-collide} run only when named</li>
  *     <li>{@code -Dsamples.warmup.ms} - warm-up limit per service-time series (default 3000); it ends earlier,
  *     once the JIT has been quiet for 300ms</li>
  *     <li>{@code -Daffinity.reserved} - hex mask of CPUs for the pinned threads (default: the kernel's isolated CPUs),
@@ -95,6 +102,7 @@ public class CollectionsLatencySamples {
      * affinity). It takes its own core and busy-polls for tasks, so a resize does not wait for a thread start and
      * its pinning. One table at a time: the copy task spins until its migration is done.
      */
+    private static final List<Thread> SPINNING = new CopyOnWriteArrayList<>();
     private static final Executor LL2_MIGRATOR = spinningExecutorOnOwnCore("ll2-migrator");
 
     static {
@@ -109,6 +117,27 @@ public class CollectionsLatencySamples {
 
     /** With the spinning migrator an async resize starts within microseconds - sync only for the smallest tables. */
     private static final int LL2_SYNC_RESIZE_BELOW = 300;
+
+    /** ll2-scenarios: a thread per task, started by a helper created here - before the measuring thread is pinned */
+    private static final Executor LL2_THREAD_PER_TASK = LongLongLL2Hashtable.newMigratorExecutor();
+
+    /** ll2-scenarios: an executor whose tasks start 1ms late, each on a thread of its own (unpinned, as above) */
+    private static final Executor LL2_TASKS_1MS_LATE = delayedExecutor(1);
+
+    /** hashtable-collide: HashingUtils.hash - package-private in the library - and the seed the tables use */
+    private static final MethodHandle TABLE_HASH;
+    private static final long TABLE_SEED;
+
+    static {
+        try {
+            final Class<?> utils = Class.forName("exchange.core2.collections.hashtable.HashingUtils");
+            final MethodHandles.Lookup lookup = MethodHandles.privateLookupIn(utils, MethodHandles.lookup());
+            TABLE_HASH = lookup.findStatic(utils, "hash", MethodType.methodType(int.class, long.class));
+            TABLE_SEED = (long) lookup.findStaticVarHandle(utils, "SEED", long.class).get();
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
 
     /** Entries in every map, except the working-set and remove groups. */
     private static final int MAP_SIZE = 1_000_000;
@@ -177,6 +206,8 @@ public class CollectionsLatencySamples {
             if (GROUPS.contains("hashtable-working-set")) hashtableWorkingSet();
             if (GROUPS.contains("art-vs-treemap")) artVsTreeMap();
             if (GROUPS.contains("art-keys")) artKeys();
+            if (GROUPS.contains("ll2-scenarios")) ll2Scenarios();
+            if (GROUPS.contains("hashtable-collide")) hashtableCollide();
         }
         log.info("done ({})", sink);
     }
@@ -319,6 +350,174 @@ public class CollectionsLatencySamples {
                 return prev == null ? 0 : prev;
             };
         });
+    }
+
+    /**
+     * LongLongLL2Hashtable configurations and situations, all at the put rate of hashtable-put (1M ops/s, response
+     * time, the same 4M keys):
+     * <ul>
+     *     <li>{@code tuned} - the one of hashtable-put: a spinning migrator on its own core, syncResizeBelow 300</li>
+     *     <li>{@code thread-per-task} - newMigratorExecutor() (created before the pinning), default syncResizeBelow</li>
+     *     <li>{@code defaults-pinned-app} - the no-executor constructor in a pinned application: the migrator threads
+     *     inherit the application's core and share it - the pitfall newMigratorExecutor() is there for</li>
+     *     <li>{@code tasks-1ms-late} - the executor starts every task 1ms late: until then the table copies itself</li>
+     *     <li>{@code 4-tables-*} - four tables growing at once (puts round-robin, 1M keys each): one shared spinning
+     *     migrator, whose copying task holds it for a whole migration, vs a thread per task</li>
+     *     <li>{@code mixed} - 50% puts of new keys, 30% gets and 20% removals of keys put before, LL2 vs
+     *     LongLongHashtable: the table grows to ~1.2M entries</li>
+     * </ul>
+     * The log adds what the measuring thread allocated and the CPU of the other threads (migrators, JIT, GC - and the
+     * spinning migrators, which burn their core whether there is work or not).
+     */
+    private void ll2Scenarios() throws IOException {
+        final String group = "ll2-scenarios";
+        final long[] keys = randomKeys(PUT_KEYS, 3);
+
+        fixedRate(group, "ll2-put-tuned", keys,
+                () -> ll2Put(new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_MIGRATOR, LL2_SYNC_RESIZE_BELOW)));
+        fixedRate(group, "ll2-put-thread-per-task", keys,
+                () -> ll2Put(new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_THREAD_PER_TASK)));
+        fixedRate(group, "ll2-put-defaults-pinned-app", keys,
+                () -> ll2Put(new LongLongLL2Hashtable(INITIAL_CAPACITY)));
+        fixedRate(group, "ll2-put-tasks-1ms-late", keys,
+                () -> ll2Put(new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_TASKS_1MS_LATE, LL2_SYNC_RESIZE_BELOW)));
+        fixedRate(group, "ll2-put-4-tables-shared-migrator", keys, () -> ll2PutTables(4,
+                () -> new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_MIGRATOR, LL2_SYNC_RESIZE_BELOW)));
+        fixedRate(group, "ll2-put-4-tables-thread-per-task", keys, () -> ll2PutTables(4,
+                () -> new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_THREAD_PER_TASK, LL2_SYNC_RESIZE_BELOW)));
+
+        final int[] picks = mixedPicks(keys.length, 16);
+        fixedRate(group, "ll2-mixed", keys,
+                () -> mixed(new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_MIGRATOR, LL2_SYNC_RESIZE_BELOW), picks));
+        fixedRate(group, "exchange-hashtable-mixed", keys, () -> mixed(new LongLongHashtable(INITIAL_CAPACITY), picks));
+    }
+
+    private static Bench ll2Put(LongLongLL2Hashtable m) {
+        return new Bench() {
+            @Override
+            public long run(long[] k, int from, int to) {
+                return m.put(k[from], k[from]);
+            }
+
+            @Override
+            public void close() {
+                m.close();
+            }
+        };
+    }
+
+    /** n (a power of two) tables, the keys round-robin */
+    private static Bench ll2PutTables(int n, Supplier<LongLongLL2Hashtable> table) {
+        final LongLongLL2Hashtable[] tables = new LongLongLL2Hashtable[n];
+        for (int t = 0; t < n; t++) tables[t] = table.get();
+        return new Bench() {
+            @Override
+            public long run(long[] k, int from, int to) {
+                return tables[from & (n - 1)].put(k[from], k[from]);
+            }
+
+            @Override
+            public void close() {
+                for (LongLongLL2Hashtable t : tables) t.close();
+            }
+        };
+    }
+
+    /** operation i: put of keys[i] if i % 10 < 5, otherwise a get (5..7) or a removal (8, 9) of keys[picks[i]] */
+    private static Bench mixed(ILongLongHashtable m, int[] picks) {
+        return new Bench() {
+            @Override
+            public long run(long[] k, int from, int to) {
+                final int op = from % 10;
+                if (op < 5) return m.put(k[from], k[from]);
+                final long key = k[picks[from]];
+                return op < 8 ? m.get(key) : m.remove(key);
+            }
+
+            @Override
+            public void close() {
+                if (m instanceof LongLongLL2Hashtable ll2) ll2.close();
+            }
+        };
+    }
+
+    /** for every non-put operation of mixed(): the index of a key put before it */
+    private static int[] mixedPicks(int n, long seed) {
+        final Random rand = new Random(seed + SEED);
+        final int[] picks = new int[n];
+        for (int i = 0; i < n; i++) {
+            if (i % 10 >= 5) {
+                // a put index (j % 10 < 5) below i: i % 10 >= 5, so (i / 10) * 10 + 4 < i
+                picks[i] = rand.nextInt(i / 10 + 1) * 10 + rand.nextInt(5);
+            }
+        }
+        return picks;
+    }
+
+    /**
+     * Keys picked to collide - as anyone who knows the hash function can, client order ids for one: 2000 keys whose
+     * home slot under seed 0 is in the first 64 of the 2^21 slots a 1M-entry table has, stored with 1M random keys.
+     * Service time of their gets. Under seed 0 they pile up into one cluster; run again with
+     * {@code -Dexchange.hashtable.seed=random}: the same keys scatter.
+     */
+    private void hashtableCollide() throws IOException {
+        final String group = "hashtable-collide";
+        final long[] stored = randomKeys(MAP_SIZE, 1);
+        final long[] colliding = collidingKeys(2000, 64, (1 << 21) - 1, 18);
+        final long[] queries = sample(colliding, 19);
+        final String seed = TABLE_SEED == 0 ? "seed-0" : "seed-random";
+
+        serviceTime(group, "exchange-hashtable-get-colliding-" + seed, queries, () -> {
+            final LongLongHashtable m = new LongLongHashtable(INITIAL_CAPACITY);
+            for (long k : stored) m.put(k, k);
+            for (long k : colliding) m.put(k, k);
+            log.info("{}: capacity {}", group, m.capacity());
+            return (keys, from, to) -> {
+                long s = 0;
+                for (int i = from; i < to; i++) s += m.get(keys[i]);
+                return s;
+            };
+        });
+        serviceTime(group, "exchange-ll2-hashtable-get-colliding-" + seed, queries, () -> {
+            final LongLongLL2Hashtable m = new LongLongLL2Hashtable(INITIAL_CAPACITY, LL2_MIGRATOR, LL2_SYNC_RESIZE_BELOW);
+            for (long k : stored) m.put(k, k);
+            for (long k : colliding) m.put(k, k);
+            m.finishMigration();
+            return new Bench() {
+                @Override
+                public long run(long[] keys, int from, int to) {
+                    long s = 0;
+                    for (int i = from; i < to; i++) s += m.get(keys[i]);
+                    return s;
+                }
+
+                @Override
+                public void close() {
+                    m.close();
+                }
+            };
+        });
+    }
+
+    /** the hash of a key as a table with seed 0 computes it */
+    private static int tableHash(long key) {
+        try {
+            return (int) TABLE_HASH.invokeExact(key);
+        } catch (Throwable e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** n distinct keys whose home slot under seed 0 (hash & slotMask) is below window */
+    private static long[] collidingKeys(int n, int window, int slotMask, long seed) {
+        final Random rand = new Random(seed + SEED);
+        final long[] keys = new long[n];
+        int found = 0;
+        while (found < n) {
+            final long key = rand.nextLong() | 1L;
+            if ((tableHash(key) & slotMask) < window) keys[found++] = key;
+        }
+        return keys;
     }
 
     /** Remove of a present key at load ~0.65, put back outside the measured interval. */
@@ -635,8 +834,67 @@ public class CollectionsLatencySamples {
             }
         }, name);
         thread.setDaemon(true);
+        SPINNING.add(thread);
         thread.start();
         return tasks::add;
+    }
+
+    /** Every task on a new daemon thread, started delayMs late by a scheduler thread created here (unpinned). */
+    private static Executor delayedExecutor(long delayMs) {
+        final ScheduledThreadPoolExecutor scheduler = new ScheduledThreadPoolExecutor(1, r -> {
+            final Thread thread = new Thread(r, "ll2-delayer");
+            thread.setDaemon(true);
+            return thread;
+        });
+        scheduler.prestartAllCoreThreads();
+        return task -> scheduler.schedule(() -> {
+            final Thread thread = new Thread(task, "ll2-late-migrator");
+            thread.setDaemon(true);
+            thread.start();
+        }, delayMs, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * What the measuring thread allocated, and the CPU of the other threads - migrators, JIT, GC; not the spinning
+     * executors, which burn their core all the time - over one measured instance, where the JVM reports it (HotSpot's
+     * com.sun.management beans).
+     */
+    private static final class ResourceUse {
+        private final long allocated = allocatedBytes();
+        private final long othersCpu = othersCpuNanos();
+        private final long gcMs = gcMillis();
+
+        @Override
+        public String toString() {
+            return String.format("measuring thread allocated %.1f MB; CPU of the other threads (not spinning) %d ms,"
+                            + " GC %d ms", (allocatedBytes() - allocated) / 1e6,
+                    (othersCpuNanos() - othersCpu) / 1_000_000, gcMillis() - gcMs);
+        }
+
+        private static long othersCpuNanos() {
+            long spinning = 0;
+            for (Thread t : SPINNING) spinning += Math.max(0, ManagementFactory.getThreadMXBean().getThreadCpuTime(t.threadId()));
+            return processCpuNanos() - currentThreadCpuNanos() - spinning;
+        }
+
+        private static long allocatedBytes() {
+            return ManagementFactory.getThreadMXBean() instanceof com.sun.management.ThreadMXBean t
+                    ? t.getCurrentThreadAllocatedBytes() : 0;
+        }
+
+        private static long processCpuNanos() {
+            return ManagementFactory.getOperatingSystemMXBean() instanceof com.sun.management.OperatingSystemMXBean o
+                    ? o.getProcessCpuTime() : 0;
+        }
+
+        private static long currentThreadCpuNanos() {
+            return ManagementFactory.getThreadMXBean().getCurrentThreadCpuTime();
+        }
+
+        private static long gcMillis() {
+            return ManagementFactory.getGarbageCollectorMXBeans().stream()
+                    .mapToLong(GarbageCollectorMXBean::getCollectionTime).sum();
+        }
     }
 
     /** A core from the reserved CPUs, or the one given by -Dsamples.cpu.<thread name>. */
@@ -692,9 +950,11 @@ public class CollectionsLatencySamples {
         }
         log.info("{}/{}: measuring {} puts at {} ops/s...", group, name, keys.length, PUT_RATE);
         final long[] samples = new long[SAMPLES];
+        final ResourceUse use = new ResourceUse();
         try (Bench bench = subject.get()) {
             measureResponseTime(bench, keys, samples);
         }
+        log.info("{}/{}: {}", group, name, use);
         write(group, name, samples);
     }
 

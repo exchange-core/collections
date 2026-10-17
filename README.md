@@ -205,6 +205,10 @@ The default is `0`, which keeps the slot order — and the iteration order — t
 constant for the JIT, seed `0` costs nothing; any other seed adds 1-3 instructions per operation — a
 fraction of a nanosecond, +5..15% in a benchmark of back-to-back operations.
 
+Measured (`CollectionsLatencySamples -Dsamples.groups=hashtable-collide`): 2000 keys picked under seed `0`
+for the first 64 of 2^21 slots, among 1M random keys — a get of one of them takes 1.0 µs (p50) / 2.0 µs
+(p99) under seed `0`, 30 ns / 59 ns under a random seed.
+
 Compound operations, one probe each (`computeIfAbsent` of a missing key: two — the function may change
 the table):
 
@@ -308,6 +312,10 @@ final LongLongLL2Hashtable tuned = LongLongLL2Hashtable.builder()
 > daemon threads. In a *bounded* one, once all threads are occupied by migrators, new tasks wait in the
 > queue and the application thread ends up doing their work.
 
+> **Warning:** in an application whose thread is pinned to a core, the default executor's threads inherit
+> that core and time-share it with the application: puts then wait hundreds of milliseconds (measured
+> below). Create `newMigratorExecutor()` before pinning, or pass an executor of your own.
+
 The table never waits for a task the executor has not started: if the executor rejects a task, runs it
 on the thread that started the migration (`Runnable::run`, `CallerRunsPolicy`, the application's own event
 loop) or simply has not run it yet, the table does that work on the calling thread — a synchronous
@@ -328,6 +336,24 @@ the executor.
 
 During a migration both arrays are alive: three times the memory of the old one. `fixedCapacity()` (or a
 `maxCapacity` reached) makes a table that never migrates, with none of this.
+
+**Measured** — `CollectionsLatencySamples -Dsamples.groups=ll2-scenarios`: 1M operations/s, latency from the
+planned arrival (a stall is charged to every operation queued behind it), the table growing from 16 to 4M
+entries; Xeon Gold 6244, application pinned to an isolated core, JDK 27, two runs:
+
+| Configuration | p50 | p99 | p99.9 | max |
+|---|---|---|---|---|
+| spinning migrator on its own core, `syncResizeBelow(300)` | 124 ns | 350 ns | 490-500 ns | 16-21 µs |
+| `newMigratorExecutor()` (thread per task), default `syncResizeBelow` | 124 ns | 350 ns | 510-530 ns | 150-280 µs (the synchronous resizes below 8200 entries) |
+| default executor, application pinned | 270-350 **ms** | 0.8-1 s | | |
+| tasks started 1 ms late (the table copies until then) | 124 ns | 350 ns | 500-515 ns | 16-37 µs |
+| 4 tables growing at once, one shared spinning migrator | 130 ns | 357 ns | 510 ns | 6-9 µs |
+| 4 tables growing at once, thread per task (unpinned threads on the 2 housekeeping CPUs) | 130 ns | 370 ns | 0.6-2.8 ms | 0.7-5.6 ms |
+| 50% puts, 30% gets, 20% removals | 150-159 ns | 400 ns | 535-545 ns | 1.3-2.1 µs |
+| the same with `LongLongHashtable` (synchronous resizes) | 168-173 ns | 1.5 ms | 18 ms | 21 ms |
+
+A migrator that runs, but on a CPU it shares, can be descheduled in the middle of a segment, and an
+operation that needs that segment waits for it: give the migrator a core of its own.
 
 **Notes**
 - same key/value rules, `missingValue`, hash seed, `maxCapacity` / `fixedCapacity` as `LongLongHashtable`
