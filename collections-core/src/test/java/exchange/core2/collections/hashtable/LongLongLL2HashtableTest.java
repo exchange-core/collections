@@ -62,7 +62,7 @@ public class LongLongLL2HashtableTest extends LongLongHashtableAbstractTest {
     @Test
     public void fixed_capacity_starts_no_migration() {
         try (LongLongLL2Hashtable table = (LongLongLL2Hashtable) createFixed(10_000)) {
-            final int limit = (int) (table.capacity() * HashingUtils.FULL_LOAD);
+            final int limit = (int) HashingUtils.maxEntries(table.capacity(), HashingUtils.DEFAULT_MAX_LOAD);
             for (long key = 1; key <= limit; key++) {
                 table.put(key, key);
                 assertFalse(table.migrationInProgress());
@@ -81,6 +81,15 @@ public class LongLongLL2HashtableTest extends LongLongHashtableAbstractTest {
         }
         assertThrows(IllegalArgumentException.class,
                 () -> LongLongLL2Hashtable.builder().expectedSize(100).maxCapacity(128).build());
+        assertThrows(IllegalArgumentException.class, () -> LongLongLL2Hashtable.builder().maxLoad(1.0));
+    }
+
+    @Test
+    public void should_take_new_keys_up_to_the_max_load() {
+        try (LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().expectedSize(9).executor(NO_TASKS)
+                .fixedCapacity().maxLoad(0.75).build()) {
+            LongLongHashtableTest.checkMaxLoad(table, 12);
+        }
     }
 
     /**
@@ -293,7 +302,7 @@ public class LongLongLL2HashtableTest extends LongLongHashtableAbstractTest {
     @Test
     public void should_refuse_new_keys_at_full_load_after_async_migrations() {
 
-        final int limit = (int) (64 * HashingUtils.FULL_LOAD);
+        final int limit = (int) HashingUtils.maxEntries(64, HashingUtils.DEFAULT_MAX_LOAD);
         try (LongLongLL2Hashtable table = LongLongLL2Hashtable.builder().expectedSize(10)
                 .executor(THREAD_PER_TASK).syncResizeBelow(0).maxCapacity(64).build()) {
             for (long key = 1; key <= limit; key++) {

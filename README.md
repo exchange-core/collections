@@ -173,13 +173,22 @@ prices.getOrDefault(43L, -2L); // -2 — absent, whatever missingValue is (one p
 
 final LongLongHashtable fixed = LongLongHashtable.builder()
         .expectedSize(1_000_000)
-        .fixedCapacity()        // never resizes: refuses new keys at load 0.9 instead
+        .fixedCapacity()        // never resizes: refuses new keys at maxLoad instead
+        .maxLoad(0.9)           // default 0.95
         .build();               // or .maxCapacity(1 << 22): grows up to 2^22 slots, then refuses
 ```
 
-A table that can not grow takes new keys up to load 0.9 of its capacity, with longer probes past the
-expected size; then `put` of a new key throws `IllegalStateException` and changes nothing — updates and
-removals go on working.
+A table that can not grow takes new keys up to `maxLoad` of its capacity (from 0.65 to below 1, default
+0.95; two slots always stay free), with longer probes past the expected size; then `put` of a new key
+throws `IllegalStateException` and changes nothing — updates and removals go on working. How much longer,
+with linear probing and random keys:
+
+| Load | lookup of a present key | insert of a new key, lookup / removal of a missing one |
+|---|---|---|
+| 0.65 (where a table grows) | ~2 slots | ~5 slots |
+| 0.9 | ~5.5 | ~50 |
+| 0.95 | ~10.5 | ~200 |
+| 0.99 | ~50 | ~5000 |
 
 **Hash seed.** The hash function is public, so whoever chooses the keys (client order ids, account ids
 coming from outside) can pick thousands of them for one slot: they pile up into one cluster, and every
@@ -234,7 +243,8 @@ Do not modify the table from the `forEach` consumer or while a stream is being c
   many fit without a resize, up to ~349 million (2^29 slots); a negative or larger value throws
   `IllegalArgumentException`
 - at the maximum capacity (2^29 slots, or `maxCapacity` / `fixedCapacity`) the table stops growing: it
-  takes new keys up to load 0.9, then `put` of a new key throws `IllegalStateException` and changes nothing
+  takes new keys up to `maxLoad` (0.95), then `put` of a new key throws `IllegalStateException` and changes
+  nothing
 - the table grows automatically at 65% load factor; that resize is synchronous and shows up as a
   latency spike — pre-size the table if this matters
 - not thread-safe

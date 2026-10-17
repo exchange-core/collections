@@ -12,6 +12,7 @@ import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
 
@@ -45,6 +46,39 @@ public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
         assertThrows(IllegalArgumentException.class,
                 () -> LongLongHashtable.builder().expectedSize(100).maxCapacity(128).build());
         assertThat(LongLongHashtable.builder().expectedSize(100).maxCapacity(256).build().capacity(), is(256));
+    }
+
+    @Test
+    public void builder_should_validate_the_max_load() {
+        for (double invalid : new double[]{0.5, 0.64, 1.0, 1.5, Double.NaN}) {
+            assertThrows(String.valueOf(invalid), IllegalArgumentException.class,
+                    () -> LongLongHashtable.builder().maxLoad(invalid));
+        }
+    }
+
+    /** 16 slots: maxLoad 0.75 takes 12 keys; 0.999 would take 15.98 - two slots stay free, 14. */
+    @Test
+    public void should_take_new_keys_up_to_the_max_load() {
+        checkMaxLoad(LongLongHashtable.builder().expectedSize(9).fixedCapacity().maxLoad(0.75).build(), 12);
+        checkMaxLoad(LongLongHashtable.builder().expectedSize(9).fixedCapacity().maxLoad(0.999).build(), 14);
+        // the smallest table: 2 slots, no entry in the array - only the one kept outside
+        checkMaxLoad(LongLongHashtable.builder().expectedSize(0).fixedCapacity().build(), 0, 2);
+    }
+
+    static void checkMaxLoad(ILongLongHashtable table, int limit) {
+        checkMaxLoad(table, limit, 16);
+    }
+
+    static void checkMaxLoad(ILongLongHashtable table, int limit, int capacity) {
+        assertThat(table.capacity(), is(capacity));
+        for (long key = 1; key <= limit; key++) {
+            table.put(key, key);
+        }
+        final IllegalStateException e = assertThrows(IllegalStateException.class, () -> table.put(-1L, 1L));
+        assertTrue(e.getMessage(), e.getMessage().contains("table is full"));
+        assertThat(table.size(), is((long) limit));
+        assertThat(table.capacity(), is(capacity));
+        checkIntegrity(table);
     }
 
     /**

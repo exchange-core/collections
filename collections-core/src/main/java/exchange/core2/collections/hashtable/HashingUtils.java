@@ -41,9 +41,30 @@ final class HashingUtils {
     static final int MAX_CAPACITY = 1 << 29;
 
     /**
-     * Load a table at its maximum capacity is allowed to reach - it can not grow, new keys are refused after that.
+     * Load a table that can not grow (at its maximum capacity) takes new keys up to - they are refused after that.
+     * Linear probing, random keys: a lookup of a missing key, and the insert of a new one, probe ~(1 + 1/(1-load)^2)/2
+     * slots on average - 50 at 0.9, 200 at 0.95, 5000 at 0.99.
      */
-    static final float FULL_LOAD = 0.9f;
+    static final double DEFAULT_MAX_LOAD = 0.95;
+
+    /**
+     * @return maxLoad, if it is from 0.65 (the load the tables grow at) to below 1
+     */
+    static double checkMaxLoad(double maxLoad) {
+        if (!(maxLoad >= 0.65 && maxLoad < 1.0)) {
+            throw new IllegalArgumentException("max load must be from 0.65 to below 1: " + maxLoad);
+        }
+        return maxLoad;
+    }
+
+    /**
+     * @return the number of entries a table that can not grow takes - two slots stay free whatever the load: a probe
+     * stops only at a free slot, and a refused key is inserted first and taken back (the backward shift of the
+     * removal needs a free slot too)
+     */
+    static long maxEntries(int capacity, double maxLoad) {
+        return Math.min((long) (capacity * maxLoad), capacity - 2L);
+    }
 
     /**
      * @return maxCapacity, if it is a power of two from 2 to {@link #MAX_CAPACITY}
