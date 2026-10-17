@@ -3,13 +3,17 @@ package exchange.core2.collections.hashtable;
 
 import java.lang.ref.Cleaner;
 import java.time.Duration;
+import java.util.Objects;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongUnaryOperator;
 import java.util.stream.LongStream;
 
@@ -28,9 +32,14 @@ import static exchange.core2.collections.hashtable.HashingUtils.SEED;
  *     <li>Tables with fewer than {@code syncResizeBelow} entries (default {@value #DEFAULT_SYNC_RESIZE_BELOW}) resize
  *     synchronously, like {@link LongLongHashtable}.</li>
  *     <li>The executor runs the allocation of the new array and the copying, which spins until its migration ends:
- *     it must not be bounded (see the constructors). {@link #close()} finishes an in-flight migration.</li>
- *     <li>{@link #clear()}, {@link #forEach}, {@link #keysStream()} and {@link #valuesStream()} finish an in-flight
- *     migration first, as {@link #close()} does - a pause, for the set-up, snapshots or tests.</li>
+ *     it must not be bounded ({@link Builder#executor}). A task the executor rejects, runs on the thread that started
+ *     the migration ({@code Runnable::run}, {@code CallerRunsPolicy}, the application's own event loop) or has not
+ *     started yet is not waited for: the table does that work itself, on the calling thread - it resizes
+ *     synchronously, allocates the new array at the block threshold, or copies the segment an operation needs. No
+ *     operation fails because of the executor.</li>
+ *     <li>{@link #finishMigration()} finishes an in-flight migration; {@link #close()} too, and makes the later
+ *     resizes synchronous. {@link #clear()}, {@link #forEach}, {@link #keysStream()} and {@link #valuesStream()}
+ *     finish an in-flight migration first - a pause, for the set-up, snapshots or tests.</li>
  *     <li>Waits for the migrator are bounded: past the hang timeout ({@link Builder#hangTimeout}, default 10s) an
  *     operation fails with {@link IllegalStateException} and the state of the migration, instead of hanging; a
  *     migrator that died is reported right away. The table stays consistent after such a failure. Interrupts do
@@ -65,10 +74,14 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
     private long upsizeThreshold;
     private long blockThreshold;
     private CompletableFuture<long[]> arrayFeature = null;
+    private AtomicBoolean allocationStarted;
     private CompletableFuture<Void> copyingProcess = null;
 
     private HashtableAsync2Resizer resizer = null;
     private Cleaner.Cleanable resizerCleanable = null;
+
+    /** set by close(): the resizes are synchronous from then on */
+    private boolean closed;
 
     // started at class init - see newMigratorExecutor() for affinity-pinned callers
     private static final Cleaner CLEANER = Cleaner.create(r -> daemon(r, "ll2-cleaner"));
@@ -100,9 +113,11 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
      * fail with the full state instead of hanging, which is what makes these bugs debuggable.
      */
     public static final Duration DEFAULT_HANG_TIMEOUT = Duration.ofSeconds(10);
-    private static final long HANG_CHECK_SPIN_MASK = 0xFFFFF; // check the clock every ~1M spins (~30ms)
+    private static final long HANG_CHECK_SPIN_MASK = 0x3FF; // check the clock every 1024 spins (~10-50us)
 
     private final long hangTimeoutNanos;
+    /** of the wait for the migrator in progress, see waitStep() */
+    private long waitDeadline;
 
     /**
      * Runs {@link #integrityCheck()} right after every completed migration. Enable with
@@ -132,12 +147,38 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
      * migrator on that same core, time-sliced with the application. Here the migrators are started
      * by a helper thread created now - call this before pinning. Initializes the class (and its
      * Cleaner thread) on the calling thread as well.
+     * <p>
+     * Close it once the tables using it are closed: that ends the helper thread. A closed executor rejects tasks, so
+     * a table still using it resizes synchronously.
      */
-    public static Executor newMigratorExecutor() {
-        final ThreadPoolExecutor spawner = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
+    public static MigratorExecutor newMigratorExecutor() {
+        return new MigratorExecutor();
+    }
+
+    /**
+     * See {@link #newMigratorExecutor()}.
+     */
+    public static final class MigratorExecutor implements Executor, AutoCloseable {
+
+        private final ThreadPoolExecutor spawner = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
                 new LinkedBlockingQueue<>(), r -> daemon(r, "ll2-spawner"));
-        spawner.prestartAllCoreThreads(); // helper thread created here, not lazily by the first (pinned) caller
-        return job -> spawner.execute(() -> daemon(job, "ll2-migrator").start());
+
+        private MigratorExecutor() {
+            spawner.prestartAllCoreThreads(); // helper thread created here, not lazily by the first (pinned) caller
+        }
+
+        @Override
+        public void execute(Runnable job) {
+            spawner.execute(() -> daemon(job, "ll2-migrator").start());
+        }
+
+        /**
+         * Ends the helper thread once it has started the migrators already submitted; later tasks are rejected.
+         */
+        @Override
+        public void close() {
+            spawner.shutdown();
+        }
     }
 
     private static Thread daemon(Runnable job, String name) {
@@ -220,13 +261,18 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         /**
          * Runs the allocation of the new array and the copying task (default: a new daemon thread per task).
          * <p>
-         * WARNING: the copying task spins while waiting for the application to authorize the next segment. A bounded
-         * executor therefore deadlocks as soon as every thread in it is occupied by a spinning migrator - the
-         * allocation never gets scheduled. Pass an unbounded / thread-per-task executor, or see
-         * {@link #newMigratorExecutor()} for threads pinned to a CPU.
+         * WARNING: the copying task spins while waiting for the application to authorize the next segment, until its
+         * migration ends. Pass an unbounded / thread-per-task executor, or see {@link #newMigratorExecutor()} for
+         * threads pinned to a CPU. In a bounded one, once every thread is occupied by a migrator, new tasks wait in
+         * the queue - and the application thread does their work.
+         * <p>
+         * A task the executor rejects, runs on the thread that started the migration, or has not started yet is not
+         * waited for: the table does that work itself, on the calling thread - a synchronous resize, the allocation of
+         * the new array at the block threshold, the copying of the segment an operation needs. A copying task that
+         * starts late continues from there.
          */
         public Builder executor(Executor executor) {
-            this.executor = executor;
+            this.executor = Objects.requireNonNull(executor, "executor");
             return this;
         }
 
@@ -238,6 +284,9 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
          * 50-100us, more if each new thread pins itself to a core.
          */
         public Builder syncResizeBelow(int syncResizeBelow) {
+            if (syncResizeBelow < 0) {
+                throw new IllegalArgumentException("syncResizeBelow must not be negative: " + syncResizeBelow);
+            }
             this.syncResizeBelow = syncResizeBelow;
             return this;
         }
@@ -245,7 +294,9 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         /**
          * How long an operation waits for the migrator before it fails with IllegalStateException (default 10s).
          * A migration segment is copied in microseconds and the array allocated in milliseconds, so the bound only
-         * matters for a migrator that is stuck - or descheduled for long: a debugger, an overloaded executor.
+         * matters for a migrator that is stuck - or descheduled for long: a debugger, an overloaded machine. A task
+         * the executor has not started is not waited for at all, see {@link #executor}; an allocation that started
+         * and does not end by the hang timeout is not either - the table allocates the array itself.
          */
         public Builder hangTimeout(Duration hangTimeout) {
             if (hangTimeout.isNegative() || hangTimeout.isZero()) {
@@ -304,9 +355,9 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
 
         if (arrayFeature != null) {
             if (size >= blockThreshold) {
-                awaitFuture(arrayFeature, "array allocation");
+                awaitArray();
             }
-            startAsyncCopyingIfDone(key, 2);
+            startAsyncCopyingIfDone();
         }
 
 //        if (resizer != null){
@@ -534,7 +585,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
 
       //  boolean migStated = false;
         if (arrayFeature != null) {
-           startAsyncCopyingIfDone(key, 34);
+            startAsyncCopyingIfDone();
         }
 
 //        if (resizer != null) {
@@ -610,7 +661,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
     private long removeResizing(long key, int hash) {
 
         if (arrayFeature != null) {
-            startAsyncCopyingIfDone(key, 52);
+            startAsyncCopyingIfDone();
         }
 
         if (resizer == null) {
@@ -714,60 +765,76 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
                     + (mask + 1) + " slots");
         }
 
-        // synchronous copy on the calling thread: ~7.5ns per slot, 62us at 8192 slots
-        final boolean useSync = size < syncResizeBelow;
+        if (closed || size < syncResizeBelow) {
+            resizeSync();
+            return;
+        }
 
-        if (useSync) {
-            final HashtableResizer hashtableResizer = new HashtableResizer(data, missingValue);
-            //log.debug("Sync resizing...");
-            this.data = hashtableResizer.resizeSync();
-            mask = mask * 2 + 1;
-            upsizeThreshold = calculateUpsizeThreshold();
-            blockThreshold = calculateBlockThreshold();
-            //log.debug("SYNC RESIZE done, upsizeThreshold=" + upsizeThreshold);
-        } else {
-          //  log.info("(A) Allocating array async: long[{}] ...", data.length * 2);
-            final String threadName = Thread.currentThread().getName();
-            arrayFeature = CompletableFuture.supplyAsync(
-                    () -> {
-                      //  log.debug("(Allocating array for {}: long[{}] ...)", threadName, data.length * 2);
-                        // value cells filled with missingValue here, on the executor, not by the application
-                        return LinearProbing.newArray(data.length, missingValue);
-                    },
-                    executor);
-
+        // the value cells are filled with missingValue on the executor, not by the application; locals - the task
+        // must not keep the table reachable
+        final int newCapacity = data.length;
+        final long missing = missingValue;
+        final AtomicBoolean started = new AtomicBoolean();
+        try {
+            arrayFeature = CompletableFuture.supplyAsync(() -> {
+                started.set(true);
+                return LinearProbing.newArray(newCapacity, missing);
+            }, executor);
+            allocationStarted = started;
+        } catch (RuntimeException rejected) {
+            // RejectedExecutionException, or whatever else the executor throws: the put has stored its key already -
+            // resize here instead of failing it
+            resizeSync();
         }
     }
 
+    /**
+     * Synchronous copy on the calling thread: ~7.5ns per slot, 62us at 8192 slots.
+     */
+    private void resizeSync() {
+        data = new HashtableResizer(data, missingValue).resizeSync();
+        mask = mask * 2 + 1;
+        upsizeThreshold = calculateUpsizeThreshold();
+        blockThreshold = calculateBlockThreshold();
+    }
 
-    private boolean startAsyncCopyingIfDone(long key, int action) {
-        if (arrayFeature.isDone()) {
-
-//            setAction(key, action);
-
-            final int initialPos = HashtableAsync2Resizer.findNextGapPos(data, 0);
-
-            knownProgressCached = initialPos;
-
-            allowedPosition = nextSegmentEnd(initialPos, initialPos);
-          //  log.debug("initialPos={} allowedPosition={}", initialPos, allowedPosition);
-            // NOTE: keep this in a local and never touch the 'resizer' field from the lambda below.
-            // Reading the field would capture 'this', and the migrator thread would then keep the
-            // whole hashtable (and both arrays) reachable - an abandoned table could never be
-            // collected, and the Cleaner safety net below would never fire.
-            final HashtableAsync2Resizer newResizer =
-                    new HashtableAsync2Resizer(data, arrayFeature.join(), initialPos, allowedPosition);
-            resizer = newResizer;
-            arrayFeature = null;
-
-            copyingProcess = CompletableFuture.runAsync(newResizer::copy, executor);
-
-            // safety net for a forgotten close(): stop the migrator once the table is unreachable
-            resizerCleanable = CLEANER.register(this, new MigratorShutdown(newResizer));
-            return true;
+    private void startAsyncCopyingIfDone() {
+        if (!arrayFeature.isDone()) {
+            return;
         }
 
-        return false;
+        final long[] newArray;
+        try {
+            newArray = arrayFeature.join();
+        } catch (CompletionException | CancellationException failed) {
+            // the allocation failed on the executor (out of memory there?) - resize here
+            arrayFeature = null;
+            resizeSync();
+            return;
+        }
+        arrayFeature = null;
+
+        final int initialPos = HashtableAsync2Resizer.findNextGapPos(data, 0);
+        knownProgressCached = initialPos;
+        allowedPosition = nextSegmentEnd(initialPos, initialPos);
+
+        // NOTE: keep this in a local and never touch the 'resizer' field from the lambda below.
+        // Reading the field would capture 'this', and the migrator thread would then keep the
+        // whole hashtable (and both arrays) reachable - an abandoned table could never be
+        // collected, and the Cleaner safety net below would never fire.
+        final HashtableAsync2Resizer newResizer =
+                new HashtableAsync2Resizer(data, newArray, initialPos, allowedPosition, Thread.currentThread());
+        resizer = newResizer;
+
+        try {
+            copyingProcess = CompletableFuture.runAsync(newResizer::copy, executor);
+        } catch (RuntimeException rejected) {
+            // the table copies itself, segment by segment, where it would wait for the migrator (waitStep)
+            return;
+        }
+
+        // safety net for a forgotten close(): stop the migrator once the table is unreachable
+        resizerCleanable = CLEANER.register(this, new MigratorShutdown(newResizer));
     }
 
 
@@ -777,7 +844,6 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
     private void awaitMigrated(int pos) {
 
         long spins = 0;
-        long deadline = 0;
 
         while (resizer.notInNewData(pos, knownProgressCached)) {
             knownProgressCached = resizer.getProcessedPosition();
@@ -789,19 +855,39 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
                 // entry with that home was ever stored there: the new array is safe to access.
                 break;
             }
-            Thread.onSpinWait();
-
-            if ((++spins & HANG_CHECK_SPIN_MASK) == 0) {
-                rethrowMigratorFailure();
-                final long now = System.nanoTime();
-                if (deadline == 0) {
-                    deadline = now + hangTimeoutNanos;
-                } else if (now - deadline > 0) {
-                    throw new IllegalStateException("stuck waiting for migration of pos=" + pos
-                            + " after " + spins + " spins, " + migrationState());
-                }
+            if (waitStep(++spins)) {
+                throw new IllegalStateException("stuck waiting for migration of pos=" + pos
+                        + " after " + spins + " spins, " + migrationState());
             }
         }
+    }
+
+    /**
+     * One step of a wait for the migrator. A copying task that has not started is not waited for: the table copies the
+     * authorized segment itself. Otherwise spins, and every 1024 spins rethrows a failure of the migrator and checks
+     * the hang timeout. The clock starts at the first check: the usual wait - a segment, a microsecond or two - does
+     * not read it, and the timeout starts at most 1024 spins late.
+     *
+     * @param spins of this wait, from 1
+     * @return true if the migrator is stuck: the hang timeout is over
+     */
+    private boolean waitStep(long spins) {
+        final HashtableAsync2Resizer r = resizer;
+        if (r.copyIfNotStarted()) {
+            knownProgressCached = r.getProcessedPosition();
+            return false;
+        }
+        Thread.onSpinWait();
+        if ((spins & HANG_CHECK_SPIN_MASK) == 0) {
+            rethrowMigratorFailure();
+            final long now = System.nanoTime();
+            if (spins == HANG_CHECK_SPIN_MASK + 1) {
+                waitDeadline = now + hangTimeoutNanos;
+                return false;
+            }
+            return now - waitDeadline > 0;
+        }
+        return false;
     }
 
     /**
@@ -819,51 +905,72 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
     private void awaitAllowedPositionReached() {
 
         long spins = 0;
-        long deadline = 0;
 
         // refresh first - a stale cached value could otherwise match the freshly published
         // allowedPosition and skip the wait entirely
         knownProgressCached = resizer.getProcessedPosition();
 
         while (knownProgressCached != allowedPosition) {
+            if (waitStep(++spins)) {
+                throw new IllegalStateException("stuck waiting for allowedPosition after "
+                        + spins + " spins, " + migrationState());
+            }
             knownProgressCached = resizer.getProcessedPosition();
-            Thread.onSpinWait();
+        }
+    }
 
-            if ((++spins & HANG_CHECK_SPIN_MASK) == 0) {
-                rethrowMigratorFailure();
-                final long now = System.nanoTime();
-                if (deadline == 0) {
-                    deadline = now + hangTimeoutNanos;
-                } else if (now - deadline > 0) {
-                    throw new IllegalStateException("stuck waiting for allowedPosition after "
-                            + spins + " spins, " + migrationState());
-                }
+    /**
+     * At the block threshold a put needs the new array. If the executor has not started the allocation - it may never
+     * (a queue behind busy threads, the application's own event loop) - the put allocates the array itself, and the
+     * task skips it if it runs late. A started allocation is waited for, at most the hang timeout.
+     */
+    private void awaitArray() {
+        if (!allocationStarted.get() || !awaitDone(arrayFeature)) {
+            arrayFeature.complete(LinearProbing.newArray(data.length, missingValue));
+        }
+    }
+
+    /**
+     * Waits for a background task to end, at most the hang timeout, and fails with the state past it or if the task
+     * failed.
+     */
+    private void awaitFuture(CompletableFuture<?> future, String what) {
+        if (!awaitDone(future)) {
+            throw new IllegalStateException("stuck waiting for " + what + ", " + migrationState());
+        }
+        if (future.isCompletedExceptionally()) {
+            try {
+                future.join();
+            } catch (CompletionException | CancellationException e) {
+                throw new IllegalStateException(what + " failed, " + migrationState(),
+                        e.getCause() != null ? e.getCause() : e);
             }
         }
     }
 
     /**
-     * Same idea as the spin waits: a blocking join hides both a stuck migrator and an executor
-     * that never scheduled the task (which is what happens when the same bounded Executor is used
-     * for the allocation and for the copying). Time it out and report the state.
+     * Same idea as the spin waits: a blocking join hides both a stuck migrator and an executor that never scheduled
+     * the task. Bounded by the hang timeout.
      * <p>
      * Not interruptible, like the spin waits: an interrupt used to fail the put (or close) waiting here, though
-     * nothing was wrong. The wait goes on, bounded by the hang timeout, and the interrupt status is set again.
+     * nothing was wrong. The wait goes on, and the interrupt status is set again.
+     *
+     * @return false if the future is still not done at the hang timeout
      */
-    private void awaitFuture(CompletableFuture<?> future, String what) {
+    private boolean awaitDone(CompletableFuture<?> future) {
         final long deadline = System.nanoTime() + hangTimeoutNanos;
         boolean interrupted = false;
         try {
             while (true) {
                 try {
                     future.get(Math.max(0L, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
-                    return;
+                    return true;
                 } catch (InterruptedException e) {
                     interrupted = true;
                 } catch (TimeoutException e) {
-                    throw new IllegalStateException("stuck waiting for " + what + ", " + migrationState(), e);
-                } catch (ExecutionException e) {
-                    throw new IllegalStateException(what + " failed, " + migrationState(), e.getCause());
+                    return false;
+                } catch (ExecutionException | CancellationException e) {
+                    return true; // done - the caller looks at the outcome
                 }
             }
         } finally {
@@ -923,7 +1030,8 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
                 + " allowedPosition=" + allowedPosition + " knownProgressCached=" + knownProgressCached
                 + (r == null
                 ? " resizer=null"
-                : " startingPosition=" + r.getStartingPosition() + " processedPosition=" + r.getProcessedPosition())
+                : " startingPosition=" + r.getStartingPosition() + " processedPosition=" + r.getProcessedPosition()
+                + " migrator: " + r.stateName())
                 + " copyingProcessDone=" + (copyingProcess != null && copyingProcess.isDone());
     }
 
@@ -982,9 +1090,9 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
     private void blockOnResizing() {
 
         if (arrayFeature != null) {
-            // allocation queued but no migration started yet - just drop it, resize() will be
-            // re-triggered by the next put once the threshold is crossed again
-            awaitFuture(arrayFeature, "array allocation");
+            // allocation in flight, no migration started yet - drop it (a task not run yet skips the allocation);
+            // resize() is triggered again by the next put of a new key
+            arrayFeature.cancel(false);
             arrayFeature = null;
         }
 
@@ -996,21 +1104,33 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
             allowedPosition = resizer.getStartingPosition();
             resizer.setAllowedPosition(allowedPosition);
             awaitAllowedPositionReached();
+            final boolean migratorRunning = resizer.isMigratorRunning();
             switchToNewArray();
 
-            // the migrator has been signalled and unparked - wait for it to actually leave copy()
-            awaitFuture(pendingCopy, "migrator shutdown");
-
+            if (migratorRunning) {
+                // the migrator has been signalled and unparked - wait for it to actually leave copy() (a task the
+                // table took over has nothing to leave, and may never run)
+                awaitFuture(pendingCopy, "migrator shutdown");
+            }
         }
     }
 
     /**
-     * Completes any in-flight migration and releases the migration thread.
+     * Finishes an in-flight migration and switches to the new array - a pause: the rest is copied while the caller
+     * waits. The table then has one array and no background work, until its next resize.
+     */
+    public void finishMigration() {
+        blockOnResizing();
+    }
+
+    /**
+     * Finishes an in-flight migration, as {@link #finishMigration()}, and releases the migration thread. The later
+     * resizes are synchronous, on the calling thread, as in {@link LongLongHashtable}: the table stays fully usable,
+     * and starts no background work any more.
      * <p>
      * The migration is finished rather than aborted on purpose: while it is running, entries are
      * inserted into the NEW array for already-migrated positions, so those entries exist only
-     * there - dropping the new array would silently lose them. After close() the table is still a
-     * valid, usable hashtable, it simply has no background work attached.
+     * there - dropping the new array would silently lose them.
      * <p>
      * A forgotten close() is not fatal - the Cleaner stops the migrator once the table becomes
      * unreachable - but it leaves the thread (and, with an affinity-locked executor, its core)
@@ -1018,6 +1138,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
      */
     @Override
     public void close() {
+        closed = true;
         blockOnResizing();
     }
 
@@ -1226,8 +1347,8 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
     }
 
     /**
-     * A resize in flight already counts with its new capacity. If more is needed, the resize is finished first (as in
-     * {@link #close()}), then the table is rehashed synchronously.
+     * A resize in flight already counts with its new capacity. If more is needed, the resize is finished first
+     * ({@link #finishMigration()}), then the table is rehashed synchronously.
      */
     @Override
     public void ensureCapacity(int expectedSize) {
