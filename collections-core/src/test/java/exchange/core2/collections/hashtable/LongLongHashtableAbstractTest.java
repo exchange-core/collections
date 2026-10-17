@@ -542,14 +542,14 @@ public abstract class LongLongHashtableAbstractTest {
     }
 
     /**
-     * At its maximum capacity a table can not grow: it takes new keys up to load 0.9 and refuses the next one,
+     * At its maximum capacity a table can not grow: it takes new keys up to maxLoad (0.95) and refuses the next one,
      * unchanged - instead of filling up completely, with ever longer probes, and failing only at 100%.
      */
     @Test
     public void should_refuse_new_keys_at_full_load_of_the_maximum_capacity() {
 
         final int maxCapacity = 64;
-        final int limit = (int) (maxCapacity * HashingUtils.FULL_LOAD); // 57
+        final int limit = (int) HashingUtils.maxEntries(maxCapacity, HashingUtils.DEFAULT_MAX_LOAD); // 60
         hashtable = createLimited(SMALL_SIZE, maxCapacity);             // 16 -> 32 -> 64 slots, then stops
         created.add(hashtable);
 
@@ -578,8 +578,8 @@ public abstract class LongLongHashtableAbstractTest {
     }
 
     /**
-     * A fixed capacity: the capacity for the expected size, kept - past the expected size new keys go in up to load
-     * 0.9, then they are refused, as at the maximum capacity.
+     * A fixed capacity: the capacity for the expected size, kept - past the expected size new keys go in up to
+     * maxLoad (0.95; at 16 slots two slots stay free: 14), then they are refused, as at the maximum capacity.
      */
     @Test
     public void should_never_resize_with_a_fixed_capacity() {
@@ -587,7 +587,7 @@ public abstract class LongLongHashtableAbstractTest {
         hashtable = createFixed(SMALL_SIZE);
         created.add(hashtable);
         assertThat(hashtable.capacity(), is(SMALL_CAPACITY));
-        final int limit = (int) (SMALL_CAPACITY * HashingUtils.FULL_LOAD); // 14
+        final int limit = (int) HashingUtils.maxEntries(SMALL_CAPACITY, HashingUtils.DEFAULT_MAX_LOAD); // 14
 
         for (long key = 1; key <= limit; key++) {
             assertThat(hashtable.put(key, key * 10), is(0L));

@@ -68,6 +68,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
     private final Executor executor;
     private final int syncResizeBelow;
     private final int maxCapacity;
+    private final double maxLoad;
     private final long missingValue;
 
     // the arrays hold key ^ SEED; the entry stored as key 0 - the gap marker - is kept here (counted in size): the key
@@ -220,6 +221,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         this.upsizeThresholdPerc = 0.65f;
         final int arraySize = HashingUtils.capacityFor(builder.expectedSize, upsizeThresholdPerc, builder.maxCapacity);
         this.maxCapacity = builder.fixedCapacity ? arraySize : builder.maxCapacity;
+        this.maxLoad = builder.maxLoad;
 
         this.data = LinearProbing.newArray(arraySize, missingValue);
         //this.blockThresholdPerc = 0.6501f;
@@ -245,6 +247,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         private Duration hangTimeout = DEFAULT_HANG_TIMEOUT;
         private int maxCapacity = HashingUtils.MAX_CAPACITY;
         private boolean fixedCapacity;
+        private double maxLoad = HashingUtils.DEFAULT_MAX_LOAD;
 
         private Builder() {
         }
@@ -328,6 +331,15 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
          */
         public Builder fixedCapacity() {
             this.fixedCapacity = true;
+            return this;
+        }
+
+        /**
+         * Load up to which a table that can not grow any more takes new keys (default 0.95) - see
+         * {@link LongLongHashtable.Builder#maxLoad}. Not the 90% at which a put waits for an unfinished migration.
+         */
+        public Builder maxLoad(double maxLoad) {
+            this.maxLoad = HashingUtils.checkMaxLoad(maxLoad);
             return this;
         }
 
@@ -769,9 +781,9 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
         //log.debug("RESIZE {}->{} elements={} ...", data.length, data.length * 2L, size);
 
         if (mask + 1 >= maxCapacity) {
-            // can not grow any more: take new keys up to FULL_LOAD, then refuse them - beyond that the probes, and
+            // can not grow any more: take new keys up to maxLoad, then refuse them - beyond that the probes, and
             // with them every operation, get longer and longer
-            final long limit = (long) ((mask + 1) * HashingUtils.FULL_LOAD);
+            final long limit = HashingUtils.maxEntries(mask + 1, maxLoad);
             if (size <= limit) {
                 upsizeThreshold = limit + 1;
                 return;

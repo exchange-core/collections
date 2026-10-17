@@ -34,10 +34,12 @@
   was dropped: it cost 1.4-7.3% even at `0`, the XOR with a field can not be folded. `seed()` reports the seed
   in use; `0` keeps the iteration order the same from run to run. The core tests run a second time under a
   seed.
-- **Hashtables: `maxCapacity(int)` and `fixedCapacity()` in the builders** - a table that grows only up to a
-  given capacity, or never resizes at all (the capacity for the expected size). There it takes new keys up to
-  load 0.9, then `put` of a new key throws `IllegalStateException` and changes nothing. A
-  `LongLongLL2Hashtable` of fixed capacity never migrates: no background task, no wait, no second array.
+- **Hashtables: `maxCapacity(int)`, `fixedCapacity()` and `maxLoad(double)` in the builders** - a table that
+  grows only up to a given capacity, or never resizes at all (the capacity for the expected size). There it
+  takes new keys up to `maxLoad` (from 0.65 to below 1, default 0.95, two slots always free), then `put` of a
+  new key throws `IllegalStateException` and changes nothing. The javadoc and the README give the probe
+  lengths: at 0.95 an insert or a miss probes ~200 slots on average, at 0.99 ~5000. A `LongLongLL2Hashtable`
+  of fixed capacity never migrates: no background task, no wait, no second array.
 - **Hashtables: `getOrDefault(key, defaultValue)`** - presence and value in one probe, where `get` can not tell
   a missing key from one stored with the missing value. The cost of each operation (probes, waits, passes over
   the array) is now documented in the README and the javadoc - "one probe" in `ILongLongHashtable` was too
@@ -75,8 +77,9 @@
   asynchronously (low `syncResizeBelow`).
 - **At the maximum capacity (2^29 slots) both tables filled up completely.** They stopped growing but kept
   taking new keys, with ever longer probes, until the last free slot - and then every operation that probed
-  for a missing key failed. Now a table there takes new keys up to load 0.9 and then refuses them with
-  `IllegalStateException` ("table is full"); the refused put changes nothing, updates and removals still work.
+  for a missing key failed. Now a table there takes new keys up to `maxLoad` (0.95 by default, see Added) and
+  then refuses them with `IllegalStateException` ("table is full"); the refused put changes nothing, updates and
+  removals still work.
 - **A table sized for n entries could resize at the n-th insert.** The resize starts when the size reaches
   (int) (capacity * 0.65), and for every capacity one expected size was exactly that - e.g. 681 574 for
   2^20 slots, where `LongLongHashtable` then copies the table for ~7 ms on the last pre-sized insert.
