@@ -493,6 +493,27 @@ if (h == RecordStore.NO_RECORD) {
 | `forEach`, `clear` | every slot used so far |
 | `ensureCapacity` | the pages it adds |
 
+**Measured** — `RecordStoreJmh`, balances of two fields against an object per record (the caller holding the
+reference, no check; or a `long` id into an `ArrayList`, checked against a generation in the object) and a flat
+`long[]` (no check, no pages); ns per operation, records reached in a random order. A laptop (i7-9750H, JDK 26,
+not pinned), short runs — indicative:
+
+| Operation, records | `RecordStore` | object, reference | object, `ArrayList` id | `long[]` |
+|---|---|---|---|---|
+| `chase` 10k / 1M / 10M — each access waits for the one before | 7.2 / 71 / 105 | 8.6 / 86 / 104 | 12.5 / 129 / 201 | 4.0 / 53 / 98 |
+| `read` both fields, 10k / 10M — accesses independent, misses overlap | 4.0 / 41 | 2.5 / 23 | 5.4 / 72 | 2.2 / 24 |
+| `reserve` (available down, reserved up), 10k / 10M | 4.6 / 39 | 2.7 / 25 | 5.6 / 190 | 2.4 / 26 |
+| `freeAllocate`, 10k / 10M | 9.2 / 64 | 3.8 / 10 | 11.3 / 191 | – |
+| `scan` of one field, per record, 10M | 2.7 | 1.8 | 1.9 | 0.8 |
+
+- The latency of an access (`chase`) is one cache miss, as for an object held by reference or a flat array; an
+  `ArrayList` id takes two — the list's array, then the object.
+- Independent accesses overlap their misses; the page, the header and the field checks are more instructions
+  per access, fewer misses in flight — 41 against 23-24 ns at 10M.
+- `free` reads the header to check it: a miss an unchecked pool does not take — its stale references reach the
+  next owner of the object instead.
+- Not measured here: the GC (the loops allocate nothing), the layout of objects scattered by churn.
+
 **Notes**
 - a record takes `fields + 1` longs: the header; slot 0 is never allocated (its header keeps `NO_RECORD`
   from passing the check)

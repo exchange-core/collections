@@ -69,7 +69,13 @@
   its default missing value. A record never moves; a freed one is reused under a new generation, and every access
   checks it: a stale handle throws instead of reaching the record allocated after it. Pages of `pageSize` records
   (default 1024): growing allocates a page, nothing is copied but the page directory. `addAndGetExact` throws
-  `ArithmeticException` on overflow and keeps the value. The same operations hand out the same handles.
+  `ArithmeticException` on overflow and keeps the value. The same operations hand out the same handles. A handle
+  holding the offset of the record in its page instead of the slot (no multiplication per access) was measured:
+  within ±5%, not taken.
+- **`RecordStoreJmh`** (`tests-perf`): `RecordStore` against an object per record (the caller holding the
+  reference, or a `long` id into an `ArrayList` with a generation check) and a flat `long[]` - read, reservation,
+  free + allocate, a scan, and a chase through the records (the latency of one access), from 10k records (L2) to
+  10M (DRAM). Results in the README.
 
 ### Fixed
 
