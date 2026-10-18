@@ -85,16 +85,10 @@ public final class ArtNode16<V> implements IArtNode<V> {
         this.nodeLevel = node48.nodeLevel;
         this.nodeKey = node48.nodeKey;
         byte idx = 0;
-        for (short i = 0; i < 256; i++) {
-            final byte j = node48.indexes[i];
-            if (j != -1) {
-                this.keys[idx] = i;
-                this.nodes[idx] = node48.nodes[j];
-                idx++;
-            }
-            if (idx == numChildren) {
-                break;
-            }
+        for (int i = node48.nextOccupied(0); i >= 0; i = node48.nextOccupied(i + 1)) {
+            this.keys[idx] = (short) i;
+            this.nodes[idx] = node48.nodes[node48.indexes[i]];
+            idx++;
         }
 
         Arrays.fill(node48.nodes, null);

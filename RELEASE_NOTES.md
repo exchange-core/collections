@@ -263,6 +263,13 @@
   whole tree up to the limit; it stays, as `Math.min(size(), limit)`.
 - **`LongAdaptiveRadixTreeMap.clear()` returns the nodes to the pool** - O(number of nodes) instead of dropping
   the root, so a map that is cleared and refilled no longer allocates its nodes again.
+- **`LongAdaptiveRadixTreeMap`: ordered walks and neighbour searches skip the empty slots.** `ArtNode48` and
+  `ArtNode256` keep a 256-bit occupancy bitmap (a `long[4]`): `forEach` / `forEachDesc`, the ceiling, floor,
+  higher and lower lookups, `firstKey` / `lastKey` and the shrinking of a node jump to the next occupied slot instead
+  of reading up to 255 empty ones. In `ArtOpsJmh`: the top 10 levels of a book 70-87% faster (book-20k: 283-305 ns
+  to 43 ns), the mixed order-book stream 19-31%, the neighbour of a level up to 20%; lookups unchanged, a removal +
+  put of a level within +5% (it updates one word of the bitmap - four long fields instead of the array cost
+  +15-28% there).
 
 ## 0.6.0
 
