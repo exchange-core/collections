@@ -572,6 +572,27 @@ balances.get(h, AVAILABLE);                      // IllegalArgumentException
 | `get`, `set`, `addAndGet`, `addAndGetExact`, `keyOf`, `isValid` | the record only |
 | `forEach`, `clear` | every record |
 
+**Measured** — `LongRecordTableJmh`, balances of two fields by key (random keys, in a random order) against a
+`LongLongHashtable` per field and Eclipse's `LongObjectHashMap` of an object per balance (as exchange-core keeps
+them); ns per operation, 10k / 1M / 10M keys. The laptop of `RecordStoreJmh`, short runs — indicative:
+
+| Operation | `LongRecordTable` | two `LongLongHashtable` | `LongObjectHashMap` |
+|---|---|---|---|
+| `chaseByKey` — each lookup waits for the one before | 26 / 109 / 136 | 23 / 130 / 165 | 15 / 107 / 183 |
+| `readByKey` — independent lookups, misses overlap | 18 / 85 / 114 | 19 / 54 / 68 | 11 / 74 / 89 |
+| `reserveByKey` (available down, reserved up) | 19 / 181 / 249 | 19 / 58 / 83 | 10 / 179 / 266 |
+| `createRemove` — a key removed, a new one added | 82 / 286 / 368 | 111 / 283 / 415 | 73 / 291 / 340 |
+
+- A lookup by key takes about as long in the three: the index and then the record are two misses, as the map
+  and then its object; the two hashtables take their two at once.
+- Independent lookups: a write into a record reached through a handle just loaded from the index — or into an
+  object through its reference — overlaps with the next ones far less than a hashtable's write into the slot it
+  has probed: 180-250 ns against 58-83. Through a handle the caller keeps, the same reservation is 39 ns at 10M
+  (`RecordStoreJmh`): keeping the handles is what the table is for.
+- Memory per key, two fields: 16 bytes per slot of the index and 32 per record (header, fields, key) — about
+  what two hashtables take, 16 bytes per slot each; every further field adds 8 bytes to a record, a further
+  hashtable 16 per slot.
+
 **Notes**
 - a record takes `fields + 2` longs: its header and the key; the index 16 bytes per slot, up to 65% full between
   its resizes

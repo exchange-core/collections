@@ -81,6 +81,9 @@
   for it, so a full table refuses the key with nothing allocated. The handles stay valid through the resizes of the
   index; a record holds its key (`keyOf`, and `forEach` in the order of the records, whatever the hash seed). An
   access through `NO_RECORD` says so in the exception of `RecordStore`.
+- **`LongRecordTableJmh`** (`tests-perf`): balances by key in a `LongRecordTable`, in a `LongLongHashtable` per
+  field and in Eclipse's `LongObjectHashMap` of objects - read, reservation, a key removed and another added, and a
+  chase from key to key (the latency of one lookup), from 10k keys to 10M. Results in the README.
 
 ### Fixed
 
