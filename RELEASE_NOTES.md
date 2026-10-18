@@ -59,6 +59,11 @@
   `lastValue`, `pollFirstValue` / `pollLastValue`, `size()` and `isEmpty()`.** The fused puts are what an order
   book does for a new price level (put it, link it to its neighbour); `putIfAbsent`, `computeIfAbsent`, the
   fused puts and the polls are compositions for now - two descents.
+- **`ArtOpsJmh`** (`tests-perf`): average time of the `LongAdaptiveRadixTreeMap` operations against `TreeMap`
+  and fastutil's `Long2ObjectRBTreeMap`, on the key sets of `ArtKeyProfiles`: order-book price levels (asks and
+  bids, the distance from the mid hyperbolic - dense near the mid, thinning out further), order ids with 95%
+  of them gone, random keys. Lookups, neighbour, removal + put, new level (put + neighbour), top 10, and a mixed
+  order-book stream.
 
 ### Fixed
 
