@@ -3,6 +3,7 @@ package tests.pref;
 import exchange.core2.collections.affinity.CpuAffinity;
 import exchange.core2.collections.hashtable.LongLongHashtable;
 import exchange.core2.collections.hashtable.LongRecordTable;
+import exchange.core2.collections.hashtable.LongTupleHashtable;
 import org.eclipse.collections.impl.map.mutable.primitive.LongObjectHashMap;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
@@ -27,7 +28,8 @@ import java.util.concurrent.TimeUnit;
  *     <li>{@code LongRecordTable} - a probe of the index, then the record;</li>
  *     <li>{@code twoHashtables} - a {@link LongLongHashtable} per field: a probe of each;</li>
  *     <li>{@code LongObjectHashMap} - Eclipse Collections, a key to an object per balance (as in exchange-core): keys
- *     and values in two arrays, then the object; freed objects go to a pool.</li>
+ *     and values in two arrays, then the object; freed objects go to a pool;</li>
+ *     <li>{@code LongTupleHashtable} - the key and both fields in one slot: one probe, no second structure.</li>
  * </ul>
  * The keys are random, reached in a random order through a shuffled array read in sequence. The accesses are
  * independent, so their misses overlap - except in {@code chaseByKey}, which follows a cycle through the keys (a
@@ -46,7 +48,7 @@ import java.util.concurrent.TimeUnit;
 @Fork(value = 2, jvmArgsAppend = {"-Xms4g", "-Xmx4g"})
 public class LongRecordTableJmh {
 
-    @Param({"LongRecordTable", "twoHashtables", "LongObjectHashMap"})
+    @Param({"LongRecordTable", "twoHashtables", "LongObjectHashMap", "LongTupleHashtable"})
     public String impl;
 
     /** keys: 10000, 1000000, 10000000 */
@@ -56,6 +58,7 @@ public class LongRecordTableJmh {
     private static final int RECORD_TABLE = 0;
     private static final int TWO_HASHTABLES = 1;
     private static final int OBJECT_MAP = 2;
+    private static final int TUPLES = 3;
 
     private static final int AVAILABLE = 0;
     private static final int RESERVED = 1;
@@ -71,6 +74,7 @@ public class LongRecordTableJmh {
     private LongLongHashtable available;
     private LongLongHashtable reserved;
     private LongObjectHashMap<Balance> map;
+    private LongTupleHashtable tuples;
     private final Balance[] pool = new Balance[16];
     private int poolSize;
 
@@ -106,6 +110,10 @@ public class LongRecordTableJmh {
                 kind = OBJECT_MAP;
                 map = new LongObjectHashMap<>(size);
             }
+            case "LongTupleHashtable" -> {
+                kind = TUPLES;
+                tuples = LongTupleHashtable.builder().keyLongs(1).valueLongs(2).expectedSize(size).build();
+            }
             default -> throw new IllegalArgumentException(impl);
         }
         for (int k = 0; k < size; k++) {
@@ -116,12 +124,24 @@ public class LongRecordTableJmh {
             keys[k] = key;
             create(key);
         }
-        // the cycle for chaseByKey: the balance of each key holds the next key (available + reserved)
+        // the cycle for chaseByKey, the balance of each key holding the next key (available + reserved): a random one
+        // (Sattolo's shuffle) - not the order the keys were added in, which is the order of the records and objects in
+        // memory: the next one would be the neighbour, fetched in advance
+        final int[] cycle = new int[size];
         for (int k = 0; k < size; k++) {
-            final long next = keys[k + 1 == size ? 0 : k + 1];
-            setBalance(keys[k], next - 1, 1);
+            cycle[k] = k;
         }
-        current = keys[0];
+        for (int k = size - 1; k > 0; k--) {
+            final int j = rand.nextInt(k);
+            final int t = cycle[k];
+            cycle[k] = cycle[j];
+            cycle[j] = t;
+        }
+        for (int k = 0; k < size; k++) {
+            final long next = keys[cycle[k + 1 == size ? 0 : k + 1]];
+            setBalance(keys[cycle[k]], next - 1, 1);
+        }
+        current = keys[cycle[0]];
         shuffle(keys, rand);
     }
 
@@ -129,6 +149,7 @@ public class LongRecordTableJmh {
         return switch (kind) {
             case RECORD_TABLE -> table.containsKey(key);
             case TWO_HASHTABLES -> available.containsKey(key);
+            case TUPLES -> tuples.find(key) != LongTupleHashtable.NO_SLOT;
             default -> map.containsKey(key);
         };
     }
@@ -140,6 +161,7 @@ public class LongRecordTableJmh {
                 available.put(key, 0);
                 reserved.put(key, 0);
             }
+            case TUPLES -> tuples.getOrInsert(key);
             default -> map.put(key, new Balance());
         }
     }
@@ -154,6 +176,11 @@ public class LongRecordTableJmh {
             case TWO_HASHTABLES -> {
                 available.put(key, a);
                 reserved.put(key, r);
+            }
+            case TUPLES -> {
+                final int pos = tuples.find(key);
+                tuples.setValue(pos, AVAILABLE, a);
+                tuples.setValue(pos, RESERVED, r);
             }
             default -> {
                 final Balance b = map.get(key);
@@ -196,6 +223,10 @@ public class LongRecordTableJmh {
             }
             case TWO_HASHTABLES:
                 return available.get(key) + reserved.get(key);
+            case TUPLES: {
+                final int pos = tuples.find(key);
+                return tuples.getValue(pos, AVAILABLE) + tuples.getValue(pos, RESERVED);
+            }
             default: {
                 final Balance b = map.get(key);
                 return b.available + b.reserved;
@@ -216,6 +247,11 @@ public class LongRecordTableJmh {
             case TWO_HASHTABLES:
                 available.addAndGet(key, -1);
                 return reserved.addAndGet(key, 1);
+            case TUPLES: {
+                final int pos = tuples.find(key);
+                tuples.addAndGetValue(pos, AVAILABLE, -1);
+                return tuples.addAndGetValue(pos, RESERVED, 1);
+            }
             default: {
                 final Balance b = map.get(key);
                 b.available--;
@@ -234,6 +270,10 @@ public class LongRecordTableJmh {
             }
             case TWO_HASHTABLES:
                 return current = available.get(current) + reserved.get(current);
+            case TUPLES: {
+                final int pos = tuples.find(current);
+                return current = tuples.getValue(pos, AVAILABLE) + tuples.getValue(pos, RESERVED);
+            }
             default: {
                 final Balance b = map.get(current);
                 return current = b.available + b.reserved;
@@ -260,6 +300,10 @@ public class LongRecordTableJmh {
                 reserved.remove(old);
                 available.put(key, 0);
                 return reserved.put(key, 0);
+            case TUPLES: {
+                tuples.remove(old);
+                return tuples.getOrInsert(key);
+            }
             default: {
                 final Balance b = map.remove(old);
                 b.available = 0;

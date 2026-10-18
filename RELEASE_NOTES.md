@@ -84,6 +84,15 @@
 - **`LongRecordTableJmh`** (`tests-perf`): balances by key in a `LongRecordTable`, in a `LongLongHashtable` per
   field and in Eclipse's `LongObjectHashMap` of objects - read, reservation, a key removed and another added, and a
   chase from key to key (the latency of one lookup), from 10k keys to 10M. Results in the README.
+- **`LongTupleHashtable`: keys of a fixed number of `long`s to values of a fixed number of `long`s**, side by
+  side in the slots of one `long[]` (open addressing, linear probing, backward-shift deletion). A slot holds a tag -
+  the hash of the key with the top bit set, never 0 - so any key can be stored, a probe compares tags before keys,
+  and a resize or a removal never hashes a key again. Methods for keys of 1 to 4 longs, a `long[]` for any length;
+  `valueLongs(0)` is a set. The values are reached through the position of the slot, valid until the next insert or
+  removal. Hash seed, `maxCapacity` / `fixedCapacity` / `maxLoad` as in `LongLongHashtable`.
+- **`LongTupleHashtableJmh`** (`tests-perf`): balances under a key of three longs (a UUID, a token and a
+  subaccount) in a `LongTupleHashtable` against a `HashMap` of a `record` key to an object; `LongRecordTableJmh`
+  measures it too, with a key of one long. Results in the README.
 
 ### Fixed
 
