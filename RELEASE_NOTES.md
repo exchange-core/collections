@@ -54,6 +54,11 @@
   and misses, from an L1-resident table to one in DRAM - for A/B runs of `collections-core` builds.
 - **`Automatic-Module-Name`** in the published jars: `exchange.core2.collections`,
   `exchange.core2.collections.orderbook`, `exchange.core2.collections.affinity`.
+- **`LongAdaptiveRadixTreeMap`: `containsKey`, `putIfAbsent`, `computeIfAbsent`, `putAndGetLowerValue` /
+  `putAndGetHigherValue`, `getCeilingValue` / `getFloorValue`, `firstKey` / `lastKey`, `firstValue` /
+  `lastValue`, `pollFirstValue` / `pollLastValue`, `size()` and `isEmpty()`.** The fused puts are what an order
+  book does for a new price level (put it, link it to its neighbour); `putIfAbsent`, `computeIfAbsent`, the
+  fused puts and the polls are compositions for now - two descents.
 
 ### Fixed
 
@@ -123,6 +128,20 @@
   period. In the new `PerfLL2IdleBurst` (`tests-perf`: 200 lookups after 20 ms quiet in the middle of a
   migration) the slowest lookup of a burst went from ~920 us to 3.4 us (median of 900 bursts), p99.9 of all
   lookups from ~930 us to 4 us; the put latency benchmark is unchanged.
+- **`LongAdaptiveRadixTreeMap.getOrInsert` returned null and inserted nothing** - it was a stub. Replaced by
+  `computeIfAbsent` (see Changed).
+- **`LongAdaptiveRadixTreeMap.put(key, null)` corrupted the map**: the null took a slot that the nodes read as
+  empty - `size` counted the key, `get` could not tell it from a missing one, internal validation failed after
+  its removal. Null values are now rejected with `NullPointerException`.
+- **The ART leaked a node per insert/remove cycle at a branching point.** Removing the second-to-last child of
+  an inner `ArtNode4` collapses it into its remaining child, and the collapsed node was dropped instead of
+  returned to the pool: e.g. keys 0 and 256 - 96 bytes of garbage per cycle.
+- **`LongAdaptiveRadixTreeMap.forEach` / `forEachDesc` allocated on every call** - a lambda that converted the
+  internal keys back to the signed ones. The leaf nodes now hand out the signed keys themselves.
+- **`ArtNode16` inserted every new branch twice** - a second put of the same key right after creating the
+  node for it.
+- **The entries of `LongAdaptiveRadixTreeMap.entriesList()` did not implement `equals` / `hashCode`** - not
+  equal to `Map.entry` with the same key and value.
 
 ### Removed
 
@@ -140,6 +159,8 @@
 - **`extractMatching` of both hashtables** - only the Radix sharding experiment used it.
 - **`remove(key, hash)` of both hashtables.** Besides exposing the internal hash, it would have overloaded
   the new `remove(key, value)`: `remove(key, 5)` with an int literal resolved to the hash variant.
+- **`LongAdaptiveRadixTreeMap.getOrInsert(key, Supplier)` and `getOrInsertFromNode(node, Supplier)`** - stubs
+  that did nothing; `computeIfAbsent(key, LongFunction)` replaces them.
 
 ### Changed
 
@@ -231,6 +252,12 @@
   ```bash
   mvn -DperformRelease=true clean verify
   ```
+- **`LongAdaptiveRadixTreeMap.put` returns the previous value, `remove` the removed one** (were `void`; null
+  for a missing key). Source compatible, but callers have to be recompiled.
+- **`LongAdaptiveRadixTreeMap` keeps its size in a counter**: `size()` is O(1). `size(limit)` used to walk the
+  whole tree up to the limit; it stays, as `Math.min(size(), limit)`.
+- **`LongAdaptiveRadixTreeMap.clear()` returns the nodes to the pool** - O(number of nodes) instead of dropping
+  the root, so a map that is cleared and refilled no longer allocates its nodes again.
 
 ## 0.6.0
 

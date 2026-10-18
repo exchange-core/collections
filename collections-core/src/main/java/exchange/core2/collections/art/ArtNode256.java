@@ -89,7 +89,7 @@ public final class ArtNode256<V> implements IArtNode<V> {
 
     @Override
     @SuppressWarnings("unchecked")
-    public IArtNode<V> put(final long key, final int level, final V value) {
+    public IArtNode<V> put(final long key, final int level, final V value, final LongAdaptiveRadixTreeMap<V> map) {
         if (level != nodeLevel) {
             final IArtNode<V> branch = LongAdaptiveRadixTreeMap.branchIfRequired(key, value, nodeKey, nodeLevel, this);
             if (branch != null) {
@@ -103,13 +103,13 @@ public final class ArtNode256<V> implements IArtNode<V> {
         }
 
         if (nodeLevel == 0) {
+            map.previousValue = (V) nodes[idx];
             nodes[idx] = value;
         } else {
             IArtNode<V> node = (IArtNode<V>) nodes[idx];
             if (node != null) {
-                final IArtNode<V> resizedNode = node.put(key, nodeLevel - 8, value);
+                final IArtNode<V> resizedNode = node.put(key, nodeLevel - 8, value, map);
                 if (resizedNode != null) {
-                    // TODO put old into the pool
                     // update resized node if capacity has increased
                     nodes[idx] = resizedNode;
                 }
@@ -126,7 +126,7 @@ public final class ArtNode256<V> implements IArtNode<V> {
 
     @Override
     @SuppressWarnings("unchecked")
-    public IArtNode<V> remove(long key, int level) {
+    public IArtNode<V> remove(final long key, final int level, final LongAdaptiveRadixTreeMap<V> map) {
         if (level != nodeLevel && ((key ^ nodeKey) & (-1L << (nodeLevel + 8))) != 0) {
             return this;
         }
@@ -136,13 +136,13 @@ public final class ArtNode256<V> implements IArtNode<V> {
         }
 
         if (nodeLevel == 0) {
+            map.previousValue = (V) nodes[idx];
             nodes[idx] = null;
             numChildren--;
         } else {
             final IArtNode<V> node = (IArtNode<V>) nodes[idx];
-            final IArtNode<V> resizedNode = node.remove(key, nodeLevel - 8);
+            final IArtNode<V> resizedNode = node.remove(key, nodeLevel - 8, map);
             if (resizedNode != node) {
-                // TODO put old into the pool
                 // update resized node if capacity has decreased
                 nodes[idx] = resizedNode;
                 if (resizedNode == null) {
@@ -256,9 +256,34 @@ public final class ArtNode256<V> implements IArtNode<V> {
 
     @Override
     @SuppressWarnings("unchecked")
+    public long firstKey() {
+        int idx = 0;
+        while (nodes[idx] == null) {
+            idx++;
+        }
+        return nodeLevel == 0
+                ? (nodeKey & -256L) | idx
+                : ((IArtNode<V>) nodes[idx]).firstKey();
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public long lastKey() {
+        int idx = 255;
+        while (nodes[idx] == null) {
+            idx--;
+        }
+        return nodeLevel == 0
+                ? (nodeKey & -256L) | idx
+                : ((IArtNode<V>) nodes[idx]).lastKey();
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
     public int forEach(LongObjConsumer<V> consumer, int limit) {
         if (nodeLevel == 0) {
-            final long keyBase = (nodeKey >>> 8) << 8;
+            // map key of index 0: the low byte is zero, so adding an index never reaches the flipped sign bit
+            final long keyBase = LongAdaptiveRadixTreeMap.flipSignBit((nodeKey >>> 8) << 8);
             int numFound = 0;
             for (short i = 0; i < 256; i++) {
                 if (numFound == limit) {
@@ -287,7 +312,7 @@ public final class ArtNode256<V> implements IArtNode<V> {
     @SuppressWarnings("unchecked")
     public int forEachDesc(LongObjConsumer<V> consumer, int limit) {
         if (nodeLevel == 0) {
-            final long keyBase = (nodeKey >>> 8) << 8;
+            final long keyBase = LongAdaptiveRadixTreeMap.flipSignBit((nodeKey >>> 8) << 8);
             int numFound = 0;
             for (short i = 255; i >= 0; i--) {
                 if (numFound == limit) {
@@ -357,7 +382,7 @@ public final class ArtNode256<V> implements IArtNode<V> {
     @Override
     @SuppressWarnings("unchecked")
     public List<Map.Entry<Long, V>> entries() {
-        final long keyPrefix = nodeKey & (-1L << 8);
+        final long keyPrefix = LongAdaptiveRadixTreeMap.flipSignBit(nodeKey & (-1L << 8)); // map key of index 0
         final List<Map.Entry<Long, V>> list = new ArrayList<>();
         final short[] keys = createKeysArray();
         for (int i = 0; i < numChildren; i++) {
@@ -388,6 +413,21 @@ public final class ArtNode256<V> implements IArtNode<V> {
                 ", nodeLevel=" + nodeLevel +
                 ", numChildren=" + numChildren +
                 '}';
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public void recycle() {
+        if (nodeLevel != 0) {
+            for (Object node : nodes) {
+                if (node != null) {
+                    ((IArtNode<V>) node).recycle();
+                }
+            }
+        }
+        Arrays.fill(nodes, null);
+        numChildren = 0;
+        objectsPool.put(ObjectsPool.ART_NODE_256, this);
     }
 
     private short[] createKeysArray() {

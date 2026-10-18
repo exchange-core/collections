@@ -25,17 +25,38 @@ public interface IArtNode<V> {
 
     V getValue(long key, int level);
 
-    IArtNode<V> put(long key, int level, V value);
+    /**
+     * @param map receives the value the put replaced in {@code map.previousValue} (stays null for a new key)
+     * @return the node that replaces this one (grown or branched), or null if this node stays
+     */
+    IArtNode<V> put(long key, int level, V value, LongAdaptiveRadixTreeMap<V> map);
 
-    IArtNode<V> remove(long key, int level);
+    /**
+     * @param map receives the removed value in {@code map.previousValue} (stays null if the key is absent)
+     * @return the node that replaces this one (shrunk or collapsed), this node, or null if it became empty
+     */
+    IArtNode<V> remove(long key, int level, LongAdaptiveRadixTreeMap<V> map);
 
     V getCeilingValue(long key, int level);
 
     V getFloorValue(long key, int level);
 
+    /** @return the lowest internal key of this subtree (the subtree is never empty) */
+    long firstKey();
+
+    /** @return the highest internal key of this subtree (the subtree is never empty) */
+    long lastKey();
+
+    /** hands out map keys (signed), not the internal ones */
     int forEach(LongObjConsumer<V> consumer, int limit);
 
+    /** hands out map keys (signed), not the internal ones */
     int forEachDesc(LongObjConsumer<V> consumer, int limit);
+
+    /**
+     * Returns this node and its whole subtree into the pool. The node must be unreachable afterwards.
+     */
+    void recycle();
 
     /**
      * Get number of elements
@@ -65,7 +86,7 @@ public interface IArtNode<V> {
     /**
      * For testing only
      *
-     * @return list of entries
+     * @return list of entries, map keys (signed)
      */
     List<Map.Entry<Long, V>> entries();
 
