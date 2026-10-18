@@ -228,6 +228,7 @@ public final class ArtNode4<V> extends ArtNode<V> {
             if (nodeLevel == 0) {
                 map.previousValue = (V) childAt(found);
                 setChild(found, value);
+                map.rememberPut(this);
             } else {
                 final ArtNode<V> resizedNode = ((ArtNode<V>) childAt(found)).put(key, nodeLevel - 8, value, map);
                 if (resizedNode != null) {
@@ -247,11 +248,17 @@ public final class ArtNode4<V> extends ArtNode<V> {
                 pos++;
             }
             insertAt(pos, nodeIndex, newElement);
+            if (nodeLevel == 0) {
+                map.rememberPut(this);
+            }
             return null;
         } else {
             // no space left, create a Node16 with new item
             final ArtNode16<V> node16 = objectsPool.get(ObjectsPool.ART_NODE_16, ArtNode16::new);
             node16.initFromNode4(this, (short) nodeIndex, newElement);
+            if (node16.nodeLevel == 0) {
+                map.rememberPut(node16);
+            }
             return node16;
         }
     }
@@ -397,6 +404,25 @@ public final class ArtNode4<V> extends ArtNode<V> {
                 return nodeLevel == 0
                         ? (V) childAt(i)
                         : ((ArtNode<V>) childAt(i)).getFloorValue(UNSIGNED_MAX_KEY, nodeLevel - 8); // take highest existing key
+            }
+        }
+        return null;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public V valueNextTo(final int idx, final boolean lower) {
+        if (lower) {
+            for (int i = numChildren - 1; i >= 0; i--) {
+                if (keyAt(i) < idx) {
+                    return (V) childAt(i);
+                }
+            }
+        } else {
+            for (int i = 0; i < numChildren; i++) {
+                if (keyAt(i) > idx) {
+                    return (V) childAt(i);
+                }
             }
         }
         return null;

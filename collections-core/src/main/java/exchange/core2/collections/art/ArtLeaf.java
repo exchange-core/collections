@@ -69,6 +69,7 @@ final class ArtLeaf<V> extends ArtNode<V> {
             // only the last byte differs: a node at level 0 holds the values itself
             node.initTwoKeys(this.key, this.value, key, value, 0);
             recycle();
+            map.rememberPut(node);
         } else {
             node.initTwoKeys(this.key, this, key, create(objectsPool, key, value), newLevel);
         }
@@ -94,6 +95,12 @@ final class ArtLeaf<V> extends ArtNode<V> {
     @Override
     public V getFloorValue(final long key, final int level) {
         return Long.compareUnsigned(this.key, key) <= 0 ? value : null;
+    }
+
+    @Override
+    public V valueNextTo(final int idx, final boolean lower) {
+        // never asked: a put remembers only the nodes of the last level
+        return null;
     }
 
     @Override

@@ -63,6 +63,17 @@ public final class LongAdaptiveRadixTreeMap<V> {
      */
     V previousValue;
 
+    /**
+     * A put that also looks for a neighbour (putAndGetLowerValue / putAndGetHigherValue) asks the node of the last
+     * level where the key ends up to remember itself here: the neighbour is most often in the same node, next to the
+     * key - in an order book the levels near the market share their 256-tick blocks.
+     * <p>
+     * Every node on the way down offering its closest child on that side was measured too: as slow as the second
+     * descent it saves, which runs over warm cache lines (a new level in a 20k-level book +7-9%).
+     */
+    private boolean rememberPut;
+    private ArtNode<V> lastPutNode;
+
     public LongAdaptiveRadixTreeMap(ObjectsPool objectsPool) {
         this.objectsPool = objectsPool;
     }
@@ -157,24 +168,47 @@ public final class LongAdaptiveRadixTreeMap<V> {
 
     /**
      * Puts the value and returns the value of the closest key below - how an order book links a new ask price
-     * level to the better level next to it. Currently a put and a {@link #getLowerValue} - two descents.
+     * level to the better level next to it. One descent when the neighbour is in the same 256-key block (the node of
+     * the last level remembers the put), otherwise one more.
      *
      * @return the value of the closest key strictly below the key, or null if there is none
      */
     public V putAndGetLowerValue(final long key, final V value) {
-        put(key, value);
-        return getLowerValue(key);
+        return putAndGetNeighbour(key, value, true);
     }
 
     /**
      * Puts the value and returns the value of the closest key above - for a new bid price level.
-     * Currently a put and a {@link #getHigherValue} - two descents.
+     * One descent or two, as {@link #putAndGetLowerValue}.
      *
      * @return the value of the closest key strictly above the key, or null if there is none
      */
     public V putAndGetHigherValue(final long key, final V value) {
+        return putAndGetNeighbour(key, value, false);
+    }
+
+    private V putAndGetNeighbour(final long key, final V value, final boolean lower) {
+        Objects.requireNonNull(value, "value");
+        rememberPut = true;
         put(key, value);
-        return getHigherValue(key);
+        rememberPut = false;
+        final ArtNode<V> node = lastPutNode;
+        if (node != null) {
+            lastPutNode = null;
+            final V next = node.valueNextTo((int) (key & 0xFF), lower);
+            if (next != null) {
+                return next;
+            }
+        }
+        // a key alone in its 256-key block, or at its edge: the neighbour is elsewhere, if anywhere
+        return lower ? getLowerValue(key) : getHigherValue(key);
+    }
+
+    /** a node of the last level that has just put the key - see lastPutNode */
+    void rememberPut(final ArtNode<V> node) {
+        if (rememberPut) {
+            lastPutNode = node;
+        }
     }
 
     /**
@@ -355,8 +389,8 @@ public final class LongAdaptiveRadixTreeMap<V> {
     }
 
     public void validateInternalState() {
-        if (previousValue != null) {
-            throw new IllegalStateException("previousValue retained");
+        if (previousValue != null || lastPutNode != null || rememberPut) {
+            throw new IllegalStateException("previousValue / lastPutNode retained");
         }
         if (root != null) {
             root.validateInternalState(INITIAL_LEVEL);

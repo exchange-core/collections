@@ -148,8 +148,8 @@ final ObjectsPool pool = new ObjectsPool(config);
 **Notes**
 - not thread-safe — intended for a single application thread
 - values must not be null: a missing key reads as null, so `put(key, null)` throws `NullPointerException`
-- `putIfAbsent`, `computeIfAbsent`, the fused puts and the polls are currently two descents (a lookup and a
-  put / removal); `size()` is a counter
+- `putIfAbsent`, `computeIfAbsent` and the polls are currently two descents (a lookup and a put / removal); the
+  fused puts one, when the neighbour is in the same 256-key block, otherwise two; `size()` is a counter
 - `clear()` returns the nodes to the pool — O(number of nodes)
 - `removeRange` is not implemented yet
 

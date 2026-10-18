@@ -131,6 +131,7 @@ public final class ArtNode48<V> extends ArtNode<V> {
             if (nodeLevel == 0) {
                 map.previousValue = (V) nodes[nodeIndex];
                 nodes[nodeIndex] = value;
+                map.rememberPut(this);
             } else {
                 final ArtNode<V> resizedNode = ((ArtNode<V>) nodes[nodeIndex]).put(key, nodeLevel - 8, value, map);
                 if (resizedNode != null) {
@@ -151,6 +152,7 @@ public final class ArtNode48<V> extends ArtNode<V> {
 
             if (nodeLevel == 0) {
                 nodes[freePosition] = value;
+                map.rememberPut(this);
             } else {
                 final ArtLeaf<V> newSubNode = ArtLeaf.create(objectsPool, key, value);
                 nodes[freePosition] = newSubNode;
@@ -171,7 +173,9 @@ public final class ArtNode48<V> extends ArtNode<V> {
 
             ArtNode256<V> node256 = objectsPool.get(ObjectsPool.ART_NODE_256, ArtNode256::new);
             node256.initFromNode48(this, idx, newElement);
-
+            if (node256.nodeLevel == 0) {
+                map.rememberPut(node256);
+            }
             return node256;
         }
     }
@@ -311,6 +315,13 @@ public final class ArtNode48<V> extends ArtNode<V> {
 
         // no keys found
         return null;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public V valueNextTo(final int idx, final boolean lower) {
+        final int slot = lower ? prevOccupied(idx - 1) : nextOccupied(idx + 1);
+        return slot < 0 ? null : (V) nodes[indexes[slot]];
     }
 
     @Override

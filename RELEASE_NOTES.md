@@ -57,8 +57,10 @@
 - **`LongAdaptiveRadixTreeMap`: `containsKey`, `putIfAbsent`, `computeIfAbsent`, `putAndGetLowerValue` /
   `putAndGetHigherValue`, `getCeilingValue` / `getFloorValue`, `firstKey` / `lastKey`, `firstValue` /
   `lastValue`, `pollFirstValue` / `pollLastValue`, `size()` and `isEmpty()`.** The fused puts are what an order
-  book does for a new price level (put it, link it to its neighbour); `putIfAbsent`, `computeIfAbsent`, the
-  fused puts and the polls are compositions for now - two descents.
+  book does for a new price level (put it, link it to its neighbour): one descent when the neighbour is in the same
+  256-key block - the node of the last level remembers the put, the neighbour is next to the key there - otherwise
+  a second descent finds it (in `ArtOpsJmh`, a new level -7% to -11% on a desktop). `putIfAbsent`,
+  `computeIfAbsent` and the polls are compositions for now - two descents.
 - **`ArtOpsJmh`** (`tests-perf`): average time of the `LongAdaptiveRadixTreeMap` operations against `TreeMap`
   and fastutil's `Long2ObjectRBTreeMap`, on the key sets of `ArtKeyProfiles`: order-book price levels (asks and
   bids, the distance from the mid hyperbolic - dense near the mid, thinning out further), order ids with 95%

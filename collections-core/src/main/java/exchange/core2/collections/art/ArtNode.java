@@ -46,6 +46,14 @@ public abstract class ArtNode<V> {
 
     public abstract V getFloorValue(long key, int level);
 
+    /**
+     * For a node of the last level (its children are values): the value next to the key byte in this node.
+     *
+     * @param lower the closest one below, otherwise above
+     * @return the value, or null if this node has none on that side
+     */
+    public abstract V valueNextTo(int idx, boolean lower);
+
     /** @return the lowest internal key of this subtree (the subtree is never empty) */
     public abstract long firstKey();
 

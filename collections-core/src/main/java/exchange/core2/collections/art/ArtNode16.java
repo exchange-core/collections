@@ -137,6 +137,7 @@ public final class ArtNode16<V> extends ArtNode<V> {
                 if (nodeLevel == 0) {
                     map.previousValue = (V) nodes[pos];
                     nodes[pos] = value;
+                    map.rememberPut(this);
                 } else {
                     final ArtNode<V> resizedNode = ((ArtNode<V>) nodes[pos]).put(key, nodeLevel - 8, value, map);
                     if (resizedNode != null) {
@@ -164,6 +165,7 @@ public final class ArtNode16<V> extends ArtNode<V> {
             keys[pos] = nodeIndex;
             if (nodeLevel == 0) {
                 nodes[pos] = value;
+                map.rememberPut(this);
             } else {
                 final ArtLeaf<V> newSubNode = ArtLeaf.create(objectsPool, key, value);
                 nodes[pos] = newSubNode;
@@ -182,7 +184,9 @@ public final class ArtNode16<V> extends ArtNode<V> {
 
             ArtNode48<V> node48 = objectsPool.get(ObjectsPool.ART_NODE_48, ArtNode48::new);
             node48.initFromNode16(this, nodeIndex, newElement);
-
+            if (node48.nodeLevel == 0) {
+                map.rememberPut(node48);
+            }
             return node48;
         }
     }
@@ -335,6 +339,25 @@ public final class ArtNode16<V> extends ArtNode<V> {
                 return nodeLevel == 0
                         ? (V) nodes[i]
                         : ((ArtNode<V>) nodes[i]).getFloorValue(UNSIGNED_MAX_KEY, nodeLevel - 8); // take highest existing key
+            }
+        }
+        return null;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public V valueNextTo(final int idx, final boolean lower) {
+        if (lower) {
+            for (int i = numChildren - 1; i >= 0; i--) {
+                if (keys[i] < idx) {
+                    return (V) nodes[i];
+                }
+            }
+        } else {
+            for (int i = 0; i < numChildren; i++) {
+                if (keys[i] > idx) {
+                    return (V) nodes[i];
+                }
             }
         }
         return null;

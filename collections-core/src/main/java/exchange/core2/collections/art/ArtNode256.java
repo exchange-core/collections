@@ -108,6 +108,7 @@ public final class ArtNode256<V> extends ArtNode<V> {
         if (nodeLevel == 0) {
             map.previousValue = (V) nodes[idx];
             nodes[idx] = value;
+            map.rememberPut(this);
         } else {
             ArtNode<V> node = (ArtNode<V>) nodes[idx];
             if (node != null) {
@@ -250,6 +251,13 @@ public final class ArtNode256<V> extends ArtNode<V> {
         }
         // no keys found
         return null;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public V valueNextTo(final int idx, final boolean lower) {
+        final int slot = lower ? prevOccupied(idx - 1) : nextOccupied(idx + 1);
+        return slot < 0 ? null : (V) nodes[slot];
     }
 
     @Override
