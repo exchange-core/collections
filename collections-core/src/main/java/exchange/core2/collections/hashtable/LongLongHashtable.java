@@ -217,6 +217,55 @@ public final class LongLongHashtable implements ILongLongHashtable {
     }
 
     /**
+     * The value of the key; a missing key is put with the value newValue computes for it - in one probe, unlike
+     * {@link #computeIfAbsent}: newValue must not modify the table. The room for the new key is made before newValue
+     * runs - a resize, or the {@link IllegalStateException} of a full table, which then changes nothing and calls
+     * nothing - so newValue can allocate what the value refers to, a record of {@link LongRecordTable}.
+     */
+    long getOrInsert(long key, LongUnaryOperator newValue) {
+
+        final long k = key ^ SEED;
+        if (k == NOT_ALLOWED_KEY) {
+            if (hasZeroKey) {
+                return zeroKeyValue;
+            }
+            final long value = newValue.applyAsLong(key);
+            putZeroKey(value);
+            return value;
+        }
+        int offset = HashingUtils.findFreeOffset(k, data, mask);
+        if (data[offset] == k) {
+            return data[offset + 1];
+        }
+        if (size + 1 >= upsizeThreshold) {
+            makeRoomForOneMore();
+            offset = HashingUtils.findFreeOffset(k, data, mask);
+        }
+        final long value = newValue.applyAsLong(key);
+        data[offset] = k;
+        data[offset + 1] = value;
+        size++;
+        return value;
+    }
+
+    /**
+     * What {@link #resize} does for the insert that crosses the threshold, before that insert: grows the table, or
+     * raises the threshold up to maxLoad at the maximum capacity, or throws there if the table is full.
+     */
+    private void makeRoomForOneMore() {
+        if (mask + 1 >= maxCapacity) {
+            final long limit = HashingUtils.maxEntries(mask + 1, maxLoad);
+            if (size + 1 <= limit) {
+                upsizeThreshold = limit + 1;
+                return;
+            }
+            throw new IllegalStateException("table is full: " + size + " entries at the maximum capacity of "
+                    + (mask + 1) + " slots");
+        }
+        switchToNewArray(new HashtableResizer(data, missingValue).resizeSync());
+    }
+
+    /**
      * Stores a new (seeded) key in the gap its probe stopped at.
      */
     private void insertAt(int offset, long k, long value) {

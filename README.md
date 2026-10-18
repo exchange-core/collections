@@ -63,6 +63,7 @@ mvn clean install
 | `LongLongHashtable`        | open-addressing hashtable | `long` → `long`  | stable       |
 | `LongLongLL2Hashtable`     | hashtable, async resizing | `long` → `long`  | stable       |
 | `RecordStore`              | paged records by handle   | handle → `long` fields | new    |
+| `LongRecordTable`          | hashtable index + records | `long` → `long` fields | new    |
 | `ObjectsPool`              | object pool               | –                | stable       |
 
 ---
@@ -519,6 +520,62 @@ not pinned), short runs — indicative:
   from passing the check)
 - a slot is reused up to 2^31 - 1 times; then it is retired, never allocated again
 - up to 2^30 records; a page of at most 2^20 records
+- not thread-safe
+
+---
+
+### LongRecordTable
+
+`long` keys to records of `long` fields: a `LongLongHashtable` maps every key to the handle of its record in a
+`RecordStore`. A key is one probe; the handle it returns reaches the fields with no probe at all — keep it (in an
+order, say), and the next update of the balance is one cache line.
+
+```java
+import exchange.core2.collections.hashtable.LongRecordTable;
+
+static final int AVAILABLE = 0;
+static final int RESERVED = 1;
+
+final LongRecordTable balances = LongRecordTable.builder()
+        .fields(2)
+        .expectedSize(1_000_000)    // no resize of the index, no new page, up to 1M keys
+        .build();
+
+final long h = balances.getOrCreate(accountId);  // a new key gets a record, all fields 0 - one probe
+balances.addAndGetExact(h, AVAILABLE, 1_000);
+balances.find(accountId);                        // h; NO_RECORD (0) for a missing key
+balances.keyOf(h);                               // accountId
+
+// later, through the handle kept: no probe
+balances.addAndGet(h, AVAILABLE, -100);
+balances.addAndGet(h, RESERVED, 100);
+
+balances.remove(accountId);                      // true - h is stale now
+balances.get(h, AVAILABLE);                      // IllegalArgumentException
+```
+
+**Features**
+- handles stay valid however the index grows: the records never move
+- a record holds its key: `keyOf(handle)`, and `forEach((key, handle) -> ...)` in the order of the records — the
+  same from run to run, whatever the hash seed; the consumer may remove keys
+- a full table refuses a new key before its record is allocated: `IllegalStateException`, nothing changes.
+  `fixedCapacity()` — neither the index nor the store allocates after the build; `maxCapacity(n)` limits the keys
+- the field accessors take the handle, as those of `RecordStore`; `addAndGetExact` for checked sums
+
+**Cost of the operations**
+
+| Operation | Cost |
+|---|---|
+| `find`, `containsKey`, `getOrCreate` of a present key | one probe of the index |
+| `getOrCreate` of a new key | one probe; may resize the index (a copy of it), may add a page to the store |
+| `remove` | one probe, the backward shift of the rest of the cluster, the record freed |
+| `get`, `set`, `addAndGet`, `addAndGetExact`, `keyOf`, `isValid` | the record only |
+| `forEach`, `clear` | every record |
+
+**Notes**
+- a record takes `fields + 2` longs: its header and the key; the index 16 bytes per slot, up to 65% full between
+  its resizes
+- the index resizes synchronously, as `LongLongHashtable` does — pre-size the table where that pause matters
 - not thread-safe
 
 ---

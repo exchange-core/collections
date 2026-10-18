@@ -76,6 +76,11 @@
   reference, or a `long` id into an `ArrayList` with a generation check) and a flat `long[]` - read, reservation,
   free + allocate, a scan, and a chase through the records (the latency of one access), from 10k records (L2) to
   10M (DRAM). Results in the README.
+- **`LongRecordTable`: `long` keys to records of `long` fields** - a `LongLongHashtable` index over a
+  `RecordStore`. `getOrCreate` takes one probe: the record of a new key is allocated once the index has made room
+  for it, so a full table refuses the key with nothing allocated. The handles stay valid through the resizes of the
+  index; a record holds its key (`keyOf`, and `forEach` in the order of the records, whatever the hash seed). An
+  access through `NO_RECORD` says so in the exception of `RecordStore`.
 
 ### Fixed
 

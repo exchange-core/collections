@@ -126,4 +126,91 @@ public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
         assertThrows(IllegalStateException.class, table::integrityCheck);
     }
 
+    @Test
+    public void getOrInsert_calls_the_function_only_for_a_missing_key() {
+        final LongLongHashtable table = new LongLongHashtable();
+        final int[] calls = {0};
+        assertEquals(70L, table.getOrInsert(7L, k -> {
+            calls[0]++;
+            return k * 10;
+        }));
+        assertEquals(1, calls[0]);
+        assertEquals(70L, table.getOrInsert(7L, k -> {
+            calls[0]++;
+            return -1;
+        }));
+        assertEquals(1, calls[0]);
+        assertEquals(70L, table.get(7L));
+        assertEquals(1, table.size());
+        table.integrityCheck();
+    }
+
+    /** the key stored as 0 - kept in fields, not in the array */
+    @Test
+    public void getOrInsert_takes_the_key_equal_to_the_seed() {
+        final LongLongHashtable table = new LongLongHashtable();
+        final long key = table.seed();
+        assertEquals(5L, table.getOrInsert(key, k -> 5L));
+        assertEquals(5L, table.getOrInsert(key, k -> 6L));
+        assertEquals(5L, table.get(key));
+        assertEquals(1, table.size());
+        table.integrityCheck();
+    }
+
+    @Test
+    public void getOrInsert_grows_the_table_as_put_does() {
+        final LongLongHashtable table = new LongLongHashtable(0);
+        final LongLongHashtable byPut = new LongLongHashtable(0);
+        final Random rand = new Random(3);
+        for (int i = 0; i < 50_000; i++) {
+            final long key = rand.nextLong();
+            assertEquals(key + 1, table.getOrInsert(key, k -> k + 1));
+            byPut.put(key, key + 1);
+            assertEquals(byPut.capacity(), table.capacity());
+        }
+        assertEquals(50_000, table.size());
+        table.forEach((key, value) -> assertEquals(key + 1, value));
+        table.integrityCheck();
+    }
+
+    /** 16 slots, maxLoad 0.95: 14 keys (two slots stay free); then refused before the function runs */
+    @Test
+    public void getOrInsert_refuses_a_key_of_a_full_table_before_the_function_runs() {
+        final LongLongHashtable table = LongLongHashtable.builder().expectedSize(9).fixedCapacity().build();
+        for (int i = 1; i <= 14; i++) {
+            table.getOrInsert(i, k -> k);
+        }
+        assertEquals(14, table.size());
+        final int[] calls = {0};
+        assertThrows(IllegalStateException.class, () -> table.getOrInsert(15L, k -> {
+            calls[0]++;
+            return k;
+        }));
+        assertEquals(0, calls[0]);
+        assertEquals(14, table.size());
+        assertFalse(table.containsKey(15L));
+        // present keys still answer
+        assertEquals(3L, table.getOrInsert(3L, k -> -1));
+        table.integrityCheck();
+    }
+
+    @Test
+    public void getOrInsert_changes_nothing_if_the_function_throws() {
+        final LongLongHashtable table = new LongLongHashtable(0);
+        for (int i = 1; i <= 9; i++) {
+            table.put(i, i);
+        }
+        // the 10th key would resize: the room is made, the key is not inserted
+        assertThrows(IllegalStateException.class, () -> table.getOrInsert(10L, k -> {
+            throw new IllegalStateException("store is full");
+        }));
+        assertThrows(IllegalStateException.class, () -> table.getOrInsert(table.seed(), k -> {
+            throw new IllegalStateException("store is full");
+        }));
+        assertEquals(9, table.size());
+        assertFalse(table.containsKey(10L));
+        assertFalse(table.containsKey(table.seed()));
+        table.integrityCheck();
+    }
+
 }
