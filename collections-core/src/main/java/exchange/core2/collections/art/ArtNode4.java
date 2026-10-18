@@ -130,7 +130,7 @@ public final class ArtNode4<V> implements IArtNode<V> {
 
     @Override
     @SuppressWarnings("unchecked")
-    public IArtNode<V> put(final long key, final int level, final V value) {
+    public IArtNode<V> put(final long key, final int level, final V value, final LongAdaptiveRadixTreeMap<V> map) {
 
 //        log.debug(" ------ PUT {}", String.format("%X", key));
 //        log.debug("level={} nodeLevel={}", level, nodeLevel);
@@ -151,9 +151,10 @@ public final class ArtNode4<V> implements IArtNode<V> {
             if (nodeIndex == keys[pos]) {
                 // just update
                 if (nodeLevel == 0) {
+                    map.previousValue = (V) nodes[pos];
                     nodes[pos] = value;
                 } else {
-                    final IArtNode<V> resizedNode = ((IArtNode<V>) nodes[pos]).put(key, nodeLevel - 8, value);
+                    final IArtNode<V> resizedNode = ((IArtNode<V>) nodes[pos]).put(key, nodeLevel - 8, value, map);
                     if (resizedNode != null) {
                         // update resized node if capacity has increased
                         nodes[pos] = resizedNode;
@@ -217,7 +218,7 @@ public final class ArtNode4<V> implements IArtNode<V> {
 
     @Override
     @SuppressWarnings("unchecked")
-    public IArtNode<V> remove(long key, int level) {
+    public IArtNode<V> remove(final long key, final int level, final LongAdaptiveRadixTreeMap<V> map) {
 
 //        String prefix = StringUtils.repeat(" ", (56 - level) / 4);
 //        log.debug(prefix + " ------ REMOVE {}", String.format("%X", key));
@@ -250,20 +251,22 @@ public final class ArtNode4<V> implements IArtNode<V> {
 
         // removing
         if (nodeLevel == 0) {
+            map.previousValue = (V) node;
             removeElementAtPos(pos);
         } else {
-            final IArtNode<V> resizedNode = ((IArtNode<V>) node).remove(key, nodeLevel - 8);
+            final IArtNode<V> resizedNode = ((IArtNode<V>) node).remove(key, nodeLevel - 8, map);
             if (resizedNode != node) {
-                // TODO put old into the pool
                 // update resized node if capacity has decreased
                 nodes[pos] = resizedNode;
                 if (resizedNode == null) {
                     removeElementAtPos(pos);
                     if (numChildren == 1) {
-//                        log.debug(prefix + "CAN MERGE! nodeLevel={} level={}", nodeLevel, level);
-                        // todo put 'this' into pul
-                        IArtNode<V> lastNode = (IArtNode<V>) nodes[0];
-                        //   lastNode.setNodeLevel(nodeLevel);
+                        // The parent links the last child directly: the child keeps the full key, so its own
+                        // prefix check covers the byte this node used to branch on. This node goes to the pool.
+                        final IArtNode<V> lastNode = (IArtNode<V>) nodes[0];
+                        nodes[0] = null;
+                        numChildren = 0;
+                        objectsPool.put(ObjectsPool.ART_NODE_4, this);
                         return lastNode;
                     }
                 }
@@ -381,9 +384,27 @@ public final class ArtNode4<V> implements IArtNode<V> {
 
     @Override
     @SuppressWarnings("unchecked")
+    public long firstKey() {
+        return nodeLevel == 0
+                ? (nodeKey & -256L) | keys[0]
+                : ((IArtNode<V>) nodes[0]).firstKey();
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public long lastKey() {
+        final int last = numChildren - 1;
+        return nodeLevel == 0
+                ? (nodeKey & -256L) | keys[last]
+                : ((IArtNode<V>) nodes[last]).lastKey();
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
     public int forEach(LongObjConsumer<V> consumer, int limit) {
         if (nodeLevel == 0) {
-            final long keyBase = (nodeKey >>> 8) << 8;
+            // map key of index 0: the low byte is zero, so adding an index never reaches the flipped sign bit
+            final long keyBase = LongAdaptiveRadixTreeMap.flipSignBit((nodeKey >>> 8) << 8);
             final int n = Math.min(numChildren, limit);
             for (int i = 0; i < n; i++) {
                 consumer.accept(keyBase + keys[i], (V) nodes[i]);
@@ -402,7 +423,7 @@ public final class ArtNode4<V> implements IArtNode<V> {
     @SuppressWarnings("unchecked")
     public int forEachDesc(LongObjConsumer<V> consumer, int limit) {
         if (nodeLevel == 0) {
-            final long keyBase = (nodeKey >>> 8) << 8;
+            final long keyBase = LongAdaptiveRadixTreeMap.flipSignBit((nodeKey >>> 8) << 8);
             int numFound = 0;
             for (int i = numChildren - 1; i >= 0 && numFound < limit; i--) {
                 consumer.accept(keyBase + keys[i], (V) nodes[i]);
@@ -430,6 +451,19 @@ public final class ArtNode4<V> implements IArtNode<V> {
             }
             return limit - numLeft;
         }
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public void recycle() {
+        if (nodeLevel != 0) {
+            for (int i = 0; i < numChildren; i++) {
+                ((IArtNode<V>) nodes[i]).recycle();
+            }
+        }
+        Arrays.fill(nodes, null);
+        numChildren = 0;
+        objectsPool.put(ObjectsPool.ART_NODE_4, this);
     }
 
     private void removeElementAtPos(final int pos) {
@@ -484,7 +518,7 @@ public final class ArtNode4<V> implements IArtNode<V> {
     @Override
     @SuppressWarnings("unchecked")
     public List<Map.Entry<Long, V>> entries() {
-        final long keyPrefix = nodeKey & (-1L << 8);
+        final long keyPrefix = LongAdaptiveRadixTreeMap.flipSignBit(nodeKey & (-1L << 8)); // map key of index 0
 
         final List<Map.Entry<Long, V>> list = new ArrayList<>();
         for (int i = 0; i < numChildren; i++) {

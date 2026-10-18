@@ -5,9 +5,11 @@ import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.TreeMap;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
 
 /**
  * Compares the whole read surface of {@link LongAdaptiveRadixTreeMap} against a {@link TreeMap}.
@@ -44,7 +46,9 @@ final class ArtOracleAssertions {
         final List<Long> expectedDesc = new ArrayList<>(oracle.descendingKeySet());
         assertEquals("forEachDesc() order", expectedDesc, viaForEachDesc);
 
-        assertEquals("size()", oracle.size(), tested.size(Integer.MAX_VALUE));
+        assertEquals("size()", oracle.size(), tested.size());
+        assertEquals("size(limit)", oracle.size(), tested.size(Integer.MAX_VALUE));
+        assertEquals("isEmpty()", oracle.isEmpty(), tested.isEmpty());
 
         // 3. every stored key must be retrievable - ordering can be right while get() is broken
         for (Map.Entry<Long, String> e : oracle.entrySet()) {
@@ -57,6 +61,22 @@ final class ArtOracleAssertions {
                     valueOf(oracle.higherEntry(key)), tested.getHigherValue(key));
             assertEquals("getLowerValue(" + key + ")",
                     valueOf(oracle.lowerEntry(key)), tested.getLowerValue(key));
+            assertEquals("getCeilingValue(" + key + ")",
+                    valueOf(oracle.ceilingEntry(key)), tested.getCeilingValue(key));
+            assertEquals("getFloorValue(" + key + ")",
+                    valueOf(oracle.floorEntry(key)), tested.getFloorValue(key));
+            assertEquals("containsKey(" + key + ")", oracle.containsKey(key), tested.containsKey(key));
+        }
+
+        // 5. the ends of the map
+        assertEquals("firstValue()", valueOf(oracle.firstEntry()), tested.firstValue());
+        assertEquals("lastValue()", valueOf(oracle.lastEntry()), tested.lastValue());
+        if (oracle.isEmpty()) {
+            assertThrows(NoSuchElementException.class, tested::firstKey);
+            assertThrows(NoSuchElementException.class, tested::lastKey);
+        } else {
+            assertEquals("firstKey()", (long) oracle.firstKey(), tested.firstKey());
+            assertEquals("lastKey()", (long) oracle.lastKey(), tested.lastKey());
         }
     }
 

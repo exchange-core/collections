@@ -74,9 +74,10 @@ latency spikes caused by insertion.
 
 **Features**
 - keys are kept in **signed** ascending order (same order as `TreeMap<Long, V>`)
-- no re-balancing, no re-sizing — stable worst-case latency
+- no re-balancing, no whole-tree resize — a put or remove changes at most the nodes on the key's path
 - internal nodes are recycled through `ObjectsPool` — low GC pressure
-- neighbour lookups (`getHigherValue` / `getLowerValue`) and ordered traversal
+- neighbour lookups (`getHigherValue` / `getLowerValue`, `getCeilingValue` / `getFloorValue`), first / last
+  key and value, and ordered traversal
 
 ```java
 import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
@@ -89,12 +90,25 @@ map.put(-500L, "negative");
 
 map.get(2_000L);        // "second"
 map.get(12_345L);       // null — missing keys return null
+map.put(2_000L, "2nd"); // "second" — the previous value
 
-map.getHigherValue(1_000L);  // "second"   — closest key strictly above
-map.getLowerValue(1_000L);   // "negative" — closest key strictly below
+map.getHigherValue(1_000L);   // "2nd"      — closest key strictly above
+map.getLowerValue(1_000L);    // "negative" — closest key strictly below
+map.getCeilingValue(1_000L);  // "first"    — the key itself, or the closest above
+map.firstKey();               // -500
+map.lastValue();              // "2nd"
 
-map.remove(1_000L);
-map.size(Integer.MAX_VALUE); // 2
+map.remove(1_000L);     // "first" — the removed value
+map.size();             // 2
+```
+
+For an order book: `putAndGetLowerValue` / `putAndGetHigherValue` put a new price level and return its
+neighbour (to link it into the chain of levels), `computeIfAbsent` returns a level or creates it,
+`pollFirstValue` / `pollLastValue` remove the lowest / highest one:
+
+```java
+final PriceLevel level = new PriceLevel(price);
+final PriceLevel better = asks.putAndGetLowerValue(price, level); // null: the new best ask
 ```
 
 Ordered traversal — `forEach` walks ascending, `forEachDesc` descending. Both take a `limit` and
@@ -132,8 +146,11 @@ final ObjectsPool pool = new ObjectsPool(config);
 
 **Notes**
 - not thread-safe — intended for a single application thread
-- `getOrInsert` and `removeRange` are not implemented yet
-- `size(limit)` walks the tree, it is not an O(1) counter — always pass a bound
+- values must not be null: a missing key reads as null, so `put(key, null)` throws `NullPointerException`
+- `putIfAbsent`, `computeIfAbsent`, the fused puts and the polls are currently two descents (a lookup and a
+  put / removal); `size()` is a counter
+- `clear()` returns the nodes to the pool — O(number of nodes)
+- `removeRange` is not implemented yet
 
 ---
 
@@ -464,7 +481,7 @@ try (CpuAffinity affinity = CpuAffinity.acquireCore()) {   // or acquireCore(cpu
 ## Order book
 
 `collections-orderbook` contains the `IOrderBook` interface and a naive reference implementation
-(`OrderBookNaiveImpl`) built on top of `LongAdaptiveRadixTreeMap`. Commands are passed as flat binary
+(`OrderBookNaiveImpl`), with the price levels in a `TreeMap`. Commands are passed as flat binary
 records inside an Agrona `DirectBuffer`, so the hot path stays allocation-free:
 
 ```java
