@@ -64,6 +64,7 @@ mvn clean install
 | `LongLongLL2Hashtable`     | hashtable, async resizing | `long` → `long`  | stable       |
 | `RecordStore`              | paged records by handle   | handle → `long` fields | new    |
 | `LongRecordTable`          | hashtable index + records | `long` → `long` fields | new    |
+| `LongTupleHashtable`       | open-addressing hashtable | `long`s → `long`s, fixed widths | new |
 | `ObjectsPool`              | object pool               | –                | stable       |
 
 ---
@@ -597,6 +598,68 @@ them); ns per operation, 10k / 1M / 10M keys. The laptop of `RecordStoreJmh`, sh
 - a record takes `fields + 2` longs: its header and the key; the index 16 bytes per slot, up to 65% full between
   its resizes
 - the index resizes synchronously, as `LongLongHashtable` does — pre-size the table where that pause matters
+- not thread-safe
+
+### LongTupleHashtable
+
+Keys of a fixed number of `long`s to values of a fixed number of `long`s, side by side in the slots of one
+`long[]` — a key of two or three longs (an account and a currency; a UUID, a token and a subaccount) without
+packing it into one, and its values in the slot of the key: one probe reaches them.
+
+```java
+import exchange.core2.collections.hashtable.LongTupleHashtable;
+
+static final int AVAILABLE = 0;
+static final int RESERVED = 1;
+
+// (user UUID high, user UUID low, token << 8 | subaccount) -> available, reserved
+final LongTupleHashtable balances = LongTupleHashtable.builder()
+        .keyLongs(3)
+        .valueLongs(2)
+        .expectedSize(1_000_000)
+        .build();
+
+int pos = balances.getOrInsert(uuidHi, uuidLo, token << 8 | sub);  // a new key gets zero values
+balances.addAndGetValueExact(pos, AVAILABLE, 1_000);
+balances.addAndGetValue(pos, AVAILABLE, -100);
+balances.addAndGetValue(pos, RESERVED, 100);
+
+pos = balances.find(uuidHi, uuidLo, token << 8 | sub);              // NO_SLOT for a missing key
+balances.getValue(pos, RESERVED);                                  // 100
+balances.getKey(pos, 2);                                           // token << 8 | sub
+balances.remove(uuidHi, uuidLo, token << 8 | sub);                  // true
+```
+
+**Features**
+- a slot is a tag, the key and the values: `1 + keyLongs + valueLongs` longs. The tag is the hash of the key with
+  the top bit set — never 0, which marks a free slot — so any key can be stored, all zeros included; a probe
+  compares the tags before the keys, a resize or a removal never hashes a key again
+- keys of 1 to 4 longs have methods of their own, without an array; keys of any length go through a `long[]`
+  (`find(key, offset)`, ...). `valueLongs(0)` makes a set of keys
+- the hash seed of the JVM, `maxCapacity` / `fixedCapacity` / `maxLoad`, backward-shift deletion: as in
+  `LongLongHashtable`; a full table refuses a new key, unchanged
+- `addAndGetValueExact` for checked sums
+
+**A position is valid until the next insert or removal.** An operation on a key returns the position of its slot
+and the values are reached through it — no second structure, no handle to check. An insert may resize the table,
+a removal shifts the entries after the removed one back: after either, find the key again. A position kept longer
+reads another key's values; for references that live — in an order, say — use the handles of `LongRecordTable`.
+
+**Cost of the operations**
+
+| Operation | Cost |
+|---|---|
+| `find`, `getOrInsert` of a present key, `remove` of a missing one | the hash of the key (a mix per long), one probe |
+| `getOrInsert` of a new key | one probe; may resize the table: a copy of every slot, no key hashed again |
+| `remove` | one probe, then the rest of the cluster shifts back by one slot |
+| `getValue`, `setValue`, `addAndGetValue`, `addAndGetValueExact`, `getKey` | the slot only |
+| `forEach`, `clear`, `toString` | the whole array |
+
+**Notes**
+- a slot takes `8 * (1 + keyLongs + valueLongs)` bytes: 48 for a key of three longs and two values, up to 65%
+  full between the resizes
+- the resize is synchronous, on the calling thread — pre-size the table where that pause matters
+- `forEach` hands out the positions; its consumer must not insert or remove keys
 - not thread-safe
 
 ---
