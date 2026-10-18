@@ -128,6 +128,16 @@ final class ArtLeaf<V> extends ArtNode<V> {
     }
 
     @Override
+    public int forEachFrom(final long key, final int level, final LongObjConsumer<V> consumer, final int limit) {
+        return Long.compareUnsigned(this.key, key) >= 0 ? forEach(consumer, limit) : 0;
+    }
+
+    @Override
+    public int forEachDescFrom(final long key, final int level, final LongObjConsumer<V> consumer, final int limit) {
+        return Long.compareUnsigned(this.key, key) <= 0 ? forEach(consumer, limit) : 0;
+    }
+
+    @Override
     public void recycle() {
         value = null;
         objectsPool.put(ObjectsPool.ART_LEAF, this);

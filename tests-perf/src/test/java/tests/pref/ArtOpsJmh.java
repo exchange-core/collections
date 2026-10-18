@@ -8,6 +8,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectAVLTreeMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectRBTreeMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectSortedMap;
+import it.unimi.dsi.fastutil.longs.LongBidirectionalIterator;
 import it.unimi.dsi.fastutil.objects.ObjectBidirectionalIterator;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
@@ -196,6 +197,23 @@ public class ArtOpsJmh {
     }
 
     /**
+     * L2 market data from a price: the 10 levels from a stored key away from the mid - up for an ask, down for a bid
+     * (ascending otherwise). The ART walks with forEach from the key.
+     */
+    @Benchmark
+    public long range10() {
+        final long key = present[i++ & RING_MASK];
+        return key > mid || !profile.twoSided() ? asks.rangeAsc(key, TOP) : bids.rangeDesc(key, TOP);
+    }
+
+    /** as range10, with the ART's cursor: a seek and 10 moves (the trees: the same iterators as in range10) */
+    @Benchmark
+    public long cursor10() {
+        final long key = present[i++ & RING_MASK];
+        return key > mid || !profile.twoSided() ? asks.cursorAsc(key, TOP) : bids.cursorDesc(key, TOP);
+    }
+
+    /**
      * A stream of order-book operations, one per call: 75% lookups of a level (an order joins it), 10% new
      * levels (put + neighbour), 10% removed levels, 5% top 10. The keys come from the distribution, so most
      * activity is near the mid. The stream returns the maps to their initial state and repeats.
@@ -326,6 +344,29 @@ public class ArtOpsJmh {
         }
         check(ascending, asks.topAsc(TOP), "topAsc", TOP);
         check(descending, bids.topDesc(TOP), "topDesc", TOP);
+        for (int k = 0; k < 1000; k++) {
+            final long from = (k & 1) == 0 ? present[k] : absent[k];
+            final SortedIndex index = side(from);
+            final int ceiling = ceilingIndex(sorted, from);
+            long up = 0;
+            for (int j = ceiling, n = 0; j < sorted.length && n < TOP && side(sorted[j]) == index; j++, n++) {
+                up += sorted[j];
+            }
+            check(up, index.rangeAsc(from, TOP), "rangeAsc", from);
+            check(up, index.cursorAsc(from, TOP), "cursorAsc", from);
+            final int floor = ceiling < sorted.length && sorted[ceiling] == from ? ceiling : ceiling - 1;
+            long down = 0;
+            for (int j = floor, n = 0; j >= 0 && n < TOP && side(sorted[j]) == index; j--, n++) {
+                down += sorted[j];
+            }
+            check(down, index.rangeDesc(from, TOP), "rangeDesc", from);
+            check(down, index.cursorDesc(from, TOP), "cursorDesc", from);
+        }
+    }
+
+    private static int ceilingIndex(final long[] sorted, final long key) {
+        final int found = java.util.Arrays.binarySearch(sorted, key);
+        return found >= 0 ? found : -found - 1;
     }
 
     private static void check(final Object expected, final Object actual, final String op, final long key) {
@@ -368,6 +409,22 @@ public class ArtOpsJmh {
 
         /** visits the n highest entries, returns the sum of their keys */
         long topDesc(int n);
+
+        /** visits the n entries from the key (inclusive) up, returns the sum of their keys */
+        long rangeAsc(long from, int n);
+
+        /** visits the n entries from the key (inclusive) down, returns the sum of their keys */
+        long rangeDesc(long from, int n);
+
+        /** as rangeAsc, step by step */
+        default long cursorAsc(long from, int n) {
+            return rangeAsc(from, n);
+        }
+
+        /** as rangeDesc, step by step */
+        default long cursorDesc(long from, int n) {
+            return rangeDesc(from, n);
+        }
     }
 
     static final class ArtIndex implements SortedIndex {
@@ -375,6 +432,7 @@ public class ArtOpsJmh {
         private final LongAdaptiveRadixTreeMap<Object> map = new LongAdaptiveRadixTreeMap<>();
         private long sum;
         private final LongObjConsumer<Object> summing = (key, value) -> sum += key;
+        private final LongAdaptiveRadixTreeMap.Cursor<Object> cursor = map.cursor();
 
         @Override
         public Object get(long key) {
@@ -423,6 +481,38 @@ public class ArtOpsJmh {
             sum = 0;
             map.forEachDesc(summing, n);
             return sum;
+        }
+
+        @Override
+        public long rangeAsc(long from, int n) {
+            sum = 0;
+            map.forEach(from, summing, n);
+            return sum;
+        }
+
+        @Override
+        public long rangeDesc(long from, int n) {
+            sum = 0;
+            map.forEachDesc(from, summing, n);
+            return sum;
+        }
+
+        @Override
+        public long cursorAsc(long from, int n) {
+            long total = 0;
+            for (boolean on = cursor.seekCeiling(from); on && n-- > 0; on = cursor.next()) {
+                total += cursor.key();
+            }
+            return total;
+        }
+
+        @Override
+        public long cursorDesc(long from, int n) {
+            long total = 0;
+            for (boolean on = cursor.seekFloor(from); on && n-- > 0; on = cursor.prev()) {
+                total += cursor.key();
+            }
+            return total;
         }
     }
 
@@ -477,6 +567,16 @@ public class ArtOpsJmh {
         @Override
         public long topDesc(int n) {
             return sum(map.descendingMap().entrySet().iterator(), n);
+        }
+
+        @Override
+        public long rangeAsc(long from, int n) {
+            return sum(map.tailMap(from, true).entrySet().iterator(), n);
+        }
+
+        @Override
+        public long rangeDesc(long from, int n) {
+            return sum(map.headMap(from, true).descendingMap().entrySet().iterator(), n);
         }
 
         private static long sum(final Iterator<Map.Entry<Long, Object>> it, int n) {
@@ -565,6 +665,27 @@ public class ArtOpsJmh {
             long sum = 0;
             while (n-- > 0 && it.hasPrevious()) {
                 sum += it.previous().getLongKey();
+            }
+            return sum;
+        }
+
+        @Override
+        public long rangeAsc(long from, int n) {
+            final LongBidirectionalIterator it = map.tailMap(from).keySet().iterator();
+            long sum = 0;
+            while (n-- > 0 && it.hasNext()) {
+                sum += it.nextLong();
+            }
+            return sum;
+        }
+
+        @Override
+        public long rangeDesc(long from, int n) {
+            // positioned so that previous() is the highest key at or below the starting point
+            final LongBidirectionalIterator it = map.keySet().iterator(from);
+            long sum = 0;
+            while (n-- > 0 && it.hasPrevious()) {
+                sum += it.previousLong();
             }
             return sum;
         }

@@ -67,6 +67,16 @@ public abstract class ArtNode<V> {
     public abstract int forEachDesc(LongObjConsumer<V> consumer, int limit);
 
     /**
+     * Visits the keys at or above the internal key, ascending - map keys (signed) to the consumer.
+     *
+     * @return the number of keys visited, at most limit (positive)
+     */
+    public abstract int forEachFrom(long key, int level, LongObjConsumer<V> consumer, int limit);
+
+    /** Visits the keys at or below the internal key, descending - as {@link #forEachFrom}. */
+    public abstract int forEachDescFrom(long key, int level, LongObjConsumer<V> consumer, int limit);
+
+    /**
      * Returns this node and its whole subtree into the pool. The node must be unreachable afterwards.
      */
     public abstract void recycle();
@@ -105,4 +115,43 @@ public abstract class ArtNode<V> {
 
 
     public abstract ObjectsPool getObjectsPool();
+
+    /*
+     * Slots, for the cursor: the children in key order. The low byte of a slot is the key byte of the child (ArtNode48 /
+     * 256 use the key byte alone), ArtNode4 / 16 put the position above it - so the cursor gets the key byte without
+     * asking the node. A leaf has no slots - the cursor tells it apart and does not ask.
+     */
+
+    long nodeKey() {
+        throw new UnsupportedOperationException();
+    }
+
+    int nodeLevel() {
+        throw new UnsupportedOperationException();
+    }
+
+    /** @return the slot of the lowest key byte at or above idx, or -1 */
+    int slotCeiling(int idx) {
+        throw new UnsupportedOperationException();
+    }
+
+    /** @return the slot of the highest key byte at or below idx, or -1 */
+    int slotFloor(int idx) {
+        throw new UnsupportedOperationException();
+    }
+
+    /** @return the slot after this one, or -1 */
+    int slotNext(int slot) {
+        throw new UnsupportedOperationException();
+    }
+
+    /** @return the slot before this one, or -1 */
+    int slotPrev(int slot) {
+        throw new UnsupportedOperationException();
+    }
+
+    /** @return the child at the slot: a node, or a value at level 0 */
+    Object childAtSlot(int slot) {
+        throw new UnsupportedOperationException();
+    }
 }

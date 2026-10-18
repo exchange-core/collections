@@ -261,6 +261,41 @@ public final class ArtNode256<V> extends ArtNode<V> {
     }
 
     @Override
+    long nodeKey() {
+        return nodeKey;
+    }
+
+    @Override
+    int nodeLevel() {
+        return nodeLevel;
+    }
+
+    @Override
+    int slotCeiling(final int idx) {
+        return nextOccupied(idx);
+    }
+
+    @Override
+    int slotFloor(final int idx) {
+        return prevOccupied(idx);
+    }
+
+    @Override
+    int slotNext(final int slot) {
+        return nextOccupied(slot + 1);
+    }
+
+    @Override
+    int slotPrev(final int slot) {
+        return prevOccupied(slot - 1);
+    }
+
+    @Override
+    Object childAtSlot(final int slot) {
+        return nodes[slot];
+    }
+
+    @Override
     @SuppressWarnings("unchecked")
     public long firstKey() {
         final int idx = nextOccupied(0);
@@ -297,6 +332,69 @@ public final class ArtNode256<V> extends ArtNode<V> {
             }
             return limit - numLeft;
         }
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public int forEachFrom(final long key, final int level, final LongObjConsumer<V> consumer, final int limit) {
+        if (level != nodeLevel) {
+            // the bytes this node skips (path compression): its keys are all above or all below the key
+            final long mask = -1L << (nodeLevel + 8);
+            final int cmp = Long.compareUnsigned(nodeKey & mask, key & mask);
+            if (cmp != 0) {
+                return cmp > 0 ? forEach(consumer, limit) : 0;
+            }
+        }
+        final int idx = (int) ((key >>> nodeLevel) & 0xFF);
+        int found = 0;
+        int i = nextOccupied(idx);
+        if (nodeLevel == 0) {
+            final long keyBase = LongAdaptiveRadixTreeMap.flipSignBit((nodeKey >>> 8) << 8);
+            for (; i >= 0 && found < limit; i = nextOccupied(i + 1)) {
+                consumer.accept(keyBase + i, (V) nodes[i]);
+                found++;
+            }
+            return found;
+        }
+        if (i == idx) {
+            found += ((ArtNode<V>) nodes[i]).forEachFrom(key, nodeLevel - 8, consumer, limit);
+            i = nextOccupied(i + 1);
+        }
+        for (; i >= 0 && found < limit; i = nextOccupied(i + 1)) {
+            found += ((ArtNode<V>) nodes[i]).forEach(consumer, limit - found);
+        }
+        return found;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public int forEachDescFrom(final long key, final int level, final LongObjConsumer<V> consumer, final int limit) {
+        if (level != nodeLevel) {
+            final long mask = -1L << (nodeLevel + 8);
+            final int cmp = Long.compareUnsigned(nodeKey & mask, key & mask);
+            if (cmp != 0) {
+                return cmp < 0 ? forEachDesc(consumer, limit) : 0;
+            }
+        }
+        final int idx = (int) ((key >>> nodeLevel) & 0xFF);
+        int found = 0;
+        int i = prevOccupied(idx);
+        if (nodeLevel == 0) {
+            final long keyBase = LongAdaptiveRadixTreeMap.flipSignBit((nodeKey >>> 8) << 8);
+            for (; i >= 0 && found < limit; i = prevOccupied(i - 1)) {
+                consumer.accept(keyBase + i, (V) nodes[i]);
+                found++;
+            }
+            return found;
+        }
+        if (i == idx) {
+            found += ((ArtNode<V>) nodes[i]).forEachDescFrom(key, nodeLevel - 8, consumer, limit);
+            i = prevOccupied(i - 1);
+        }
+        for (; i >= 0 && found < limit; i = prevOccupied(i - 1)) {
+            found += ((ArtNode<V>) nodes[i]).forEachDesc(consumer, limit - found);
+        }
+        return found;
     }
 
     @Override

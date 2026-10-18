@@ -119,6 +119,10 @@ return the number of entries actually visited, which makes them a natural fit fo
 map.forEach((key, value) -> System.out.println(key + " -> " + value), 10);
 map.forEachDesc((key, value) -> System.out.println(key + " -> " + value), 10);
 
+// from a key: the 10 keys at or above 1_500, the 10 at or below it
+map.forEach(1_500L, (key, value) -> System.out.println(key + " -> " + value), 10);
+map.forEachDesc(1_500L, (key, value) -> System.out.println(key + " -> " + value), 10);
+
 // materialize everything (produces garbage — avoid on hot paths)
 map.entriesList().forEach(e -> System.out.println(e.getKey() + " -> " + e.getValue()));
 ```
@@ -151,6 +155,10 @@ final ObjectsPool pool = new ObjectsPool(config);
 - `putIfAbsent`, `computeIfAbsent` and the polls are currently two descents (a lookup and a put / removal); the
   fused puts one, when the neighbour is in the same 256-key block, otherwise two; `size()` is a counter
 - `clear()` returns the nodes to the pool — O(number of nodes)
+- a `Cursor` (`map.cursor()`, reusable, allocation-free) seeks a key — ceiling, higher, floor, lower, first, last —
+  and moves to the next or previous one; `remove()` removes the key it is at and moves on. A change of the map not
+  made through the cursor makes its next call throw `ConcurrentModificationException`. For a run of keys from a
+  key `forEach(from, ...)` is faster
 - `removeRange` is not implemented yet
 
 ---

@@ -61,10 +61,20 @@
   256-key block - the node of the last level remembers the put, the neighbour is next to the key there - otherwise
   a second descent finds it (in `ArtOpsJmh`, a new level -7% to -11% on a desktop). `putIfAbsent`,
   `computeIfAbsent` and the polls are compositions for now - two descents.
+- **`LongAdaptiveRadixTreeMap.Cursor`** (`map.cursor()`): a position in the map, reusable and allocation-free - seek
+  the ceiling, higher, floor or lower key, the first or the last, then move to the next or the previous one; `key()`,
+  `value()`, `remove()` (and move on). A change of the key set not made through the cursor makes its next call throw
+  `ConcurrentModificationException`. For the stop orders up to a price, a sweep over the levels, and the
+  key-returning navigation `TreeMap` has (`higherKey` = `seekHigher` + `key()`). In `ArtOpsJmh` (desktop) a seek and
+  10 moves take 170-190 ns in a book, the iterators of the trees 95-165 ns - the next thing to make faster.
+- **`LongAdaptiveRadixTreeMap.forEach(from, consumer, limit)` / `forEachDesc(from, ...)`**: the keys from a key up /
+  down - L2 market data from a price. One descent to the key, then the subtrees beyond it are walked whole: 10
+  levels from a price in 57-79 ns, the trees 94-155 ns (`ArtOpsJmh` `range10`, desktop).
 - **`ArtOpsJmh`** (`tests-perf`): average time of the `LongAdaptiveRadixTreeMap` operations against `TreeMap`
   and fastutil's `Long2ObjectRBTreeMap`, on the key sets of `ArtKeyProfiles`: order-book price levels (asks and
   bids, the distance from the mid hyperbolic - dense near the mid, thinning out further), order ids with 95%
-  of them gone, random keys. Lookups, neighbour, removal + put, new level (put + neighbour), top 10, and a mixed
+  of them gone, random keys. Lookups, neighbour, removal + put, new level (put + neighbour), top 10, 10 keys from
+  a key (`range10`; `cursor10` the same with the cursor), and a mixed
   order-book stream.
 
 ### Fixed

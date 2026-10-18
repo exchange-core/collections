@@ -364,6 +364,55 @@ public final class ArtNode16<V> extends ArtNode<V> {
     }
 
     @Override
+    long nodeKey() {
+        return nodeKey;
+    }
+
+    @Override
+    int nodeLevel() {
+        return nodeLevel;
+    }
+
+    @Override
+    int slotCeiling(final int idx) {
+        for (int i = 0; i < numChildren; i++) {
+            final int keyByte = keys[i];
+            if (keyByte >= idx) {
+                return (i << 8) | keyByte;
+            }
+        }
+        return -1;
+    }
+
+    @Override
+    int slotFloor(final int idx) {
+        for (int i = numChildren - 1; i >= 0; i--) {
+            final int keyByte = keys[i];
+            if (keyByte <= idx) {
+                return (i << 8) | keyByte;
+            }
+        }
+        return -1;
+    }
+
+    @Override
+    int slotNext(final int slot) {
+        final int i = (slot >>> 8) + 1;
+        return i < numChildren ? (i << 8) | keys[i] : -1;
+    }
+
+    @Override
+    int slotPrev(final int slot) {
+        final int i = (slot >>> 8) - 1;
+        return i >= 0 ? (i << 8) | keys[i] : -1;
+    }
+
+    @Override
+    Object childAtSlot(final int slot) {
+        return nodes[slot >>> 8];
+    }
+
+    @Override
     @SuppressWarnings("unchecked")
     public long firstKey() {
         return nodeLevel == 0
@@ -398,6 +447,75 @@ public final class ArtNode16<V> extends ArtNode<V> {
             }
             return limit - numLeft;
         }
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public int forEachFrom(final long key, final int level, final LongObjConsumer<V> consumer, final int limit) {
+        if (level != nodeLevel) {
+            // the bytes this node skips (path compression): its keys are all above or all below the key
+            final long mask = -1L << (nodeLevel + 8);
+            final int cmp = Long.compareUnsigned(nodeKey & mask, key & mask);
+            if (cmp != 0) {
+                return cmp > 0 ? forEach(consumer, limit) : 0;
+            }
+        }
+        final int idx = (int) ((key >>> nodeLevel) & 0xFF);
+        int pos = 0;
+        while (pos < numChildren && keys[pos] < idx) {
+            pos++;
+        }
+        int found = 0;
+        if (nodeLevel == 0) {
+            final long keyBase = LongAdaptiveRadixTreeMap.flipSignBit((nodeKey >>> 8) << 8);
+            for (; pos < numChildren && found < limit; pos++) {
+                consumer.accept(keyBase + keys[pos], (V) nodes[pos]);
+                found++;
+            }
+            return found;
+        }
+        if (pos < numChildren && keys[pos] == idx) {
+            found += ((ArtNode<V>) nodes[pos]).forEachFrom(key, nodeLevel - 8, consumer, limit);
+            pos++;
+        }
+        for (; pos < numChildren && found < limit; pos++) {
+            found += ((ArtNode<V>) nodes[pos]).forEach(consumer, limit - found);
+        }
+        return found;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public int forEachDescFrom(final long key, final int level, final LongObjConsumer<V> consumer, final int limit) {
+        if (level != nodeLevel) {
+            final long mask = -1L << (nodeLevel + 8);
+            final int cmp = Long.compareUnsigned(nodeKey & mask, key & mask);
+            if (cmp != 0) {
+                return cmp < 0 ? forEachDesc(consumer, limit) : 0;
+            }
+        }
+        final int idx = (int) ((key >>> nodeLevel) & 0xFF);
+        int pos = numChildren - 1;
+        while (pos >= 0 && keys[pos] > idx) {
+            pos--;
+        }
+        int found = 0;
+        if (nodeLevel == 0) {
+            final long keyBase = LongAdaptiveRadixTreeMap.flipSignBit((nodeKey >>> 8) << 8);
+            for (; pos >= 0 && found < limit; pos--) {
+                consumer.accept(keyBase + keys[pos], (V) nodes[pos]);
+                found++;
+            }
+            return found;
+        }
+        if (pos >= 0 && keys[pos] == idx) {
+            found += ((ArtNode<V>) nodes[pos]).forEachDescFrom(key, nodeLevel - 8, consumer, limit);
+            pos--;
+        }
+        for (; pos >= 0 && found < limit; pos--) {
+            found += ((ArtNode<V>) nodes[pos]).forEachDesc(consumer, limit - found);
+        }
+        return found;
     }
 
     @Override
