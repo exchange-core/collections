@@ -42,6 +42,9 @@ public final class ArtNode256<V> implements IArtNode<V> {
     // direct addressing
     final Object[] nodes = new Object[256];
 
+    // occupied slots - see Bitmap256
+    final long[] occupied = new long[4];
+
     long nodeKey;
     int nodeLevel;
     short numChildren;
@@ -57,13 +60,12 @@ public final class ArtNode256<V> implements IArtNode<V> {
         this.nodeLevel = artNode48.nodeLevel;
         this.nodeKey = artNode48.nodeKey;
         final int sourceSize = 48;
-        for (short i = 0; i < 256; i++) {
-            final byte index = artNode48.indexes[i];
-            if (index != -1) {
-                this.nodes[i] = artNode48.nodes[index];
-            }
+        for (int i = artNode48.nextOccupied(0); i >= 0; i = artNode48.nextOccupied(i + 1)) {
+            this.nodes[i] = artNode48.nodes[artNode48.indexes[i]];
         }
+        System.arraycopy(artNode48.occupied, 0, this.occupied, 0, 4);
         this.nodes[subKey] = newElement;
+        setOccupied(subKey);
         this.numChildren = sourceSize + 1;
 
         Arrays.fill(artNode48.nodes, null);
@@ -100,6 +102,7 @@ public final class ArtNode256<V> implements IArtNode<V> {
         if (nodes[idx] == null) {
             // new object will be inserted
             numChildren++;
+            setOccupied(idx);
         }
 
         if (nodeLevel == 0) {
@@ -139,6 +142,7 @@ public final class ArtNode256<V> implements IArtNode<V> {
             map.previousValue = (V) nodes[idx];
             nodes[idx] = null;
             numChildren--;
+            clearOccupied(idx);
         } else {
             final IArtNode<V> node = (IArtNode<V>) nodes[idx];
             final IArtNode<V> resizedNode = node.remove(key, nodeLevel - 8, map);
@@ -147,6 +151,7 @@ public final class ArtNode256<V> implements IArtNode<V> {
                 nodes[idx] = resizedNode;
                 if (resizedNode == null) {
                     numChildren--;
+                    clearOccupied(idx);
                 }
             }
         }
@@ -182,8 +187,8 @@ public final class ArtNode256<V> implements IArtNode<V> {
             }
         }
 
-        short idx = (short) ((key >>> nodeLevel) & 0xFF);
-        Object node = nodes[idx];
+        final int idx = (int) ((key >>> nodeLevel) & 0xFF);
+        final Object node = nodes[idx];
         if (node != null) {
             // if exact key found
             final V res = nodeLevel == 0 ? (V) node : ((IArtNode<V>) node).getCeilingValue(key, nodeLevel - 8);
@@ -193,15 +198,12 @@ public final class ArtNode256<V> implements IArtNode<V> {
             }
         }
 
-        // if exact key not found - searching for first higher key
-        while (++idx < 256) {
-//            log.debug("idx+ = {}", String.format("%Xh", idx));
-            node = nodes[idx];
-            if (node != null) {
-                return (nodeLevel == 0)
-                        ? (V) node
-                        : ((IArtNode<V>) node).getCeilingValue(0, nodeLevel - 8);// find first lowest key
-            }
+        // if exact key not found - the first higher key
+        final int next = nextOccupied(idx + 1);
+        if (next >= 0) {
+            return (nodeLevel == 0)
+                    ? (V) nodes[next]
+                    : ((IArtNode<V>) nodes[next]).getCeilingValue(0, nodeLevel - 8);// find first lowest key
         }
         // no keys found
         return null;
@@ -229,8 +231,8 @@ public final class ArtNode256<V> implements IArtNode<V> {
             }
         }
 
-        short idx = (short) ((key >>> nodeLevel) & 0xFF);
-        Object node = nodes[idx];
+        final int idx = (int) ((key >>> nodeLevel) & 0xFF);
+        final Object node = nodes[idx];
         if (node != null) {
             // if exact key found
             final V res = nodeLevel == 0 ? (V) node : ((IArtNode<V>) node).getFloorValue(key, nodeLevel - 8);
@@ -240,15 +242,12 @@ public final class ArtNode256<V> implements IArtNode<V> {
             }
         }
 
-        // if exact key not found - searching for first lower key
-        while (--idx >= 0) {
-//            log.debug("idx+ = {}", String.format("%Xh", idx));
-            node = nodes[idx];
-            if (node != null) {
-                return (nodeLevel == 0)
-                        ? (V) node
-                        : ((IArtNode<V>) node).getFloorValue(UNSIGNED_MAX_KEY, nodeLevel - 8);// find first highest key
-            }
+        // if exact key not found - the first lower key
+        final int prev = prevOccupied(idx - 1);
+        if (prev >= 0) {
+            return (nodeLevel == 0)
+                    ? (V) nodes[prev]
+                    : ((IArtNode<V>) nodes[prev]).getFloorValue(UNSIGNED_MAX_KEY, nodeLevel - 8);// find first highest key
         }
         // no keys found
         return null;
@@ -257,10 +256,7 @@ public final class ArtNode256<V> implements IArtNode<V> {
     @Override
     @SuppressWarnings("unchecked")
     public long firstKey() {
-        int idx = 0;
-        while (nodes[idx] == null) {
-            idx++;
-        }
+        final int idx = nextOccupied(0);
         return nodeLevel == 0
                 ? (nodeKey & -256L) | idx
                 : ((IArtNode<V>) nodes[idx]).firstKey();
@@ -269,10 +265,7 @@ public final class ArtNode256<V> implements IArtNode<V> {
     @Override
     @SuppressWarnings("unchecked")
     public long lastKey() {
-        int idx = 255;
-        while (nodes[idx] == null) {
-            idx--;
-        }
+        final int idx = prevOccupied(255);
         return nodeLevel == 0
                 ? (nodeKey & -256L) | idx
                 : ((IArtNode<V>) nodes[idx]).lastKey();
@@ -285,24 +278,15 @@ public final class ArtNode256<V> implements IArtNode<V> {
             // map key of index 0: the low byte is zero, so adding an index never reaches the flipped sign bit
             final long keyBase = LongAdaptiveRadixTreeMap.flipSignBit((nodeKey >>> 8) << 8);
             int numFound = 0;
-            for (short i = 0; i < 256; i++) {
-                if (numFound == limit) {
-                    return numFound;
-                }
-                final V node = (V) nodes[i];
-                if (node != null) {
-                    consumer.accept(keyBase + i, node);
-                    numFound++;
-                }
+            for (int i = nextOccupied(0); i >= 0 && numFound < limit; i = nextOccupied(i + 1)) {
+                consumer.accept(keyBase + i, (V) nodes[i]);
+                numFound++;
             }
             return numFound;
         } else {
             int numLeft = limit;
-            for (short i = 0; i < 256 && numLeft > 0; i++) {
-                final IArtNode<V> node = (IArtNode<V>) nodes[i];
-                if (node != null) {
-                    numLeft -= node.forEach(consumer, numLeft);
-                }
+            for (int i = nextOccupied(0); i >= 0 && numLeft > 0; i = nextOccupied(i + 1)) {
+                numLeft -= ((IArtNode<V>) nodes[i]).forEach(consumer, numLeft);
             }
             return limit - numLeft;
         }
@@ -314,24 +298,15 @@ public final class ArtNode256<V> implements IArtNode<V> {
         if (nodeLevel == 0) {
             final long keyBase = LongAdaptiveRadixTreeMap.flipSignBit((nodeKey >>> 8) << 8);
             int numFound = 0;
-            for (short i = 255; i >= 0; i--) {
-                if (numFound == limit) {
-                    return numFound;
-                }
-                final V node = (V) nodes[i];
-                if (node != null) {
-                    consumer.accept(keyBase + i, node);
-                    numFound++;
-                }
+            for (int i = prevOccupied(255); i >= 0 && numFound < limit; i = prevOccupied(i - 1)) {
+                consumer.accept(keyBase + i, (V) nodes[i]);
+                numFound++;
             }
             return numFound;
         } else {
             int numLeft = limit;
-            for (short i = 255; i >= 0 && numLeft > 0; i--) {
-                final IArtNode<V> node = (IArtNode<V>) nodes[i];
-                if (node != null) {
-                    numLeft -= node.forEachDesc(consumer, numLeft);
-                }
+            for (int i = prevOccupied(255); i >= 0 && numLeft > 0; i = prevOccupied(i - 1)) {
+                numLeft -= ((IArtNode<V>) nodes[i]).forEachDesc(consumer, numLeft);
             }
             return limit - numLeft;
         }
@@ -344,11 +319,8 @@ public final class ArtNode256<V> implements IArtNode<V> {
             return numChildren;
         } else {
             int numLeft = limit;
-            for (short i = 0; i < 256 && numLeft > 0; i++) {
-                final IArtNode<V> node = (IArtNode<V>) nodes[i];
-                if (node != null) {
-                    numLeft -= node.size(numLeft);
-                }
+            for (int i = nextOccupied(0); i >= 0 && numLeft > 0; i = nextOccupied(i + 1)) {
+                numLeft -= ((IArtNode<V>) nodes[i]).size(numLeft);
             }
             return limit - numLeft;
         }
@@ -360,6 +332,9 @@ public final class ArtNode256<V> implements IArtNode<V> {
         int found = 0;
         for (int i = 0; i < 256; i++) {
             Object node = nodes[i];
+            if ((node != null) != (nextOccupied(i) == i)) {
+                throw new IllegalStateException("occupancy bit " + i + " is wrong");
+            }
             if (node != null) {
                 if (node instanceof IArtNode) {
                     if (nodeLevel == 0) throw new IllegalStateException("unexpected node type");
@@ -426,8 +401,27 @@ public final class ArtNode256<V> implements IArtNode<V> {
             }
         }
         Arrays.fill(nodes, null);
+        Arrays.fill(occupied, 0);
         numChildren = 0;
         objectsPool.put(ObjectsPool.ART_NODE_256, this);
+    }
+
+    void setOccupied(final int idx) {
+        occupied[idx >>> 6] |= 1L << idx;
+    }
+
+    private void clearOccupied(final int idx) {
+        occupied[idx >>> 6] &= ~(1L << idx);
+    }
+
+    /** @return the lowest occupied slot at or above from (0..256), or -1 */
+    int nextOccupied(final int from) {
+        return Bitmap256.next(occupied[0], occupied[1], occupied[2], occupied[3], from);
+    }
+
+    /** @return the highest occupied slot at or below from (-1..255), or -1 */
+    int prevOccupied(final int from) {
+        return Bitmap256.prev(occupied[0], occupied[1], occupied[2], occupied[3], from);
     }
 
     private short[] createKeysArray() {
