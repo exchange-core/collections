@@ -210,6 +210,14 @@
     allocates those between portions. Registering and closing a table are O(1) (10 000 tables: 8 MB allocated, was
     712 MB), the GC's reference queue tells the worker which tables it collected. Measured: one table growing next to
     10 000 idle ones p99.9 541-543 -> 484-493 ns; a neighbour's 512 MB allocation max 1 ms -> 23-28 us.
+  - A worker preempted in the middle of its work no longer holds a table up. It copies in batches of 32 slots,
+    each started with a CAS; a table that needs its portion and sees no new batch for ~2 us takes the portion
+    over - copies the worker's batch again (the same entries go to the same slots) and the rest. The worker,
+    back on a core, finishes its batch and stops; until then a new value for one of those 32 entries, or a
+    removal in their cluster, waits for it, and the migration ends after it (so do `close()` and
+    `finishMigration()`). Measured with the worker sharing its core with a busy thread: p99.9 0.5-3.4 ms ->
+    0.5 us, max 0.2-6.7 ms -> 22-27 us; four tables p99.9 5.7-9.9 ms -> 0.5 us, max 9.1-11.9 ms -> 74-85 us.
+    The worker copies ~12% slower (a CAS per batch).
 - **Published artifacts are now compiled for Java 17 instead of Java 26.** `collections-core` and
   `collections-orderbook` no longer force consumers onto the latest JDK. 17 is the floor imposed by
   agrona 2.x (Java 17 class files) in `collections-orderbook`; `collections-core` has no

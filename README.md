@@ -325,10 +325,15 @@ final MigrationService service = MigrationService.builder()
   dropped once collected, with the arrays of its migration; `close()` drops the rest).
 
 **Who does the work.** Each authorized segment is copied by whichever gets to it first: the worker in its
-turn, or the table, where an operation needs a segment the worker has not taken — the table waits only for
-a segment the worker is copying at that very moment. A put that brings the old array to 90% load allocates
-the new array itself if the worker has not started it. So a busy, slow or absent worker costs the
-application the work, never an unbounded wait for work nobody has started.
+turn, or the table, where an operation needs a segment the worker has not taken. Nor does the table wait
+for a worker that stops in the middle of its portion — preempted, say: the worker copies in batches of 32
+slots, each started with a CAS that tells where it begins, and a table that sees no new batch for ~2 µs
+takes the portion over. It copies the worker's batch again — the same entries go to the same slots — and
+the rest. The worker, back on a core, finishes writing that batch, finds its CAS failed and stops; until
+then the table leaves those entries (at most 32) as they are: a new value for one of them, or a removal in
+their cluster, waits for the worker, and the migration ends - the table switches arrays - only after it.
+A put that brings the old array to 90% load allocates the new array itself if the worker has not started
+it. So a busy, slow, preempted or absent worker costs the application the work, not a wait for it.
 
 `close()` finishes an in-flight migration and leaves the service. The table stays fully usable after
 `close()`; its later resizes are synchronous, like those of `LongLongHashtable`. `finishMigration()` only
@@ -338,9 +343,10 @@ finishes the migration.
 
 | Operation | Cost |
 |---|---|
-| any single-key operation on a key whose home is in an authorized segment not copied yet | copies the segment itself: 256 slots (~2 µs), up to the end of the cluster at its boundary — a segment ends at a free slot; or, if the worker is copying it right now, waits for it |
+| any single-key operation on a key whose home is in an authorized segment not copied yet | copies the segment itself: 256 slots (~2 µs), up to the end of the cluster at its boundary — a segment ends at a free slot; or, if the worker is copying it right now, waits for it - and takes it over if the worker starts no new batch for ~2 µs |
 | `put` that reaches the start of the migration | copies the cluster before it into the new array, on the calling thread |
-| `put` that brings the old array to 90% load | the whole rest of the migration: copies it, or waits for the segment the worker is copying; allocates the new array if the worker has not started it |
+| `put` that brings the old array to 90% load | the whole rest of the migration: copies it, or waits for the segment the worker is copying (as above); allocates the new array if the worker has not started it |
+| a new value for one of the ≤32 entries of a batch taken over from a stalled worker, or a removal in their cluster | waits until the worker runs again and has written the batch |
 | the compound operations, `getOrDefault` | made of the basic operations: two or three lookups |
 | `clear`, `forEach`, the streams, `ensureCapacity` beyond the new capacity, `finishMigration`, `close` | finish the migration first: the copying of everything left |
 | the operations that start and end a migration | a request in the table's slot of the service: volatile writes, an unpark if the worker sleeps |
@@ -348,7 +354,7 @@ finishes the migration.
 During a migration both arrays are alive: three times the memory of the old one. `fixedCapacity()` (or a
 `maxCapacity` reached) makes a table that never migrates, with none of this.
 
-**Measured** — `CollectionsLatencySamples -Dsamples.groups=ll2-scenarios,ll2-many-tables,ll2-big-allocation`:
+**Measured** — `CollectionsLatencySamples -Dsamples.groups=ll2-scenarios,ll2-many-tables,ll2-big-allocation,ll2-preempted-worker`:
 1M operations/s, latency from the planned arrival (a stall is charged to every operation queued behind it),
 the measured table growing from 16 to 4M entries; Xeon Gold 6244, application pinned to an isolated core,
 JDK 27, two runs:
@@ -364,6 +370,8 @@ JDK 27, two runs:
 | one table growing next to 10 000 idle ones, `BUSY_SPIN` | 123-125 ns | 344-351 ns | 484-493 ns | 5.7-6.9 µs |
 | a neighbour's 512 MB allocation starts with the run, `BUSY_SPIN`, allocator thread | 128 ns | 346-354 ns | 497-506 ns | 23-28 µs |
 | the same with `allocatorThread(false)` | 128 ns | 356-358 ns | 545-553 ns | 0.98 **ms** (the measured table's next array waits behind the large one: at 90% load it allocates and copies itself) |
+| a `BUSY_SPIN` worker pinned to a core it shares with a busy thread: off the core for milliseconds, in the middle of its work too | 127 ns | 345-350 ns | 493-502 ns | 22-27 µs (before the take-over: p99.9 0.5-3.4 ms, max 0.2-6.7 ms) |
+| the same, 4 tables growing at once | 110-122 ns | 332-339 ns | 499-504 ns | 74-85 µs (before: p99.9 5.7-9.9 ms, max 9.1-11.9 ms) |
 | 50% puts, 30% gets, 20% removals | 145-150 ns | 381-387 ns | 531-535 ns | 1.2-1.7 µs |
 | the same with `LongLongHashtable` (synchronous resizes) | 151-153 ns | 1.3-1.4 ms | 18 ms | 21 ms |
 
@@ -373,6 +381,8 @@ Those were the start and the end of the migrations - a task for the executor, a 
 `Cleaner`, all of it interpreted code on the application thread; now a few volatile writes.
 With 10 000 idle tables registered the worker no longer goes over each of them every round: p99.9 541-543 →
 484-493 ns against the first version of the service, and registering them allocates 8 MB instead of 712 MB.
+The take-over costs the worker a CAS per batch: it copies ~12% slower (2^23 slots: 59 → 66 ms) - not
+visible with 64 tables growing at once on it (p99.9 607-611 ns, max 59-60 µs either way).
 
 The application and the worker yield the CPU to each other while they wait: where they share a core, the
 other one runs. Sharing still costs the application the CPU of the allocation and the copying - give the
@@ -389,7 +399,8 @@ worker a core of its own.
   copied, whatever its key, and wakes the worker if it went to sleep while the application was quiet;
   `migrationInProgress()` tells whether one is in flight
 - the public API is single-threaded: exactly one application thread, plus the worker of the service
-- a wait for the segment the worker is copying is bounded by `hangTimeout` (builder, default 10s): past it
+- a wait for the worker - for a batch taken over from it, or for one it is copying until it is taken over -
+  is bounded by `hangTimeout` (builder, default 10s): past it
   the operation throws `IllegalStateException` with the migration state instead of hanging; the waits spin,
   interrupts do not end them
 - `-Dexchange.hashtable.verify=true` runs a full integrity check after every migration —
