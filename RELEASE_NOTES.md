@@ -275,8 +275,17 @@
   took three objects (96 bytes) and three loads. A second key in the same 256-key block makes an `ArtNode4` again,
   and the last key of an `ArtNode4` at the lowest level goes back into a leaf. Random 64-bit keys: 128 to 64 bytes
   per entry (as much as `TreeMap` with its `Long` keys), 9.4 to 7.4 dependent loads per lookup; order ids with
-  0.5% still live: 58 to 40 bytes. In `ArtOpsJmh` on random keys: removal + put and new level -26%, the mixed stream
-  -26%, neighbour -16%, lookup -12%; order books and dense ids unchanged (within ±5%).
+  0.5% still live: 58 to 40 bytes. In `ArtOpsJmh` on rhel-lat, 1M random keys: lookup -23%, neighbour -38%, new
+  level -34%, removal + put -23%, the mixed stream -29%; 100k random keys -12% to -21%, except a missing key +12%
+  (one more class at the call sites below the 64K prefixes - gone with the `ArtNode4` below); order books and
+  order ids unchanged (within ±3%).
+- **`ArtNode4` without arrays**: the four key bytes in one int, the children in four fields - one object of 56
+  bytes (48 with compact object headers) instead of three (96 bytes), two dependent loads less on every visit. An
+  exact key is found comparing the four bytes at once (a zero-byte test of `keys ^ (byte * 0x01010101)`), the
+  insertion and removal shift bytes and fields instead of arrays. Order ids with 0.5% still live: 40 to 29 bytes per
+  entry; 100k random keys: 64 to 53 bytes, 7.4 to 5.9 dependent loads per lookup; a 20k-level book: 10.2 to 8.1
+  loads. In `ArtOpsJmh` on rhel-lat, 100k random keys: missing key -21%, the mixed stream -12%, removal + put -8%,
+  new level -8%; the other key sets within ±4%.
 - **`ObjectsPool`: a type left out of the configuration gets an empty stack** - `get` constructs, `put` drops - where
   it used to fail with `NullPointerException` (or `ArrayIndexOutOfBoundsException` above the highest configured
   type). The new `ART_LEAF` type, unless configured, gets as many places as `ART_NODE_4`, so configurations written

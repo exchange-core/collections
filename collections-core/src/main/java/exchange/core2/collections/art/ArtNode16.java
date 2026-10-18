@@ -60,14 +60,14 @@ public final class ArtNode16<V> implements IArtNode<V> {
         this.numChildren = (byte) (sourceSize + 1);
         int inserted = 0;
         for (int i = 0; i < sourceSize; i++) {
-            final int key = node4.keys[i];
+            final int key = node4.keyAt(i);
             if (inserted == 0 && key > subKey) {
                 keys[i] = subKey;
                 nodes[i] = newElement;
                 inserted = 1;
             }
-            keys[i + inserted] = node4.keys[i];
-            nodes[i + inserted] = node4.nodes[i];
+            keys[i + inserted] = (short) key;
+            nodes[i + inserted] = node4.childAt(i);
         }
         if (inserted == 0) {
             keys[sourceSize] = subKey;
@@ -75,7 +75,7 @@ public final class ArtNode16<V> implements IArtNode<V> {
         }
 
         // put original node back into pool
-        Arrays.fill(node4.nodes, null);
+        node4.clearChildren();
         objectsPool.put(ObjectsPool.ART_NODE_4, node4);
     }
 
