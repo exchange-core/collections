@@ -90,6 +90,9 @@
   and a resize or a removal never hashes a key again. Methods for keys of 1 to 4 longs, a `long[]` for any length;
   `valueLongs(0)` is a set. The values are reached through the position of the slot, valid until the next insert or
   removal. Hash seed, `maxCapacity` / `fixedCapacity` / `maxLoad` as in `LongLongHashtable`.
+- **`LongTupleHashtableJmh`** (`tests-perf`): balances under a key of three longs (a UUID, a token and a
+  subaccount) in a `LongTupleHashtable` against a `HashMap` of a `record` key to an object; `LongRecordTableJmh`
+  measures it too, with a key of one long. Results in the README.
 
 ### Fixed
 

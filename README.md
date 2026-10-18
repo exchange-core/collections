@@ -497,23 +497,25 @@ if (h == RecordStore.NO_RECORD) {
 
 **Measured** — `RecordStoreJmh`, balances of two fields against an object per record (the caller holding the
 reference, no check; or a `long` id into an `ArrayList`, checked against a generation in the object) and a flat
-`long[]` (no check, no pages); ns per operation, records reached in a random order. A laptop (i7-9750H, JDK 26,
-not pinned), short runs — indicative:
+`long[]` (no check, no pages); ns per operation, 10k / 1M / 10M records reached in a random order. Xeon Gold 6244,
+JDK 27, the benchmark thread pinned to an isolated core; one fork, 3 × 1 s of warm-up and of measurement:
 
-| Operation, records | `RecordStore` | object, reference | object, `ArrayList` id | `long[]` |
+| Operation | `RecordStore` | object, reference | object, `ArrayList` id | `long[]` |
 |---|---|---|---|---|
-| `chase` 10k / 1M / 10M — each access waits for the one before | 7.2 / 71 / 105 | 8.6 / 86 / 104 | 12.5 / 129 / 201 | 4.0 / 53 / 98 |
-| `read` both fields, 10k / 10M — accesses independent, misses overlap | 4.0 / 41 | 2.5 / 23 | 5.4 / 72 | 2.2 / 24 |
-| `reserve` (available down, reserved up), 10k / 10M | 4.6 / 39 | 2.7 / 25 | 5.6 / 190 | 2.4 / 26 |
-| `freeAllocate`, 10k / 10M | 9.2 / 64 | 3.8 / 10 | 11.3 / 191 | – |
-| `scan` of one field, per record, 10M | 2.7 | 1.8 | 1.9 | 0.8 |
+| `chase` — each access waits for the one before | 6.4 / 44 / 91 | 3.8 / 53 / 88 | 7.2 / 79 / 153 | 4.3 / 20 / 83 |
+| `read` both fields — accesses independent, misses overlap | 3.4 / 13 / 29 | 1.6 / 13 / 16 | 3.5 / 27 / 46 | 1.9 / 8.3 / 18 |
+| `reserve` (available down, reserved up) | 3.9 / 20 / 29 | 1.9 / 14 / 17 | 3.7 / 27 / 45 | 2.1 / 5.0 / 19 |
+| `freeAllocate` | 7.8 / 26 / 52 | 3.3 / 14 / 18 | 8.3 / 51 / 88 | – |
+| `scan` of one field, per record, 10M | 3.1 | 2.9 | 3.2 | 1.4 |
 
 - The latency of an access (`chase`) is one cache miss, as for an object held by reference or a flat array; an
-  `ArrayList` id takes two — the list's array, then the object.
+  `ArrayList` id takes two — the list's array, then the object. At 1M the records (24 bytes) fit the 24.75 MB L3,
+  the objects (40 bytes, with the link of `chase`) do not: 44 against 53 ns.
 - Independent accesses overlap their misses; the page, the header and the field checks are more instructions
-  per access, fewer misses in flight — 41 against 23-24 ns at 10M.
+  per access, fewer misses in flight — 29 against 16-18 ns at 10M.
 - `free` reads the header to check it: a miss an unchecked pool does not take — its stale references reach the
   next owner of the object instead.
+- A scan of 10M records is bound by the memory: about 3 ns per record for the store and the objects alike.
 - Not measured here: the GC (the loops allocate nothing), the layout of objects scattered by churn.
 
 **Notes**
@@ -574,22 +576,27 @@ balances.get(h, AVAILABLE);                      // IllegalArgumentException
 | `forEach`, `clear` | every record |
 
 **Measured** — `LongRecordTableJmh`, balances of two fields by key (random keys, in a random order) against a
-`LongLongHashtable` per field and Eclipse's `LongObjectHashMap` of an object per balance (as exchange-core keeps
-them); ns per operation, 10k / 1M / 10M keys. The laptop of `RecordStoreJmh`, short runs — indicative:
+`LongLongHashtable` per field, Eclipse's `LongObjectHashMap` of an object per balance (as exchange-core keeps
+them) and a `LongTupleHashtable` with the key and both fields in a slot; ns per operation, 10k / 1M / 10M keys.
+The machine and the runs of `RecordStoreJmh`:
 
-| Operation | `LongRecordTable` | two `LongLongHashtable` | `LongObjectHashMap` |
-|---|---|---|---|
-| `chaseByKey` — each lookup waits for the one before | 26 / 109 / 136 | 23 / 130 / 165 | 15 / 107 / 183 |
-| `readByKey` — independent lookups, misses overlap | 18 / 85 / 114 | 19 / 54 / 68 | 11 / 74 / 89 |
-| `reserveByKey` (available down, reserved up) | 19 / 181 / 249 | 19 / 58 / 83 | 10 / 179 / 266 |
-| `createRemove` — a key removed, a new one added | 82 / 286 / 368 | 111 / 283 / 415 | 73 / 291 / 340 |
+| Operation | `LongRecordTable` | two `LongLongHashtable` | `LongObjectHashMap` | `LongTupleHashtable` |
+|---|---|---|---|---|
+| `chaseByKey` — each lookup waits for the one before | 17 / 152 / 205 | 15 / 92 / 140 | 9.5 / 123 / 187 | 16 / 78 / 119 |
+| `readByKey` — independent lookups, misses overlap | 11 / 65 / 83 | 13 / 44 / 64 | 5.8 / 43 / 56 | 13 / 44 / 63 |
+| `reserveByKey` (available down, reserved up) | 12 / 68 / 87 | 14 / 49 / 69 | 6.1 / 45 / 58 | 13 / 42 / 64 |
+| `createRemove` — a key removed, a new one added | 69 / 182 / 279 | 90 / 208 / 365 | 59 / 267 / 431 | 67 / 171 / 266 |
 
-- A lookup by key takes about as long in the three: the index and then the record are two misses, as the map
-  and then its object; the two hashtables take their two at once.
-- Independent lookups: a write into a record reached through a handle just loaded from the index — or into an
-  object through its reference — overlaps with the next ones far less than a hashtable's write into the slot it
-  has probed: 180-250 ns against 58-83. Through a handle the caller keeps, the same reservation is 39 ns at 10M
-  (`RecordStoreJmh`): keeping the handles is what the table is for.
+- A lookup by key out of the caches (`chaseByKey`): the index, then the record — two misses one after the other,
+  205 ns at 10M. The two hashtables take their two misses at once (140), the map its arrays and then the object
+  (187), `LongTupleHashtable` one miss (119).
+- Independent lookups overlap their misses: the table is the slowest there too, 65-68 against 42-49 ns at 1M — more
+  instructions per lookup (the probe, then the page, the header and the field checks), fewer misses in flight.
+- Through a handle the caller keeps, the same reservation is 29 ns at 10M and an access out of the caches one miss,
+  91 ns (`RecordStoreJmh`): keeping the handles is what the table is for. Where every access comes with a key and
+  nothing keeps a reference to the record, `LongTupleHashtable` is the faster structure.
+- A key removed and another added: one probe each way and the freed record reused — with the tuples the fastest at
+  1M and 10M.
 - Memory per key, two fields: 16 bytes per slot of the index and 32 per record (header, fields, key) — about
   what two hashtables take, 16 bytes per slot each; every further field adds 8 bytes to a record, a further
   hashtable 16 per slot.
@@ -599,6 +606,8 @@ them); ns per operation, 10k / 1M / 10M keys. The laptop of `RecordStoreJmh`, sh
   its resizes
 - the index resizes synchronously, as `LongLongHashtable` does — pre-size the table where that pause matters
 - not thread-safe
+
+---
 
 ### LongTupleHashtable
 
@@ -654,6 +663,27 @@ reads another key's values; for references that live — in an order, say — us
 | `remove` | one probe, then the rest of the cluster shifts back by one slot |
 | `getValue`, `setValue`, `addAndGetValue`, `addAndGetValueExact`, `getKey` | the slot only |
 | `forEach`, `clear`, `toString` | the whole array |
+
+**Measured** — `LongTupleHashtableJmh`, balances under a key of three longs (a UUID: a time-ordered high half, a
+random low half; a token and a subaccount, 4 × 3 per user) against a `HashMap` of a `record` key to an object, what
+such a key gets without a primitive table; keys added in one random order, reached in another; ns per operation,
+12k / 1.2M / 12M keys, the machine and the runs of `RecordStoreJmh`:
+
+| Operation | `LongTupleHashtable` | `HashMap<Key, Balance>` |
+|---|---|---|
+| `readByKey` — independent lookups | 18 / 79 / 81 | 18 / 91 / 114 |
+| `reserveByKey` (available down, reserved up) | 19 / 79 / 81 | 19 / 94 / 125 |
+| `createRemove` — a key removed, a new one added | 73 / 274 / 261 | 51 / 233 / 494 |
+
+- The `HashMap` reaches a node, its key object and the balance — three objects, where they were allocated; the
+  tuples one slot of 48 bytes.
+- Its removal and insert allocate (the new key, a node) and at 12M the GC takes its share — 324-600 ns from
+  iteration to iteration; the tuples allocate nothing. Small tables remove and insert faster in the `HashMap`:
+  the backward shift moves 48-byte slots, and the key is mixed long by long.
+- With a key of one long, `LongTupleHashtable` against `LongRecordTable`, two hashtables and `LongObjectHashMap`:
+  see the table of `LongRecordTable` — the shortest lookup out of the caches.
+- Memory per key: a slot of 48 bytes, 33% to 65% of the slots taken between the resizes — 74 to 148 bytes; the
+  `HashMap`: a node of 32, a key of 40, a balance of 32 and 5 to 11 of its table — 109 to 115.
 
 **Notes**
 - a slot takes `8 * (1 + keyLongs + valueLongs)` bytes: 48 for a key of three longs and two values, up to 65%
