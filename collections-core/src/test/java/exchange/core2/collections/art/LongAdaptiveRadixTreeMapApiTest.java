@@ -1,5 +1,6 @@
 package exchange.core2.collections.art;
 
+import exchange.core2.collections.objpool.ObjectsPool;
 import org.junit.Assume;
 import org.junit.Test;
 
@@ -160,6 +161,73 @@ public class LongAdaptiveRadixTreeMapApiTest {
         assertTrue("allocated " + allocated + " bytes refilling the map", allocated < 1024);
         assertThat(map.size(), is(1000));
         map.validateInternalState();
+    }
+
+    /**
+     * A key alone is a leaf; a second key in the same 256-key block makes an ArtNode4 at level 0 and its removal
+     * a leaf again; a second key elsewhere makes an inner ArtNode4 over two leaves, which collapses back into the
+     * remaining leaf. validateInternalState rejects an ArtNode4 with fewer than two children.
+     */
+    @Test
+    public void singleKeysShouldTurnIntoLeavesAndBack() {
+        map.put(1000, "a");
+        map.validateInternalState();
+        assertThat(map.printDiagram().startsWith("─["), is(true)); // the root is a leaf
+        map.put(1001, "b");            // same block - a node at level 0
+        map.validateInternalState();
+        assertThat(map.remove(1000), is("a"));
+        map.validateInternalState();   // 1001 alone - a leaf again
+        assertThat(map.firstKey(), is(1001L));
+        map.put(-5_000_000L, "c");     // far away - an inner node over two leaves
+        map.validateInternalState();
+        assertThat(map.getLowerValue(1001), is("c"));
+        assertThat(map.getHigherValue(-5_000_000L), is("b"));
+        assertThat(map.remove(1001), is("b"));
+        map.validateInternalState();   // collapsed into the remaining leaf
+        assertThat(map.firstKey(), is(-5_000_000L));
+        assertThat(map.remove(-5_000_000L), is("c"));
+        assertTrue(map.isEmpty());
+        map.validateInternalState();
+    }
+
+    /**
+     * A pool configured before the leaves existed - no ART_LEAF, as in exchange-core: the leaves get as many places
+     * as the Node4s, so keys that come and go alone do not allocate.
+     */
+    @Test
+    public void leavesShouldBeRecycledByAPoolConfiguredWithoutThem() {
+        final Map<Integer, Integer> config = new java.util.HashMap<>();
+        config.put(ObjectsPool.ART_NODE_4, 64);
+        config.put(ObjectsPool.ART_NODE_16, 16);
+        config.put(ObjectsPool.ART_NODE_48, 8);
+        config.put(ObjectsPool.ART_NODE_256, 4);
+        final LongAdaptiveRadixTreeMap<String> pooled = new LongAdaptiveRadixTreeMap<>(new ObjectsPool(config));
+        for (int i = 0; i < 20; i++) {
+            pooled.put(i * 1_000_000L, "far");  // twenty leaves under one branch
+        }
+        for (int i = 0; i < 20_000; i++) {
+            pooled.put(7_777_777L, "x");
+            pooled.remove(7_777_777L);
+        }
+        final long allocated = allocatedBytes(() -> {
+            for (int i = 0; i < 10_000; i++) {
+                pooled.put(7_777_777L, "x");
+                pooled.remove(7_777_777L);
+            }
+        });
+        assertTrue("allocated " + allocated + " bytes in 10000 cycles", allocated < 10_000);
+        pooled.validateInternalState();
+
+        // nothing configured at all: no recycling, but no failure either
+        final LongAdaptiveRadixTreeMap<String> unpooled = new LongAdaptiveRadixTreeMap<>(new ObjectsPool(Map.of()));
+        for (int i = 0; i < 1000; i++) {
+            unpooled.put(i * 37L, "v");
+        }
+        for (int i = 0; i < 1000; i += 2) {
+            unpooled.remove(i * 37L);
+        }
+        assertThat(unpooled.size(), is(500));
+        unpooled.validateInternalState();
     }
 
     /** forEach used to wrap the consumer into a key-converting lambda on every call */

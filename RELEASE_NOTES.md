@@ -270,6 +270,17 @@
   to 43 ns), the mixed order-book stream 19-31%, the neighbour of a level up to 20%; lookups unchanged, a removal +
   put of a level within +5% (it updates one word of the bitmap - four long fields instead of the array cost
   +15-28% there).
+- **`LongAdaptiveRadixTreeMap`: a key alone below a branch is a leaf** (`ArtLeaf`, the lazy expansion of the ART
+  paper): the key and the value in one object of 24 bytes and one load, where an `ArtNode4` with a single key
+  took three objects (96 bytes) and three loads. A second key in the same 256-key block makes an `ArtNode4` again,
+  and the last key of an `ArtNode4` at the lowest level goes back into a leaf. Random 64-bit keys: 128 to 64 bytes
+  per entry (as much as `TreeMap` with its `Long` keys), 9.4 to 7.4 dependent loads per lookup; order ids with
+  0.5% still live: 58 to 40 bytes. In `ArtOpsJmh` on random keys: removal + put and new level -26%, the mixed stream
+  -26%, neighbour -16%, lookup -12%; order books and dense ids unchanged (within ±5%).
+- **`ObjectsPool`: a type left out of the configuration gets an empty stack** - `get` constructs, `put` drops - where
+  it used to fail with `NullPointerException` (or `ArrayIndexOutOfBoundsException` above the highest configured
+  type). The new `ART_LEAF` type, unless configured, gets as many places as `ART_NODE_4`, so configurations written
+  before it (exchange-core's among them) keep recycling the leaves.
 
 ## 0.6.0
 

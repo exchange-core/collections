@@ -102,9 +102,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
         Objects.requireNonNull(value, "value");
         final long internalKey = flipSignBit(key);
         if (root == null) {
-            final ArtNode4<V> node = objectsPool.get(ObjectsPool.ART_NODE_4, ArtNode4::new);
-            node.initFirstKey(internalKey, value);
-            root = node;
+            root = ArtLeaf.create(objectsPool, internalKey, value);
             size = 1;
             return null;
         }
@@ -391,8 +389,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
         }
 
         final ObjectsPool objectsPool = caller.getObjectsPool();
-        final ArtNode4<V> newSubNode = objectsPool.get(ObjectsPool.ART_NODE_4, ArtNode4::new);
-        newSubNode.initFirstKey(key, value);
+        final ArtLeaf<V> newSubNode = ArtLeaf.create(objectsPool, key, value);
 
         final ArtNode4<V> newNode = objectsPool.get(ObjectsPool.ART_NODE_4, ArtNode4::new);
         newNode.initTwoKeys(nodeKey, caller, key, newSubNode, newLevel);

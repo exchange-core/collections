@@ -152,8 +152,7 @@ public final class ArtNode48<V> implements IArtNode<V> {
             if (nodeLevel == 0) {
                 nodes[freePosition] = value;
             } else {
-                final ArtNode4<V> newSubNode = objectsPool.get(ObjectsPool.ART_NODE_4, ArtNode4::new);
-                newSubNode.initFirstKey(key, value);
+                final ArtLeaf<V> newSubNode = ArtLeaf.create(objectsPool, key, value);
                 nodes[freePosition] = newSubNode;
             }
             numChildren++;
@@ -166,8 +165,7 @@ public final class ArtNode48<V> implements IArtNode<V> {
             if (nodeLevel == 0) {
                 newElement = value;
             } else {
-                final ArtNode4<V> newSubNode = objectsPool.get(ObjectsPool.ART_NODE_4, ArtNode4::new);
-                newSubNode.initFirstKey(key, value);
+                final ArtLeaf<V> newSubNode = ArtLeaf.create(objectsPool, key, value);
                 newElement = newSubNode;
             }
 

@@ -31,6 +31,11 @@ public final class ObjectsPool {
     public static final int ART_NODE_48 = 10;
     public static final int ART_NODE_256 = 11;
     public static final int SYMBOL_POSITION_RECORD = 12;
+    /** a single key of a LongAdaptiveRadixTreeMap; unless configured, as many as ART_NODE_4 */
+    public static final int ART_LEAF = 13;
+
+    /** every type up to this one gets a stack, an empty one if not configured */
+    private static final int LAST_KNOWN_TYPE = ART_LEAF;
 
     private final ArrayStack[] pools;
 
@@ -45,14 +50,25 @@ public final class ObjectsPool {
         objectsPoolConfig.put(ObjectsPool.ART_NODE_16, 128);
         objectsPoolConfig.put(ObjectsPool.ART_NODE_48, 64);
         objectsPoolConfig.put(ObjectsPool.ART_NODE_256, 32);
+        objectsPoolConfig.put(ObjectsPool.ART_LEAF, 256);
 
         return new ObjectsPool(objectsPoolConfig);
     }
 
+    /**
+     * @param sizesConfig capacity per type; a type left out gets an empty stack (get allocates, put drops),
+     *                    except ART_LEAF, which gets the capacity of ART_NODE_4 - configurations written before the
+     *                    leaves existed keep recycling them
+     */
     public ObjectsPool(final Map<Integer, Integer> sizesConfig) {
-        int maxStack = sizesConfig.keySet().stream().max(Integer::compareTo).orElse(0);
-        this.pools = new ArrayStack[maxStack + 1];
-        sizesConfig.forEach((type, size) -> this.pools[type] = new ArrayStack(size));
+        final int maxType = Math.max(LAST_KNOWN_TYPE, sizesConfig.keySet().stream().max(Integer::compareTo).orElse(0));
+        this.pools = new ArrayStack[maxType + 1];
+        for (int type = 0; type <= maxType; type++) {
+            this.pools[type] = new ArrayStack(sizesConfig.getOrDefault(type, 0));
+        }
+        if (!sizesConfig.containsKey(ART_LEAF)) {
+            this.pools[ART_LEAF] = new ArrayStack(sizesConfig.getOrDefault(ART_NODE_4, 0));
+        }
     }
 
     @SuppressWarnings("unchecked")

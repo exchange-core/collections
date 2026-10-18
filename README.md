@@ -140,6 +140,7 @@ config.put(ObjectsPool.ART_NODE_4, 1024);
 config.put(ObjectsPool.ART_NODE_16, 512);
 config.put(ObjectsPool.ART_NODE_48, 256);
 config.put(ObjectsPool.ART_NODE_256, 128);
+config.put(ObjectsPool.ART_LEAF, 1024);     // a key alone in its 256-key block; default: as ART_NODE_4
 
 final ObjectsPool pool = new ObjectsPool(config);
 ```
@@ -445,8 +446,10 @@ pool.put(ObjectsPool.ORDER, order);
 ```
 
 Pool slots are identified by the `int` constants on `ObjectsPool`: `ORDER`, `DIRECT_ORDER`,
-`DIRECT_BUCKET`, `ART_NODE_4` / `ART_NODE_16` / `ART_NODE_48` / `ART_NODE_256`,
-`SYMBOL_POSITION_RECORD`. An object handed back to the pool must be treated as dead by the caller.
+`DIRECT_BUCKET`, `ART_NODE_4` / `ART_NODE_16` / `ART_NODE_48` / `ART_NODE_256`, `ART_LEAF`,
+`SYMBOL_POSITION_RECORD`. A type left out of the configuration gets no places: `get` constructs, `put` drops
+the object (`ART_LEAF` gets as many places as `ART_NODE_4`). An object handed back to the pool must be treated as
+dead by the caller.
 
 ---
 

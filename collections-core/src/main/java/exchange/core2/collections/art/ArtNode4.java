@@ -48,17 +48,6 @@ public final class ArtNode4<V> implements IArtNode<V> {
         this.objectsPool = objectsPool;
     }
 
-    // terminal node has always nodeLevel=0
-    void initFirstKey(final long key, final V value) {
-        // create compact node
-        this.numChildren = 1;
-        this.keys[0] = (short) (key & 0xFF);
-        //this.nodes[0] = (level == 0) ? value : new ArtNode4<>(key, level - 8, value);
-        this.nodes[0] = value;
-        this.nodeKey = key;
-        this.nodeLevel = 0;
-    }
-
     // split-compact operation constructor
     void initTwoKeys(final long key1, final Object value1, final long key2, final Object value2, final int level) {
 //        log.debug("new level={} key1={} key2={}", level, key1, key2);
@@ -183,8 +172,7 @@ public final class ArtNode4<V> implements IArtNode<V> {
             if (nodeLevel == 0) {
                 nodes[pos] = value;
             } else {
-                final ArtNode4<V> newSubNode = objectsPool.get(ObjectsPool.ART_NODE_4, ArtNode4::new);
-                newSubNode.initFirstKey(key, value);
+                final ArtLeaf<V> newSubNode = ArtLeaf.create(objectsPool, key, value);
                 nodes[pos] = newSubNode;
             }
             numChildren++;
@@ -195,8 +183,7 @@ public final class ArtNode4<V> implements IArtNode<V> {
             if (nodeLevel == 0) {
                 newElement = value;
             } else {
-                final ArtNode4<V> newSubNode = objectsPool.get(ObjectsPool.ART_NODE_4, ArtNode4::new);
-                newSubNode.initFirstKey(key, value);
+                final ArtLeaf<V> newSubNode = ArtLeaf.create(objectsPool, key, value);
                 newElement = newSubNode;
             }
 
@@ -253,6 +240,14 @@ public final class ArtNode4<V> implements IArtNode<V> {
         if (nodeLevel == 0) {
             map.previousValue = (V) node;
             removeElementAtPos(pos);
+            if (numChildren == 1) {
+                // the last key goes into a leaf, this node to the pool
+                final ArtLeaf<V> leaf = ArtLeaf.create(objectsPool, (nodeKey & -256L) | keys[0], (V) nodes[0]);
+                nodes[0] = null;
+                numChildren = 0;
+                objectsPool.put(ObjectsPool.ART_NODE_4, this);
+                return leaf;
+            }
         } else {
             final IArtNode<V> resizedNode = ((IArtNode<V>) node).remove(key, nodeLevel - 8, map);
             if (resizedNode != node) {
@@ -480,7 +475,8 @@ public final class ArtNode4<V> implements IArtNode<V> {
     @Override
     public void validateInternalState(int level) {
         if (nodeLevel > level) throw new IllegalStateException("unexpected nodeLevel");
-        if (numChildren > 4 || numChildren < 1) throw new IllegalStateException("unexpected numChildren");
+        // a single key is a leaf, a single child is linked to the parent directly
+        if (numChildren > 4 || numChildren < 2) throw new IllegalStateException("unexpected numChildren");
         short last = -1;
         for (int i = 0; i < 4; i++) {
             Object node = nodes[i];
