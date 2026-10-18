@@ -26,7 +26,9 @@ import static org.junit.Assert.assertTrue;
  * Interleavings of the application thread with the migrator, set up step by step: the table's migration service has
  * no worker, the test plays it - copies segments itself (as {@link HashtableAsync2Resizer#copyInterval} does) in the
  * worker's state, and hands over to the service's own serving when the scenario is set up. Where the migrator
- * pauses, the real worker can be preempted - or its stores can still sit in the store buffer.
+ * pauses, the real worker can be preempted - or its stores can still sit in the store buffer. A table that waits
+ * for a paused migrator takes its portion over; the migrator's writes after that are the ones it had started:
+ * the same entries, into the same slots.
  * <p>
  * The same interleavings with real threads: LongLongLL2HashtableFrontierRaceStressTest in tests-stress.
  */
@@ -38,11 +40,10 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
     private static final Field ALLOCATING = field("allocating");
     private static final Field DATA = field("data");
 
-    private static final VarHandle TO_PROCESS = resizerField("toProcessPosition");
     private static final VarHandle ALLOWED = resizerField("allowedPosition");
-    private static final VarHandle STATE = resizerField("state");
-    private static final int IDLE = 0;
-    private static final int WORKER = 1;
+
+    /** the migrator's steps did not copy anything they publish */
+    private static final int KEEP = -1;
 
     /** how long a paused migrator waits for the application before it carries on anyway */
     private static final long MIGRATOR_PAUSE_MS = 100;
@@ -119,7 +120,7 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         final Thread migrator = h.startMigrator(() -> {
             r.copyInterval(2, 32);
             extended.await(MIGRATOR_PAUSE_MS, TimeUnit.MILLISECONDS);
-            TO_PROCESS.setVolatile(r, 32);
+            return 32;
         });
 
         // homed at slot 17, wraps to the starting position: extension back to slot 16 - the migrator's position
@@ -164,7 +165,7 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
 
         // an odd allowed position, within one portion of the worker: copyInterval rejects it, the worker fails (the test
         // plays it here)
-        ALLOWED.setVolatile(r, (int) TO_PROCESS.getVolatile(r) + 5);
+        ALLOWED.setVolatile(r, r.getProcessedPosition() + 5);
         h.service.serveOnce();
 
         final long t0 = System.nanoTime();
@@ -238,8 +239,7 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         assertTrue(h.table.toString().contains("migration in progress"));
 
         // beyond it: the migration is finished first (the migrator runs from here on), then one rehash
-        final Thread migrator = h.startMigrator(() -> {
-        });
+        final Thread migrator = h.startMigrator(() -> KEEP);
         h.table.ensureCapacity(10_000);
         assertEquals(16384, h.table.capacity());
         assertTrue(h.table.toString().startsWith("{"));
@@ -269,8 +269,7 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         final long[] old = (long[]) DATA.get(h.table);
         h.table.get(keyWithSlot(1, (old.length >> 1) * 3 / 4, (old.length >> 1) - 1)); // starts the migration
         h.resizer();
-        final Thread migrator = h.startMigrator(() -> {
-        });
+        final Thread migrator = h.startMigrator(() -> KEEP);
 
         final Map<Long, Long> visited = new HashMap<>();
         h.table.forEach((k, v) -> assertEquals("duplicate key " + k, null, visited.put(k, v)));
@@ -293,9 +292,10 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
     }
 
     /**
-     * The hang detection is configurable: a lookup of a key in the first segment waits for a migrator that has
-     * started and does not copy, and fails after the hang timeout - not after the default 10s. The table is
-     * consistent afterwards: the migrator, going on late, finishes the migration.
+     * The hang detection is configurable. A migrator stuck in its first batch is not waited for - the lookup takes its
+     * portion over - but the end of the migration waits until the migrator has left that batch, and fails after the
+     * hang timeout, not after the default 10s. The table is consistent afterwards: the migrator, going on late, leaves
+     * its batch, and the migration ends.
      */
     @Test(timeout = 60_000)
     public void hang_timeout_fails_a_wait_for_a_stuck_migrator() throws Exception {
@@ -304,18 +304,147 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         final Map<Long, Long> ref = new HashMap<>();
         final long firstSegmentKey = startMigrationHeldBack(h, ref);
         final CountDownLatch release = new CountDownLatch(1);
-        final Thread migrator = h.startMigrator(release::await); // started - stuck before its first segment
+        final Thread migrator = h.startMigrator(() -> { // stuck in its first batch
+            release.await();
+            return KEEP;
+        });
+
+        assertEquals(0L, h.table.get(firstSegmentKey));
 
         final long t0 = System.nanoTime();
-        final IllegalStateException e = assertThrows(IllegalStateException.class, () -> h.table.get(firstSegmentKey));
+        final IllegalStateException e = assertThrows(IllegalStateException.class, h.table::finishMigration);
         final long ms = (System.nanoTime() - t0) / 1_000_000;
         log.info("failed after {}ms: {}", ms, e.getMessage());
-        assertTrue(e.getMessage(), e.getMessage().startsWith("stuck waiting"));
+        assertTrue(e.getMessage(), e.getMessage().startsWith("stuck waiting for the worker"));
         assertTrue("took " + ms + "ms", ms >= 200 && ms < 3_000);
 
         release.countDown(); // the migrator goes on
         h.close(migrator);
         assertEquals(0, h.verify(ref, "hang timeout"));
+    }
+
+    /**
+     * A migrator that stops in the middle of its batch - preempted, say - does not hold the table up: the lookup that
+     * needs its portion takes it over, the puts go on, the one at the block threshold copies the rest. The table
+     * switches arrays only once the migrator has left its batch - which it then writes to the end, entries the table
+     * has copied too. Nothing is lost.
+     */
+    @Test(timeout = 60_000)
+    public void migrator_stalled_in_its_batch_is_taken_over() throws Exception {
+
+        final Harness h = new Harness(1000);
+        final Map<Long, Long> ref = new HashMap<>();
+        final long firstSegmentKey = startMigrationHeldBack(h, ref);
+        final HashtableAsync2Resizer r = h.resizer();
+        final int from = r.getProcessedPosition();
+        final int batchEnd = from + HashtableAsync2Resizer.BATCH_LONGS;
+        final CountDownLatch started = new CountDownLatch(1);
+        final CountDownLatch resume = new CountDownLatch(1);
+        final Thread migrator = h.startMigrator(() -> {
+            r.copyInterval(from, from + 16);
+            started.countDown();
+            resume.await();
+            r.copyInterval(from + 16, batchEnd);
+            return KEEP;
+        });
+        started.await();
+
+        final long t0 = System.nanoTime();
+        assertEquals(0L, h.table.get(firstSegmentKey));
+        final Random rand = new Random(17L);
+        for (int i = 0; i < 2000 && !r.isAllMigrated(); i++) {
+            final long key = rand.nextLong() | 1L;
+            h.table.put(key, i);
+            ref.put(key, (long) i);
+            assertEquals(i, h.table.get(key));
+        }
+        final long ms = (System.nanoTime() - t0) / 1_000_000;
+        assertTrue("copied by the table", r.isAllMigrated());
+        assertTrue("took " + ms + "ms", ms < 1_000);
+        assertTrue("both arrays until the migrator leaves its batch", h.table.migrationInProgress());
+        assertEquals(0L, h.table.get(firstSegmentKey));
+        for (Map.Entry<Long, Long> e : ref.entrySet()) {
+            assertEquals("while the migrator is stalled, key " + e.getKey(), (long) e.getValue(), h.table.get(e.getKey()));
+        }
+
+        resume.countDown();
+        h.close(migrator);
+        assertEquals(4096, h.table.capacity());
+        assertEquals(0, h.verify(ref, "taken over"));
+    }
+
+    /**
+     * After a take-over the migrator may still write the entries of its batch - with the values they had. A new value
+     * for one of them waits until it has: otherwise the migrator would bring the old value back. Here the table has
+     * copied everything already, and stays with both arrays until then.
+     */
+    @Test(timeout = 60_000)
+    public void new_value_in_the_taken_over_batch_waits_for_the_migrator() throws Exception {
+        changeEntryOfTakenOverBatch(false);
+    }
+
+    /** The same for a removal: the migrator would bring the entry back - or overwrite one shifted into its slot. */
+    @Test(timeout = 60_000)
+    public void removal_in_the_taken_over_batch_waits_for_the_migrator() throws Exception {
+        changeEntryOfTakenOverBatch(true);
+    }
+
+    private static void changeEntryOfTakenOverBatch(boolean remove) throws Exception {
+
+        final Harness h = new Harness(1000);
+        final Map<Long, Long> ref = new HashMap<>();
+        final long firstSegmentKey = startMigrationHeldBack(h, ref);
+        final HashtableAsync2Resizer r = h.resizer();
+        final long[] old = (long[]) DATA.get(h.table);
+        final int from = r.getProcessedPosition();
+        final int batchEnd = from + HashtableAsync2Resizer.BATCH_LONGS;
+        int p = from;
+        while (old[p] == HashingUtils.NOT_ALLOWED_KEY) {
+            p += 2;
+        }
+        assertTrue("an entry in the batch", p < batchEnd);
+        final long key = old[p] ^ HashingUtils.SEED;
+
+        // the migrator writes its batch only after the take-over
+        final CountDownLatch resume = new CountDownLatch(1);
+        final Thread migrator = h.startMigrator(() -> {
+            resume.await();
+            r.copyInterval(from, batchEnd);
+            return KEEP;
+        });
+        assertEquals(0L, h.table.get(firstSegmentKey));
+        final Random rand = new Random(19L);
+        for (int i = 0; i < 2000 && !r.isAllMigrated(); i++) {
+            final long k = rand.nextLong() | 1L;
+            h.table.put(k, i);
+            ref.put(k, (long) i);
+        }
+        assertTrue("copied by the table", r.isAllMigrated());
+
+        final Thread resumer = new Thread(() -> {
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException ignored) {
+            }
+            resume.countDown();
+        });
+        resumer.start();
+        final long t0 = System.nanoTime();
+        if (remove) {
+            assertEquals((long) ref.remove(key), h.table.remove(key));
+        } else {
+            h.table.put(key, -7L);
+            ref.put(key, -7L);
+        }
+        final long ms = (System.nanoTime() - t0) / 1_000_000;
+        log.info("{} waited {}ms", remove ? "removal" : "new value", ms);
+        assertTrue("waited for the migrator: " + ms + "ms", ms >= 150);
+        resumer.join();
+
+        h.close(migrator);
+        assertEquals(remove ? 0L : -7L, h.table.get(key));
+        assertEquals(!remove, h.table.containsKey(key));
+        assertEquals(0, h.verify(ref, remove ? "removal" : "new value"));
     }
 
     /**
@@ -362,7 +491,10 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         final Map<Long, Long> ref = new HashMap<>();
         final long firstSegmentKey = startMigrationHeldBack(h, ref);
 
-        final Thread migrator = h.startMigrator(() -> Thread.sleep(100));
+        final Thread migrator = h.startMigrator(() -> {
+            Thread.sleep(100);
+            return KEEP;
+        });
         Thread.currentThread().interrupt();
         try {
             assertEquals(0L, h.table.get(firstSegmentKey)); // missing - known only once its segment is copied
@@ -431,9 +563,10 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         final int a1 = (int) ALLOWED.getVolatile(r);
         final long[] dst = r.getNewDataArray();
 
-        // migrator: the first segment, published like doCopy does
+        // migrator: the first segment, published like the worker does
+        final long held = r.claimAsWorkerForTest();
         r.copyInterval((s + 2) & (len - 1), a1);
-        TO_PROCESS.setVolatile(r, a1);
+        assertTrue(r.endAsWorkerForTest(held, a1));
 
         // application: the next put sees the segment done and authorizes the second one (its key stays in old data)
         h.table.put(farKey2, 22L);
@@ -475,7 +608,7 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
             if (next != a2) {
                 r.copyInterval(next, a2);
             }
-            TO_PROCESS.setVolatile(r, a2);
+            return a2;
         });
 
         paused.await();
@@ -486,7 +619,7 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         final int homeSlot = (a1 - 2 + half) >> 1;
         long placedAtO = 0;
         int inserted = 0;
-        while ((int) TO_PROCESS.getVolatile(r) != a2 && inserted < 64) {
+        while (r.getProcessedPosition() != a2 && inserted < 64) {
             final long key = keyWithSlot(nextKey, homeSlot, newSlotMask);
             nextKey = key + 1;
             h.table.put(key, key * 31);
@@ -538,19 +671,18 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
         }
 
         /**
-         * Runs the steps as the worker in the middle of a segment - the table waits for them instead of copying
-         * itself - then serves the table as the worker does, continuing from the published progress, until close().
+         * Runs the steps as the worker in its first batch - the table waits for them, then takes them over - and
+         * publishes the progress they return, unless taken over; then serves the table as the worker does,
+         * continuing from the published progress, until close().
          */
         Thread startMigrator(Steps steps) throws IllegalAccessException {
             final HashtableAsync2Resizer r = (HashtableAsync2Resizer) RESIZER.get(table);
-            if (r != null) {
-                STATE.setVolatile(r, WORKER);
-            }
+            final long held = r != null ? r.claimAsWorkerForTest() : 0;
             final Thread thread = new Thread(() -> {
                 try {
-                    steps.run();
-                    if (r != null) {
-                        STATE.setVolatile(r, IDLE);
+                    final int progress = steps.run();
+                    if (held != 0) {
+                        r.endAsWorkerForTest(held, progress);
                     }
                     while (!stopMigrator) {
                         if (!service.serveOnce()) {
@@ -568,8 +700,7 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
 
         /** completes the migration; without a migrator thread one is started */
         void close(Thread migrator) throws InterruptedException, IllegalAccessException {
-            final Thread m = migrator != null ? migrator : startMigrator(() -> {
-            });
+            final Thread m = migrator != null ? migrator : startMigrator(() -> KEEP);
             table.close();
             stopMigrator = true;
             m.join(TimeUnit.SECONDS.toMillis(20));
@@ -602,7 +733,8 @@ public class LongLongLL2HashtableMigrationInterleavingTest {
 
     @FunctionalInterface
     private interface Steps {
-        void run() throws Exception;
+        /** @return the progress to publish - a gap - or KEEP */
+        int run() throws Exception;
     }
 
     private static long keyWithSlot(long from, int slot, int slotMask) {

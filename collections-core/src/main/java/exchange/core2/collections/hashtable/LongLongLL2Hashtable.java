@@ -20,7 +20,10 @@ import static exchange.core2.collections.hashtable.HashingUtils.SEED;
  *     when built ({@link Builder#migrationService}, required) and leaves at {@link #close()}.</li>
  *     <li>An operation on a key whose home is in the segment being copied waits for that segment: 256 slots, ~2us to
  *     copy - and up to the end of the cluster there, a segment ends at a free slot. Only if the worker is copying it
- *     right now: a segment the worker has not taken yet is copied by the table itself. A put whose probe reaches the
+ *     right now: a segment the worker has not taken yet is copied by the table itself, and so is one the worker
+ *     stopped copying - preempted, say - for ~2us. The entries of the batch the worker was writing then, at most 32,
+ *     stay as they are until the worker runs again: a removal there or a new value for one of them waits for it, a
+ *     migration that ends before ends with the next operation after it. A put whose probe reaches the
  *     start of the migration copies the cluster before it on the calling thread. A put that brings the old array to
  *     90% load before the migration ends waits for all of it - and allocates the new array itself if the worker has
  *     not started it. {@link Builder#fixedCapacity} makes a table that never resizes, with none of this.</li>
@@ -93,6 +96,8 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
     private final long hangTimeoutNanos;
     /** of the wait for the worker in progress, see waitStep() */
     private long waitDeadline;
+    /** portions taken over from a stalled worker - for the tests */
+    private long takeOvers;
 
     /**
      * Runs {@link #integrityCheck()} right after every completed migration. Enable with
@@ -284,10 +289,15 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
             // TODO slow ?
             knownProgressCached = resizer.getProcessedPosition();
 
-            if (size >= blockThreshold) {
+            if (resizer.isAllMigrated()) {
 
-                // The application outran the migration: authorize the rest, copy what the worker does not take and
-                // wait for what it is copying.
+                // copied in full - and not ended yet: the worker may still write a batch the table took over from it
+                switchToNewArray();
+
+            } else if (size >= blockThreshold) {
+
+                // The application outran the migration: authorize the rest, copy what the worker does not take - or
+                // stopped copying - and wait for what it is copying.
                 allowedPosition = resizer.getStartingPosition();
                 resizer.setAllowedPosition(allowedPosition);
                 slot.authorized();
@@ -332,7 +342,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
 
         int g0 = resizer.getStartingPosition();
 
-        if (resizer.isInOldData(pos, allowedPosition) || pos == g0) {
+        if (!resizer.isAllMigrated() && (resizer.isInOldData(pos, allowedPosition) || pos == g0)) {
 
 //            setAction(key, 8);
 
@@ -365,6 +375,10 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
                     // can not extend backwards, need to wait for completion
                     awaitAllowedPositionReached();
                     switchToNewArray();
+                    if (resizer != null) {
+                        // the worker is still in the batch the table took over: into the new array
+                        return putResizing(key, value);
+                    }
                     // can safely insert
                     int pos2 = (hash & mask) << 1;
                     final int offset2 = HashingUtils.findFreeOffset(key, pos2, data);
@@ -438,6 +452,11 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
             // sees the other's writes - let it finish the segment first (bounded by the segment size)
             awaitAllowedPositionReached();
             offsetNew = HashingUtils.findFreeOffset(key, newHome, dataNew);
+        }
+
+        if (dataNew[offsetNew] == key && resizer.frozen(offsetNew)) {
+            // a new value for an entry the worker may still write, with its old value
+            awaitWorkerBatch();
         }
 
         return putInternalInsert(dataNew, offsetNew, key, value);
@@ -619,6 +638,11 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
             // the removal shifts entries back along the whole cluster - not while the migrator writes its end
             awaitAllowedPositionReached();
         }
+        if (resizer.frozenPending()
+                && resizer.frozenWithin(newHome, HashtableAsync2Resizer.findNextGapPos(dataNew, newHome))) {
+            // nor while the worker may still write an entry of the cluster
+            awaitWorkerBatch();
+        }
 
         // log.debug("REMOVE {}: migrated, removing from new", key);
         final long val = removeInternal(key, hash, dataNew, resizer.getNewMask());
@@ -774,9 +798,11 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
 
     /**
      * One step of a wait for the copying. A segment the worker has not taken is not waited for: the table copies it
-     * itself. Otherwise - the worker is copying it right now - spins, and every 1024 spins rethrows a failure of the
-     * worker and checks the hang timeout. The clock starts at the first check: the usual wait - a segment, a
-     * microsecond or two - does not read it, and the timeout starts at most 1024 spins late.
+     * itself - and takes the worker's portion over if the worker has not started a new batch for
+     * {@value HashtableAsync2Resizer#TAKE_OVER_SPINS} spins. Otherwise - the worker is copying - spins, and every 1024
+     * spins rethrows a failure of the worker and checks the hang timeout. The clock starts at the first check: the
+     * usual wait - a segment, a microsecond or two - does not read it, and the timeout starts at most 1024 spins
+     * late.
      * <p>
      * Every 1024 spins it also yields: the worker may share this core - one started by a pinned application inherits
      * its core - and then it runs only when this thread gives the core up. Without that, the wait lasted until the
@@ -788,6 +814,11 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
     private boolean waitStep(long spins) {
         final HashtableAsync2Resizer r = resizer;
         if (r.copyIfIdle()) {
+            knownProgressCached = r.getProcessedPosition();
+            return false;
+        }
+        if (r.takeOverIfStalled(spins)) {
+            takeOvers++;
             knownProgressCached = r.getProcessedPosition();
             return false;
         }
@@ -833,6 +864,22 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
                         + spins + " spins, " + migrationState());
             }
             knownProgressCached = resizer.getProcessedPosition();
+        }
+    }
+
+    /**
+     * Waits until the worker has written the batch the table took over from it: it has been preempted in the middle
+     * of it, most likely - this waits until it runs again.
+     */
+    private void awaitWorkerBatch() {
+
+        long spins = 0;
+
+        while (resizer.frozenPending()) {
+            if (waitStep(++spins)) {
+                throw new IllegalStateException("stuck waiting for the worker to leave its batch after "
+                        + spins + " spins, " + migrationState());
+            }
         }
     }
 
@@ -942,7 +989,8 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
     /**
      * Drives an in-flight migration to completion and switches to the new array, so that callers
      * can work with a single consistent array: authorizes the rest, then copies what the worker
-     * does not take, or waits for the segment it is copying.
+     * does not take, or waits for the segment it is copying - takes it over if the worker stalls, and then waits
+     * until the worker has left the batch it was writing.
      */
     private void blockOnResizing() {
 
@@ -958,6 +1006,7 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
             resizer.setAllowedPosition(allowedPosition);
             slot.authorized();
             awaitAllowedPositionReached();
+            awaitWorkerBatch();
             switchToNewArray();
         }
     }
@@ -990,9 +1039,17 @@ public final class LongLongLL2Hashtable implements ILongLongHashtable, AutoClose
     }
 
 
+    /**
+     * Ends the copied migration - unless the worker may still write entries of a batch the table took over from it:
+     * then the table stays with both arrays, all in the new one, and the operations try again until it has.
+     */
     private void switchToNewArray() {
+        if (resizer.frozenPending()) {
+            return;
+        }
         // the worker leaves this migration: it does nothing more with a finished resizer, and the slot no longer
-        // offers it (a worker in the middle of its last segment ended that segment - the table waited for it)
+        // offers it (a worker in the middle of its last segment ended that segment - the table waited for it, or took
+        // the segment over and waited for the batch the worker was writing)
         resizer.finish();
         slot.endCopying();
         knownProgressCached = -1;

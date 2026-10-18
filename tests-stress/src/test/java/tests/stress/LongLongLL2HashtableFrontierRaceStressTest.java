@@ -56,7 +56,8 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
     /** the resizer class is package-private: its state is read like the private fields of the table */
     private static final Class<?> RESIZER_CLASS = resizerClass();
     private static final VarHandle RESIZER = ll2Field("resizer", RESIZER_CLASS);
-    private static final VarHandle PROCESSED = resizerField("toProcessPosition", int.class);
+    /** the resizer's state: the progress in its high half */
+    private static final VarHandle STATE = resizerField("state", long.class);
     private static final VarHandle STARTING = resizerField("startingPosition", int.class);
     private static final VarHandle DST = resizerField("dstData", long[].class);
     private static final VarHandle ALLOCATING = ll2Field("allocating", boolean.class);
@@ -148,7 +149,7 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
                     break;
                 }
 
-                final int p = (int) PROCESSED.getVolatile(r);
+                final int p = processed(r);
                 final int s = (int) STARTING.getVolatile(r);
                 if (p != lastP) {
                     lastP = p;
@@ -227,7 +228,7 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
     private static void put(LongLongLL2Hashtable table, long key, long value, Long2LongHashMap ref, Stats stats) {
 
         final Object r = RESIZER.get(table);
-        final int pBefore = r != null ? (int) PROCESSED.getVolatile(r) : -1;
+        final int pBefore = r != null ? processed(r) : -1;
 
         if (table.put(key, value) != ref.put(key, value)) {
             stats.wrongResults++;
@@ -329,6 +330,10 @@ public class LongLongLL2HashtableFrontierRaceStressTest {
         final CpuAffinity affinity = CpuAffinity.acquireCore(cpu);
         log.info("{}: {}", role, affinity);
         return affinity;
+    }
+
+    private static int processed(Object resizer) {
+        return (int) ((long) STATE.getVolatile(resizer) >>> 32);
     }
 
     private static VarHandle ll2Field(String name, Class<?> type) {

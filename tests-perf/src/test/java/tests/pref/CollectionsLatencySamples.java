@@ -116,6 +116,9 @@ public class CollectionsLatencySamples {
     private MigrationService bigAllocationSeparate;
     private MigrationService bigAllocationOnWorker;
 
+    /** ll2-preempted-worker: a spinning worker pinned to a core it shares with a thread that burns it */
+    private MigrationService preemptedWorker;
+
     /** ll2-scenarios: a parking worker (the default wait), unpinned - started with the instance, before the pinning */
     private final MigrationService ll2Parking = MigrationService.builder().threadName("ll2-parking").start();
 
@@ -199,6 +202,9 @@ public class CollectionsLatencySamples {
             bigAllocationSeparate = spinningService("ll2-alloc-separate", true);
             bigAllocationOnWorker = spinningService("ll2-alloc-on-worker", false);
         }
+        if (GROUPS.contains("ll2-preempted-worker")) {
+            preemptedWorker = preemptedService();
+        }
 
         try (CpuAffinity ignore = pinCurrentThread()) {
             if (GROUPS.contains("hashtable-get")) hashtableGet();
@@ -211,6 +217,7 @@ public class CollectionsLatencySamples {
             if (GROUPS.contains("hashtable-collide")) hashtableCollide();
             if (GROUPS.contains("ll2-many-tables")) ll2ManyTables();
             if (GROUPS.contains("ll2-big-allocation")) ll2BigAllocation();
+            if (GROUPS.contains("ll2-preempted-worker")) ll2PreemptedWorker();
         }
         log.info("done ({})", sink);
     }
@@ -472,6 +479,38 @@ public class CollectionsLatencySamples {
                 neighbour.close();
             }
         };
+    }
+
+    /**
+     * A worker the scheduler takes off its core for milliseconds at a time, at the put rate of hashtable-put: it is
+     * pinned to a core it shares with a thread that burns it, so they get time slices in turn - also while the worker
+     * is in the middle of a portion it has claimed.
+     */
+    private void ll2PreemptedWorker() throws IOException {
+        final String group = "ll2-preempted-worker";
+        final long[] keys = randomKeys(PUT_KEYS, 3);
+
+        fixedRate(group, "ll2-put-worker-preempted", keys,
+                () -> ll2Put(ll2(preemptedWorker, LL2_SYNC_RESIZE_BELOW), null));
+        fixedRate(group, "ll2-put-4-tables-worker-preempted", keys,
+                () -> ll2PutTables(4, () -> ll2(preemptedWorker, LL2_SYNC_RESIZE_BELOW)));
+    }
+
+    /** a spinning worker pinned by its threadInit, which starts a thread burning the same core (it inherits the pin) */
+    private static MigrationService preemptedService() {
+        return MigrationService.builder().waitStrategy(MigrationService.WaitStrategy.BUSY_SPIN)
+                .threadName("ll2-preempted")
+                .threadInit(() -> {
+                    SPINNING.add(Thread.currentThread());
+                    final CpuAffinity affinity = pinCurrentThread();
+                    final Thread burner = new Thread(() -> {
+                        for (; ; ) Thread.onSpinWait();
+                    }, "ll2-preempting");
+                    burner.setDaemon(true);
+                    SPINNING.add(burner);
+                    burner.start();
+                    return affinity;
+                }).start();
     }
 
     /** a worker spinning on a core of its own (pinned by its threadInit), the allocator unpinned or none */
