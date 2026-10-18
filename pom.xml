@@ -11,6 +11,7 @@
         <module>collections-core</module>
         <module>collections-affinity</module>
         <module>collections-orderbook</module>
+        <module>collections-ledger</module>
         <module>tests-common</module>
         <module>tests-perf</module>
         <module>tests-stress</module>
@@ -221,6 +222,11 @@
             <dependency>
                 <groupId>${project.groupId}</groupId>
                 <artifactId>collections-orderbook</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>${project.groupId}</groupId>
+                <artifactId>collections-ledger</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

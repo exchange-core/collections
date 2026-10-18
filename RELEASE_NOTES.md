@@ -93,6 +93,13 @@
 - **`LongTupleHashtableJmh`** (`tests-perf`): balances under a key of three longs (a UUID, a token and a
   subaccount) in a `LongTupleHashtable` against a `HashMap` of a `record` key to an object; `LongRecordTableJmh`
   measures it too, with a key of one long. Results in the README.
+- **`collections-ledger` (new module): `BalanceTable`** - balances (available, reserved) under keys of a fixed
+  number of longs, in a `LongTupleHashtable`. `deposit`, `withdraw`, `reserve`, `release`, `settle` and `post`
+  check before they write and return a status (`OK`, `INSUFFICIENT_AVAILABLE`, `INSUFFICIENT_RESERVED`, `OVERFLOW`,
+  ...): neither amount goes below 0, no sum overflows, a refusal changes nothing and throws nothing. They take a
+  reference from `find` / `getOrCreate`, valid until the entries move (a resize, a removal) - a stale one throws. A
+  `Batch` of postings to several balances applies all or nothing, the same key any number of times, the balances it
+  created removed again on a refusal. Java 17, no dependencies but `collections-core`.
 
 ### Fixed
 
