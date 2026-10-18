@@ -11,7 +11,7 @@ and designed for low-latency, single-threaded hot paths.
 
 | Module                  | Artifact                | Contents                                                      |
 |-------------------------|-------------------------|---------------------------------------------------------------|
-| `collections-core`      | `collections-core`      | Adaptive Radix Tree, long-long hashtables, objects pool        |
+| `collections-core`      | `collections-core`      | Adaptive Radix Tree, long-long hashtables, record store, objects pool |
 | `collections-orderbook` | `collections-orderbook` | Order book implementation built on top of the core collections |
 | `collections-affinity`  | `collections-affinity`  | Pinning threads to CPU cores (Linux, Windows), no dependencies |
 | `tests-perf`            | –                       | Latency / throughput benchmarks (not published)                |
@@ -62,6 +62,7 @@ mvn clean install
 | `LongAdaptiveRadixTreeMap` | Adaptive Radix Tree (ART) | `long` → object  | stable       |
 | `LongLongHashtable`        | open-addressing hashtable | `long` → `long`  | stable       |
 | `LongLongLL2Hashtable`     | hashtable, async resizing | `long` → `long`  | stable       |
+| `RecordStore`              | paged records by handle   | handle → `long` fields | new    |
 | `ObjectsPool`              | object pool               | –                | stable       |
 
 ---
@@ -423,6 +424,81 @@ worker a core of its own.
   interrupts do not end them
 - `-Dexchange.hashtable.verify=true` runs a full integrity check after every migration —
   for debugging migration corruption only, it is expensive
+
+---
+
+### RecordStore
+
+Records of a fixed number of `long` fields, addressed by a `long` handle — no keys. Several values that
+belong together (a balance: available and reserved) live side by side in one record instead of one hashtable
+each; the handle is what the rest of the system keeps — in a hashtable value, in a field of another record.
+
+```java
+import exchange.core2.collections.records.RecordStore;
+
+static final int AVAILABLE = 0;
+static final int RESERVED = 1;
+
+final RecordStore balances = RecordStore.builder()
+        .fields(2)
+        .expectedSize(1_000_000)    // the pages for 1M records, allocated now
+        .build();
+
+final long h = balances.allocate();         // a new record, all fields 0
+balances.set(h, AVAILABLE, 1_000);
+balances.addAndGet(h, AVAILABLE, -100);     // 900
+balances.addAndGet(h, RESERVED, 100);       // 100
+balances.get(h, RESERVED);                  // 100
+balances.addAndGetExact(h, AVAILABLE, Long.MAX_VALUE); // ArithmeticException, the field keeps 900
+
+balances.free(h);
+balances.isValid(h);                        // false
+balances.get(h, AVAILABLE);                 // IllegalArgumentException: stale handle
+```
+
+Keys map to handles in a `long` hashtable — a missing key reads as `0`, which is `RecordStore.NO_RECORD`:
+
+```java
+final LongLongHashtable byAccount = new LongLongHashtable(1_000_000);
+
+long h = byAccount.get(accountId);
+if (h == RecordStore.NO_RECORD) {
+    h = balances.allocate();
+    byAccount.put(accountId, h);
+}
+```
+
+**Features**
+- a record never moves: its handle stays valid until it is freed, whatever else is allocated or freed
+- generations: a freed slot is reused under a new one, and every access checks it — a stale handle throws
+  `IllegalArgumentException` instead of reaching the record allocated after it (an object returned to a pool
+  would be silently shared). The check is one compare: the header of a live record is its handle, in the cache
+  line of the fields
+- pages of `pageSize` records (default 1024), each a `long[]`: growing allocates a page, nothing is copied but
+  the page directory — no pause proportional to the size. `fixedCapacity()` allocates all pages at the build,
+  `maxCapacity(n)` limits the records; beyond them `allocate` throws `IllegalStateException`
+- deterministic: the same allocations and frees hand out the same handles — last freed, first reused, then the
+  slots never used in their order; `forEach` visits the records in the slot order, whatever the hash seed
+- `addAndGetExact` — checked addition: `ArithmeticException` on overflow, the field unchanged. `addAndGet`
+  wraps around, as `+` does
+- `RecordStore.index(handle)` — the slot of a record, from 1 to `capacity()`, for arrays kept beside the store
+
+**Cost of the operations**
+
+| Operation | Cost |
+|---|---|
+| `get`, `set`, `addAndGet`, `addAndGetExact`, `isValid` | the page from the directory, the header compare, the field — no probe |
+| `allocate` | a slot from the free list, or the next slot never used; one allocation in `pageSize` adds a page (24 KB to zero for 2 fields and 1024 records) |
+| `free` | the header and the fields of the record |
+| `forEach`, `clear` | every slot used so far |
+| `ensureCapacity` | the pages it adds |
+
+**Notes**
+- a record takes `fields + 1` longs: the header; slot 0 is never allocated (its header keeps `NO_RECORD`
+  from passing the check)
+- a slot is reused up to 2^31 - 1 times; then it is retired, never allocated again
+- up to 2^30 records; a page of at most 2^20 records
+- not thread-safe
 
 ---
 

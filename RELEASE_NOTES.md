@@ -64,6 +64,12 @@
   bids, the distance from the mid hyperbolic - dense near the mid, thinning out further), order ids with 95%
   of them gone, random keys. Lookups, neighbour, removal + put, new level (put + neighbour), top 10, and a mixed
   order-book stream.
+- **`RecordStore`: records of `long` fields, addressed by a `long` handle** (new package
+  `exchange.core2.collections.records`). No keys - a `long` hashtable maps keys to handles, `NO_RECORD` (`0`) being
+  its default missing value. A record never moves; a freed one is reused under a new generation, and every access
+  checks it: a stale handle throws instead of reaching the record allocated after it. Pages of `pageSize` records
+  (default 1024): growing allocates a page, nothing is copied but the page directory. `addAndGetExact` throws
+  `ArithmeticException` on overflow and keeps the value. The same operations hand out the same handles.
 
 ### Fixed
 
