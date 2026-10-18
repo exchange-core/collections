@@ -21,42 +21,47 @@ import exchange.core2.collections.objpool.ObjectsPool;
 import java.util.List;
 import java.util.Map;
 
-public interface IArtNode<V> {
+/**
+ * A node of the tree: ArtNode4 / 16 / 48 / 256, or an ArtLeaf in place of a child. An abstract class, not an
+ * interface: a call on a node whose class the JIT can not predict (most of them - five classes meet at every
+ * level) goes through the vtable, one indexed load, where an interface call searches the itable of the class.
+ */
+public abstract class ArtNode<V> {
 
-    V getValue(long key, int level);
+    public abstract V getValue(long key, int level);
 
     /**
      * @param map receives the value the put replaced in {@code map.previousValue} (stays null for a new key)
      * @return the node that replaces this one (grown or branched), or null if this node stays
      */
-    IArtNode<V> put(long key, int level, V value, LongAdaptiveRadixTreeMap<V> map);
+    public abstract ArtNode<V> put(long key, int level, V value, LongAdaptiveRadixTreeMap<V> map);
 
     /**
      * @param map receives the removed value in {@code map.previousValue} (stays null if the key is absent)
      * @return the node that replaces this one (shrunk or collapsed), this node, or null if it became empty
      */
-    IArtNode<V> remove(long key, int level, LongAdaptiveRadixTreeMap<V> map);
+    public abstract ArtNode<V> remove(long key, int level, LongAdaptiveRadixTreeMap<V> map);
 
-    V getCeilingValue(long key, int level);
+    public abstract V getCeilingValue(long key, int level);
 
-    V getFloorValue(long key, int level);
+    public abstract V getFloorValue(long key, int level);
 
     /** @return the lowest internal key of this subtree (the subtree is never empty) */
-    long firstKey();
+    public abstract long firstKey();
 
     /** @return the highest internal key of this subtree (the subtree is never empty) */
-    long lastKey();
+    public abstract long lastKey();
 
     /** hands out map keys (signed), not the internal ones */
-    int forEach(LongObjConsumer<V> consumer, int limit);
+    public abstract int forEach(LongObjConsumer<V> consumer, int limit);
 
     /** hands out map keys (signed), not the internal ones */
-    int forEachDesc(LongObjConsumer<V> consumer, int limit);
+    public abstract int forEachDesc(LongObjConsumer<V> consumer, int limit);
 
     /**
      * Returns this node and its whole subtree into the pool. The node must be unreachable afterwards.
      */
-    void recycle();
+    public abstract void recycle();
 
     /**
      * Get number of elements
@@ -65,14 +70,14 @@ public interface IArtNode<V> {
      * @param limit - can provide value to operation increase performance
      * @return if returned value less than limit - it is precise size of the node
      */
-    int size(int limit);
+    public abstract int size(int limit);
 
     /**
      * For testing only
      *
      * @param level level
      */
-    void validateInternalState(int level);
+    public abstract void validateInternalState(int level);
 
     /**
      * For testing only
@@ -81,15 +86,15 @@ public interface IArtNode<V> {
      * @param level  level
      * @return internal diagram part
      */
-    String printDiagram(String prefix, int level);
+    public abstract String printDiagram(String prefix, int level);
 
     /**
      * For testing only
      *
      * @return list of entries, map keys (signed)
      */
-    List<Map.Entry<Long, V>> entries();
+    public abstract List<Map.Entry<Long, V>> entries();
 
 
-    ObjectsPool getObjectsPool();
+    public abstract ObjectsPool getObjectsPool();
 }

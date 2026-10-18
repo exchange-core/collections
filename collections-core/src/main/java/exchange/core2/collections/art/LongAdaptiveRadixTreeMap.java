@@ -51,7 +51,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
 
     private static final int INITIAL_LEVEL = 56;
 
-    private IArtNode<V> root = null;
+    private ArtNode<V> root = null;
 
     private final ObjectsPool objectsPool;
 
@@ -84,6 +84,11 @@ public final class LongAdaptiveRadixTreeMap<V> {
         return key ^ Long.MIN_VALUE;
     }
 
+    /**
+     * A recursion through the nodes. A loop over the levels (the node class told apart by instanceof, the child
+     * lookups inlined) was measured on rhel-lat: misses on 1M random keys -12%, but hits in a 20k-level order book
+     * +14-19% (patch kept outside the repository) - the recursion stays.
+     */
     public V get(final long key) {
         return root != null
                 ? root.getValue(flipSignBit(key), INITIAL_LEVEL)
@@ -107,7 +112,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
             return null;
         }
 
-        final IArtNode<V> upSizedNode = root.put(internalKey, INITIAL_LEVEL, value, this);
+        final ArtNode<V> upSizedNode = root.put(internalKey, INITIAL_LEVEL, value, this);
         if (upSizedNode != null) {
             root = upSizedNode;
         }
@@ -373,7 +378,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
     }
 
 
-    static <V> IArtNode<V> branchIfRequired(final long key, final V value, final long nodeKey, final int nodeLevel, final IArtNode<V> caller) {
+    static <V> ArtNode<V> branchIfRequired(final long key, final V value, final long nodeKey, final int nodeLevel, final ArtNode<V> caller) {
 
         final long keyDiff = key ^ nodeKey;
 
@@ -440,7 +445,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
             if (nodeLevel == 0) {
                 sb.append(x + key + " = " + node);
             } else {
-                sb.append(x + key + "" + (((IArtNode<?>) node).printDiagram(prefix + (i + 1 == numChildren ? "    " : "│   ") + baseKeyPrefix1, nodeLevel - 8)));
+                sb.append(x + key + "" + (((ArtNode<?>) node).printDiagram(prefix + (i + 1 == numChildren ? "    " : "│   ") + baseKeyPrefix1, nodeLevel - 8)));
             }
             if (i < numChildren - 1) {
                 sb.append("\n");

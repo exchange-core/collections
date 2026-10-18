@@ -30,7 +30,7 @@ import java.util.Map;
  * never points to a leaf; a second key turns the leaf into an ArtNode4, and the last key of an ArtNode4 at level 0
  * goes back into a leaf.
  */
-final class ArtLeaf<V> implements IArtNode<V> {
+final class ArtLeaf<V> extends ArtNode<V> {
 
     /** internal key: the sign bit flipped, see LongAdaptiveRadixTreeMap.flipSignBit */
     long key;
@@ -55,7 +55,7 @@ final class ArtLeaf<V> implements IArtNode<V> {
     }
 
     @Override
-    public IArtNode<V> put(final long key, final int level, final V value, final LongAdaptiveRadixTreeMap<V> map) {
+    public ArtNode<V> put(final long key, final int level, final V value, final LongAdaptiveRadixTreeMap<V> map) {
         if (key == this.key) {
             map.previousValue = this.value;
             this.value = value;
@@ -76,7 +76,7 @@ final class ArtLeaf<V> implements IArtNode<V> {
     }
 
     @Override
-    public IArtNode<V> remove(final long key, final int level, final LongAdaptiveRadixTreeMap<V> map) {
+    public ArtNode<V> remove(final long key, final int level, final LongAdaptiveRadixTreeMap<V> map) {
         if (key != this.key) {
             return this;
         }

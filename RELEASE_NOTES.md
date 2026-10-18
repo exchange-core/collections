@@ -286,6 +286,10 @@
   entry; 100k random keys: 64 to 53 bytes, 7.4 to 5.9 dependent loads per lookup; a 20k-level book: 10.2 to 8.1
   loads. In `ArtOpsJmh` on rhel-lat, 100k random keys: missing key -21%, the mixed stream -12%, removal + put -8%,
   new level -8%; the other key sets within ±4%.
+- **`IArtNode` is now the abstract class `ArtNode`** (the node type inside `LongAdaptiveRadixTreeMap`): a call on a
+  node of a class the JIT can not predict goes through the vtable instead of a search of the itable. In `ArtOpsJmh`
+  on rhel-lat within ±4%, removal + put in a 20k-level book -9%. A lookup in a loop over the levels instead of the
+  recursion was measured too and left out: misses on 1M random keys -12%, hits in a 20k-level book +14-19%.
 - **`ObjectsPool`: a type left out of the configuration gets an empty stack** - `get` constructs, `put` drops - where
   it used to fail with `NullPointerException` (or `ArrayIndexOutOfBoundsException` above the highest configured
   type). The new `ART_LEAF` type, unless configured, gets as many places as `ART_NODE_4`, so configurations written
