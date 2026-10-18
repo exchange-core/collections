@@ -63,6 +63,7 @@ mvn clean install
 | `LongLongHashtable`        | open-addressing hashtable | `long` → `long`  | stable       |
 | `LongLongLL2Hashtable`     | hashtable, async resizing | `long` → `long`  | stable       |
 | `RecordStore`              | paged records by handle   | handle → `long` fields | new    |
+| `LongRecordTable`          | hashtable index + records | `long` → `long` fields | new    |
 | `ObjectsPool`              | object pool               | –                | stable       |
 
 ---
@@ -519,6 +520,83 @@ not pinned), short runs — indicative:
   from passing the check)
 - a slot is reused up to 2^31 - 1 times; then it is retired, never allocated again
 - up to 2^30 records; a page of at most 2^20 records
+- not thread-safe
+
+---
+
+### LongRecordTable
+
+`long` keys to records of `long` fields: a `LongLongHashtable` maps every key to the handle of its record in a
+`RecordStore`. A key is one probe; the handle it returns reaches the fields with no probe at all — keep it (in an
+order, say), and the next update of the balance is one cache line.
+
+```java
+import exchange.core2.collections.hashtable.LongRecordTable;
+
+static final int AVAILABLE = 0;
+static final int RESERVED = 1;
+
+final LongRecordTable balances = LongRecordTable.builder()
+        .fields(2)
+        .expectedSize(1_000_000)    // no resize of the index, no new page, up to 1M keys
+        .build();
+
+final long h = balances.getOrCreate(accountId);  // a new key gets a record, all fields 0 - one probe
+balances.addAndGetExact(h, AVAILABLE, 1_000);
+balances.find(accountId);                        // h; NO_RECORD (0) for a missing key
+balances.keyOf(h);                               // accountId
+
+// later, through the handle kept: no probe
+balances.addAndGet(h, AVAILABLE, -100);
+balances.addAndGet(h, RESERVED, 100);
+
+balances.remove(accountId);                      // true - h is stale now
+balances.get(h, AVAILABLE);                      // IllegalArgumentException
+```
+
+**Features**
+- handles stay valid however the index grows: the records never move
+- a record holds its key: `keyOf(handle)`, and `forEach((key, handle) -> ...)` in the order of the records — the
+  same from run to run, whatever the hash seed; the consumer may remove keys
+- a full table refuses a new key before its record is allocated: `IllegalStateException`, nothing changes.
+  `fixedCapacity()` — neither the index nor the store allocates after the build; `maxCapacity(n)` limits the keys
+- the field accessors take the handle, as those of `RecordStore`; `addAndGetExact` for checked sums
+
+**Cost of the operations**
+
+| Operation | Cost |
+|---|---|
+| `find`, `containsKey`, `getOrCreate` of a present key | one probe of the index |
+| `getOrCreate` of a new key | one probe; may resize the index (a copy of it), may add a page to the store |
+| `remove` | one probe, the backward shift of the rest of the cluster, the record freed |
+| `get`, `set`, `addAndGet`, `addAndGetExact`, `keyOf`, `isValid` | the record only |
+| `forEach`, `clear` | every record |
+
+**Measured** — `LongRecordTableJmh`, balances of two fields by key (random keys, in a random order) against a
+`LongLongHashtable` per field and Eclipse's `LongObjectHashMap` of an object per balance (as exchange-core keeps
+them); ns per operation, 10k / 1M / 10M keys. The laptop of `RecordStoreJmh`, short runs — indicative:
+
+| Operation | `LongRecordTable` | two `LongLongHashtable` | `LongObjectHashMap` |
+|---|---|---|---|
+| `chaseByKey` — each lookup waits for the one before | 26 / 109 / 136 | 23 / 130 / 165 | 15 / 107 / 183 |
+| `readByKey` — independent lookups, misses overlap | 18 / 85 / 114 | 19 / 54 / 68 | 11 / 74 / 89 |
+| `reserveByKey` (available down, reserved up) | 19 / 181 / 249 | 19 / 58 / 83 | 10 / 179 / 266 |
+| `createRemove` — a key removed, a new one added | 82 / 286 / 368 | 111 / 283 / 415 | 73 / 291 / 340 |
+
+- A lookup by key takes about as long in the three: the index and then the record are two misses, as the map
+  and then its object; the two hashtables take their two at once.
+- Independent lookups: a write into a record reached through a handle just loaded from the index — or into an
+  object through its reference — overlaps with the next ones far less than a hashtable's write into the slot it
+  has probed: 180-250 ns against 58-83. Through a handle the caller keeps, the same reservation is 39 ns at 10M
+  (`RecordStoreJmh`): keeping the handles is what the table is for.
+- Memory per key, two fields: 16 bytes per slot of the index and 32 per record (header, fields, key) — about
+  what two hashtables take, 16 bytes per slot each; every further field adds 8 bytes to a record, a further
+  hashtable 16 per slot.
+
+**Notes**
+- a record takes `fields + 2` longs: its header and the key; the index 16 bytes per slot, up to 65% full between
+  its resizes
+- the index resizes synchronously, as `LongLongHashtable` does — pre-size the table where that pause matters
 - not thread-safe
 
 ---

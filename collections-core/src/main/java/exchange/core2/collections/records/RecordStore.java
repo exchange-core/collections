@@ -446,6 +446,9 @@ public final class RecordStore {
     }
 
     private IllegalArgumentException staleHandle(long handle) {
+        if (handle == NO_RECORD) {
+            return new IllegalArgumentException("NO_RECORD is not a handle - the record of a missing key?");
+        }
         return new IllegalArgumentException("stale handle 0x" + Long.toHexString(handle) + " (slot " + (int) handle
                 + ", generation " + (handle >>> 32) + "): the record was freed, or is not of this store");
     }
