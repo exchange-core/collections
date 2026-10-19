@@ -66,6 +66,16 @@ final class ArtOracleAssertions {
             assertEquals("getFloorValue(" + key + ")",
                     valueOf(oracle.floorEntry(key)), tested.getFloorValue(key));
             assertEquals("containsKey(" + key + ")", oracle.containsKey(key), tested.containsKey(key));
+
+            final List<Long> up = new ArrayList<>();
+            assertEquals("forEach(" + key + ") count", Math.min(5, oracle.tailMap(key, true).size()),
+                    tested.forEach(key, (k, v) -> up.add(k), 5));
+            assertEquals("forEach(" + key + ")", new ArrayList<>(oracle.tailMap(key, true).keySet()).subList(0, up.size()), up);
+            final List<Long> down = new ArrayList<>();
+            assertEquals("forEachDesc(" + key + ") count", Math.min(5, oracle.headMap(key, true).size()),
+                    tested.forEachDesc(key, (k, v) -> down.add(k), 5));
+            assertEquals("forEachDesc(" + key + ")",
+                    new ArrayList<>(oracle.headMap(key, true).descendingKeySet()).subList(0, down.size()), down);
         }
 
         // 5. the ends of the map

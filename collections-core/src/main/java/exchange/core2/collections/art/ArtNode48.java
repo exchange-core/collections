@@ -30,7 +30,7 @@ import java.util.*;
  * comparison to 256 pointers of 8 bytes, because the indexes
  * only require 6 bits (we use 1 byte for simplicity).
  */
-public final class ArtNode48<V> implements IArtNode<V> {
+public final class ArtNode48<V> extends ArtNode<V> {
 
     /** highest possible key in the unsigned key space the nodes work in */
     private static final long UNSIGNED_MAX_KEY = -1L;
@@ -110,16 +110,16 @@ public final class ArtNode48<V> implements IArtNode<V> {
             final Object node = nodes[nodeIndex];
             return nodeLevel == 0
                     ? (V) node
-                    : ((IArtNode<V>) node).getValue(key, nodeLevel - 8);
+                    : ((ArtNode<V>) node).getValue(key, nodeLevel - 8);
         }
         return null;
     }
 
     @Override
     @SuppressWarnings("unchecked")
-    public IArtNode<V> put(final long key, final int level, final V value, final LongAdaptiveRadixTreeMap<V> map) {
+    public ArtNode<V> put(final long key, final int level, final V value, final LongAdaptiveRadixTreeMap<V> map) {
         if (level != nodeLevel) {
-            final IArtNode<V> branch = LongAdaptiveRadixTreeMap.branchIfRequired(key, value, nodeKey, nodeLevel, this);
+            final ArtNode<V> branch = LongAdaptiveRadixTreeMap.branchIfRequired(key, value, nodeKey, nodeLevel, this);
             if (branch != null) {
                 return branch;
             }
@@ -131,8 +131,9 @@ public final class ArtNode48<V> implements IArtNode<V> {
             if (nodeLevel == 0) {
                 map.previousValue = (V) nodes[nodeIndex];
                 nodes[nodeIndex] = value;
+                map.rememberPut(this);
             } else {
-                final IArtNode<V> resizedNode = ((IArtNode<V>) nodes[nodeIndex]).put(key, nodeLevel - 8, value, map);
+                final ArtNode<V> resizedNode = ((ArtNode<V>) nodes[nodeIndex]).put(key, nodeLevel - 8, value, map);
                 if (resizedNode != null) {
                     // update resized node if capacity has increased
                     nodes[nodeIndex] = resizedNode;
@@ -151,6 +152,7 @@ public final class ArtNode48<V> implements IArtNode<V> {
 
             if (nodeLevel == 0) {
                 nodes[freePosition] = value;
+                map.rememberPut(this);
             } else {
                 final ArtLeaf<V> newSubNode = ArtLeaf.create(objectsPool, key, value);
                 nodes[freePosition] = newSubNode;
@@ -171,14 +173,16 @@ public final class ArtNode48<V> implements IArtNode<V> {
 
             ArtNode256<V> node256 = objectsPool.get(ObjectsPool.ART_NODE_256, ArtNode256::new);
             node256.initFromNode48(this, idx, newElement);
-
+            if (node256.nodeLevel == 0) {
+                map.rememberPut(node256);
+            }
             return node256;
         }
     }
 
     @Override
     @SuppressWarnings("unchecked")
-    public IArtNode<V> remove(final long key, final int level, final LongAdaptiveRadixTreeMap<V> map) {
+    public ArtNode<V> remove(final long key, final int level, final LongAdaptiveRadixTreeMap<V> map) {
         if (level != nodeLevel && ((key ^ nodeKey) & (-1L << (nodeLevel + 8))) != 0) {
             return this;
         }
@@ -196,8 +200,8 @@ public final class ArtNode48<V> implements IArtNode<V> {
             numChildren--;
             freeBitMask = freeBitMask ^ (1L << nodeIndex);
         } else {
-            final IArtNode<V> node = (IArtNode<V>) nodes[nodeIndex];
-            final IArtNode<V> resizedNode = node.remove(key, nodeLevel - 8, map);
+            final ArtNode<V> node = (ArtNode<V>) nodes[nodeIndex];
+            final ArtNode<V> resizedNode = node.remove(key, nodeLevel - 8, map);
             if (resizedNode != node) {
                 // update resized node if capacity has decreased
                 nodes[nodeIndex] = resizedNode;
@@ -246,7 +250,7 @@ public final class ArtNode48<V> implements IArtNode<V> {
         final byte index = indexes[idx];
         if (index != -1) {
             // if exact key found
-            final V res = nodeLevel == 0 ? (V) nodes[index] : ((IArtNode<V>) nodes[index]).getCeilingValue(key, nodeLevel - 8);
+            final V res = nodeLevel == 0 ? (V) nodes[index] : ((ArtNode<V>) nodes[index]).getCeilingValue(key, nodeLevel - 8);
             if (res != null) {
                 // return if found ceiling, otherwise will try next one
                 return res;
@@ -259,7 +263,7 @@ public final class ArtNode48<V> implements IArtNode<V> {
             final Object node = nodes[indexes[next]];
             return nodeLevel == 0
                     ? (V) node
-                    : ((IArtNode<V>) node).getCeilingValue(0, nodeLevel - 8); // find first lowest key
+                    : ((ArtNode<V>) node).getCeilingValue(0, nodeLevel - 8); // find first lowest key
         }
 
         // no keys found
@@ -293,7 +297,7 @@ public final class ArtNode48<V> implements IArtNode<V> {
         final byte index = indexes[idx];
         if (index != -1) {
             // if exact key found
-            final V res = nodeLevel == 0 ? (V) nodes[index] : ((IArtNode<V>) nodes[index]).getFloorValue(key, nodeLevel - 8);
+            final V res = nodeLevel == 0 ? (V) nodes[index] : ((ArtNode<V>) nodes[index]).getFloorValue(key, nodeLevel - 8);
             if (res != null) {
                 // return if found ceiling, otherwise will try prev one
                 return res;
@@ -306,7 +310,7 @@ public final class ArtNode48<V> implements IArtNode<V> {
             final Object node = nodes[indexes[prev]];
             return nodeLevel == 0
                     ? (V) node
-                    : ((IArtNode<V>) node).getFloorValue(UNSIGNED_MAX_KEY, nodeLevel - 8); // find first highest key
+                    : ((ArtNode<V>) node).getFloorValue(UNSIGNED_MAX_KEY, nodeLevel - 8); // find first highest key
         }
 
         // no keys found
@@ -315,11 +319,53 @@ public final class ArtNode48<V> implements IArtNode<V> {
 
     @Override
     @SuppressWarnings("unchecked")
+    public V valueNextTo(final int idx, final boolean lower) {
+        final int slot = lower ? prevOccupied(idx - 1) : nextOccupied(idx + 1);
+        return slot < 0 ? null : (V) nodes[indexes[slot]];
+    }
+
+    @Override
+    long nodeKey() {
+        return nodeKey;
+    }
+
+    @Override
+    int nodeLevel() {
+        return nodeLevel;
+    }
+
+    @Override
+    int slotCeiling(final int idx) {
+        return nextOccupied(idx);
+    }
+
+    @Override
+    int slotFloor(final int idx) {
+        return prevOccupied(idx);
+    }
+
+    @Override
+    int slotNext(final int slot) {
+        return nextOccupied(slot + 1);
+    }
+
+    @Override
+    int slotPrev(final int slot) {
+        return prevOccupied(slot - 1);
+    }
+
+    @Override
+    Object childAtSlot(final int slot) {
+        return nodes[indexes[slot]];
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
     public long firstKey() {
         final int idx = nextOccupied(0);
         return nodeLevel == 0
                 ? (nodeKey & -256L) | idx
-                : ((IArtNode<V>) nodes[indexes[idx]]).firstKey();
+                : ((ArtNode<V>) nodes[indexes[idx]]).firstKey();
     }
 
     @Override
@@ -328,7 +374,7 @@ public final class ArtNode48<V> implements IArtNode<V> {
         final int idx = prevOccupied(255);
         return nodeLevel == 0
                 ? (nodeKey & -256L) | idx
-                : ((IArtNode<V>) nodes[indexes[idx]]).lastKey();
+                : ((ArtNode<V>) nodes[indexes[idx]]).lastKey();
     }
 
     @Override
@@ -346,10 +392,73 @@ public final class ArtNode48<V> implements IArtNode<V> {
         } else {
             int numLeft = limit;
             for (int i = nextOccupied(0); i >= 0 && numLeft > 0; i = nextOccupied(i + 1)) {
-                numLeft -= ((IArtNode<V>) nodes[indexes[i]]).forEach(consumer, numLeft);
+                numLeft -= ((ArtNode<V>) nodes[indexes[i]]).forEach(consumer, numLeft);
             }
             return limit - numLeft;
         }
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public int forEachFrom(final long key, final int level, final LongObjConsumer<V> consumer, final int limit) {
+        if (level != nodeLevel) {
+            // the bytes this node skips (path compression): its keys are all above or all below the key
+            final long mask = -1L << (nodeLevel + 8);
+            final int cmp = Long.compareUnsigned(nodeKey & mask, key & mask);
+            if (cmp != 0) {
+                return cmp > 0 ? forEach(consumer, limit) : 0;
+            }
+        }
+        final int idx = (int) ((key >>> nodeLevel) & 0xFF);
+        int found = 0;
+        int i = nextOccupied(idx);
+        if (nodeLevel == 0) {
+            final long keyBase = LongAdaptiveRadixTreeMap.flipSignBit((nodeKey >>> 8) << 8);
+            for (; i >= 0 && found < limit; i = nextOccupied(i + 1)) {
+                consumer.accept(keyBase + i, (V) nodes[indexes[i]]);
+                found++;
+            }
+            return found;
+        }
+        if (i == idx) {
+            found += ((ArtNode<V>) nodes[indexes[i]]).forEachFrom(key, nodeLevel - 8, consumer, limit);
+            i = nextOccupied(i + 1);
+        }
+        for (; i >= 0 && found < limit; i = nextOccupied(i + 1)) {
+            found += ((ArtNode<V>) nodes[indexes[i]]).forEach(consumer, limit - found);
+        }
+        return found;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public int forEachDescFrom(final long key, final int level, final LongObjConsumer<V> consumer, final int limit) {
+        if (level != nodeLevel) {
+            final long mask = -1L << (nodeLevel + 8);
+            final int cmp = Long.compareUnsigned(nodeKey & mask, key & mask);
+            if (cmp != 0) {
+                return cmp < 0 ? forEachDesc(consumer, limit) : 0;
+            }
+        }
+        final int idx = (int) ((key >>> nodeLevel) & 0xFF);
+        int found = 0;
+        int i = prevOccupied(idx);
+        if (nodeLevel == 0) {
+            final long keyBase = LongAdaptiveRadixTreeMap.flipSignBit((nodeKey >>> 8) << 8);
+            for (; i >= 0 && found < limit; i = prevOccupied(i - 1)) {
+                consumer.accept(keyBase + i, (V) nodes[indexes[i]]);
+                found++;
+            }
+            return found;
+        }
+        if (i == idx) {
+            found += ((ArtNode<V>) nodes[indexes[i]]).forEachDescFrom(key, nodeLevel - 8, consumer, limit);
+            i = prevOccupied(i - 1);
+        }
+        for (; i >= 0 && found < limit; i = prevOccupied(i - 1)) {
+            found += ((ArtNode<V>) nodes[indexes[i]]).forEachDesc(consumer, limit - found);
+        }
+        return found;
     }
 
     @Override
@@ -366,7 +475,7 @@ public final class ArtNode48<V> implements IArtNode<V> {
         } else {
             int numLeft = limit;
             for (int i = prevOccupied(255); i >= 0 && numLeft > 0; i = prevOccupied(i - 1)) {
-                numLeft -= ((IArtNode<V>) nodes[indexes[i]]).forEachDesc(consumer, numLeft);
+                numLeft -= ((ArtNode<V>) nodes[indexes[i]]).forEachDesc(consumer, numLeft);
             }
             return limit - numLeft;
         }
@@ -380,7 +489,7 @@ public final class ArtNode48<V> implements IArtNode<V> {
         } else {
             int numLeft = limit;
             for (int i = nextOccupied(0); i >= 0 && numLeft > 0; i = nextOccupied(i + 1)) {
-                numLeft -= ((IArtNode<V>) nodes[indexes[i]]).size(numLeft);
+                numLeft -= ((ArtNode<V>) nodes[indexes[i]]).size(numLeft);
             }
             return limit - numLeft;
         }
@@ -419,9 +528,9 @@ public final class ArtNode48<V> implements IArtNode<V> {
                 if (node == null) {
                     throw new IllegalStateException("null node");
                 } else {
-                    if (node instanceof IArtNode) {
+                    if (node instanceof ArtNode) {
                         if (nodeLevel == 0) throw new IllegalStateException("unexpected node type");
-                        IArtNode artNode = (IArtNode) node;
+                        ArtNode artNode = (ArtNode) node;
                         artNode.validateInternalState(nodeLevel - 8);
                     } else {
                         if (nodeLevel != 0) throw new IllegalStateException("unexpected node type");
@@ -443,7 +552,7 @@ public final class ArtNode48<V> implements IArtNode<V> {
             if (nodeLevel == 0) {
                 list.add(new LongAdaptiveRadixTreeMap.Entry<>(keyPrefix + keys[i], (V) nodes[indexes[keys[i]]]));
             } else {
-                list.addAll(((IArtNode<V>) nodes[indexes[keys[i]]]).entries());
+                list.addAll(((ArtNode<V>) nodes[indexes[keys[i]]]).entries());
             }
         }
         return list;
@@ -475,7 +584,7 @@ public final class ArtNode48<V> implements IArtNode<V> {
         if (nodeLevel != 0) {
             for (Object node : nodes) {
                 if (node != null) {
-                    ((IArtNode<V>) node).recycle();
+                    ((ArtNode<V>) node).recycle();
                 }
             }
         }
