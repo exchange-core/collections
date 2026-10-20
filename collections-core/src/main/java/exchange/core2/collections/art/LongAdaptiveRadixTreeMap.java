@@ -553,19 +553,23 @@ public final class LongAdaptiveRadixTreeMap<V> {
      */
     public static final class Cursor<V> {
 
-        private static final int MAX_DEPTH = 10;
+        // inner nodes above the last level: 56, 48, ... 8
+        private static final int MAX_DEPTH = 7;
 
         private final LongAdaptiveRadixTreeMap<V> map;
 
-        // The path from the root to the current key: per frame a node, the slot of the child taken in it and the level
-        // of the node (-1 for a leaf); the last frame is a node of level 0 (the slot of the value) or a leaf, and for it
-        // the key: of the node (the high bytes) or of the leaf. A move asks the node one thing - the next slot.
+        // the inner nodes on the path to the current key and the slot of the child taken in each
         @SuppressWarnings("unchecked")
-        private final ArtNode<V>[] path = new ArtNode[MAX_DEPTH];
-        private final int[] slots = new int[MAX_DEPTH];
-        private final int[] levels = new int[MAX_DEPTH];
-        private final long[] keys = new long[MAX_DEPTH];
+        private final ArtNode<V>[] ancestors = new ArtNode[MAX_DEPTH];
+        private final int[] ancestorSlots = new int[MAX_DEPTH];
         private int depth;
+
+        // the current key - fields, not the arrays above, so that a move within a node touches nothing else: a node of
+        // the last level with the slot of the value and its node key (the high bytes), or a leaf with its key
+        private ArtNode<V> top;
+        private int topSlot;
+        private long topKey;
+        private boolean topIsLeaf;
 
         private int expectedModCount;
 
@@ -575,104 +579,37 @@ public final class LongAdaptiveRadixTreeMap<V> {
 
         /** @return true if the cursor is at a key */
         public boolean isValid() {
-            return depth > 0;
+            return top != null;
         }
 
         public boolean seekFirst() {
-            return start() && descendFirst(map.root);
+            start();
+            if (map.root == null) {
+                return false;
+            }
+            map.root.pushFirst(this);
+            return true;
         }
 
         public boolean seekLast() {
-            return start() && descendLast(map.root);
+            start();
+            if (map.root == null) {
+                return false;
+            }
+            map.root.pushLast(this);
+            return true;
         }
 
         /** at the key, or else at the closest one above it */
-        @SuppressWarnings("unchecked")
         public boolean seekCeiling(final long key) {
-            if (!start()) {
-                return false;
-            }
-            final long internalKey = flipSignBit(key);
-            ArtNode<V> node = map.root;
-            int level = INITIAL_LEVEL;
-            while (true) {
-                if (node instanceof ArtLeaf<V> leaf) {
-                    if (Long.compareUnsigned(leaf.key, internalKey) >= 0) {
-                        pushLeaf(leaf);
-                        return true;
-                    }
-                    return advance();
-                }
-                final int nodeLevel = node.nodeLevel();
-                final long nodeKey = node.nodeKey();
-                if (level != nodeLevel) {
-                    // the bytes this node skips (path compression): its keys are all above or all below the key
-                    final long mask = -1L << (nodeLevel + 8);
-                    final int cmp = Long.compareUnsigned(nodeKey & mask, internalKey & mask);
-                    if (cmp != 0) {
-                        return cmp > 0 ? descendFirst(node) : advance();
-                    }
-                }
-                final int idx = (int) ((internalKey >>> nodeLevel) & 0xFF);
-                final int slot = node.slotCeiling(idx);
-                if (slot < 0) {
-                    return advance();
-                }
-                push(node, slot, nodeLevel, nodeKey);
-                if ((slot & 0xFF) != idx) {
-                    // the first key above
-                    return nodeLevel == 0 || descendFirst((ArtNode<V>) node.childAtSlot(slot));
-                }
-                if (nodeLevel == 0) {
-                    return true;
-                }
-                node = (ArtNode<V>) node.childAtSlot(slot);
-                level = nodeLevel - 8;
-            }
+            start();
+            return map.root != null && map.root.seekCeiling(this, flipSignBit(key), INITIAL_LEVEL);
         }
 
         /** at the key, or else at the closest one below it */
-        @SuppressWarnings("unchecked")
         public boolean seekFloor(final long key) {
-            if (!start()) {
-                return false;
-            }
-            final long internalKey = flipSignBit(key);
-            ArtNode<V> node = map.root;
-            int level = INITIAL_LEVEL;
-            while (true) {
-                if (node instanceof ArtLeaf<V> leaf) {
-                    if (Long.compareUnsigned(leaf.key, internalKey) <= 0) {
-                        pushLeaf(leaf);
-                        return true;
-                    }
-                    return retreat();
-                }
-                final int nodeLevel = node.nodeLevel();
-                final long nodeKey = node.nodeKey();
-                if (level != nodeLevel) {
-                    final long mask = -1L << (nodeLevel + 8);
-                    final int cmp = Long.compareUnsigned(nodeKey & mask, internalKey & mask);
-                    if (cmp != 0) {
-                        return cmp < 0 ? descendLast(node) : retreat();
-                    }
-                }
-                final int idx = (int) ((internalKey >>> nodeLevel) & 0xFF);
-                final int slot = node.slotFloor(idx);
-                if (slot < 0) {
-                    return retreat();
-                }
-                push(node, slot, nodeLevel, nodeKey);
-                if ((slot & 0xFF) != idx) {
-                    // the first key below
-                    return nodeLevel == 0 || descendLast((ArtNode<V>) node.childAtSlot(slot));
-                }
-                if (nodeLevel == 0) {
-                    return true;
-                }
-                node = (ArtNode<V>) node.childAtSlot(slot);
-                level = nodeLevel - 8;
-            }
+            start();
+            return map.root != null && map.root.seekFloor(this, flipSignBit(key), INITIAL_LEVEL);
         }
 
         /** at the closest key above it */
@@ -696,30 +633,55 @@ public final class LongAdaptiveRadixTreeMap<V> {
         /** @return false at the end - the cursor is then not positioned */
         public boolean next() {
             checkModCount();
-            return depth > 0 && advance();
+            final ArtNode<V> node = top;
+            if (node == null) {
+                return false;
+            }
+            if (!topIsLeaf) {
+                // the dense nodes - most of the moves in an order book - without a virtual call
+                final int next = node instanceof ArtNode256<V> n256
+                        ? n256.nextOccupied(topSlot + 1)
+                        : node.slotNext(topSlot);
+                if (next >= 0) {
+                    topSlot = next;
+                    return true;
+                }
+            }
+            return ascend(true);
         }
 
         /** @return false at the beginning - the cursor is then not positioned */
         public boolean prev() {
             checkModCount();
-            return depth > 0 && retreat();
+            final ArtNode<V> node = top;
+            if (node == null) {
+                return false;
+            }
+            if (!topIsLeaf) {
+                final int prev = node instanceof ArtNode256<V> n256
+                        ? n256.prevOccupied(topSlot - 1)
+                        : node.slotPrev(topSlot);
+                if (prev >= 0) {
+                    topSlot = prev;
+                    return true;
+                }
+            }
+            return ascend(false);
         }
 
         public long key() {
             checkPosition();
-            final int top = depth - 1;
-            return levels[top] < 0
-                    ? flipSignBit(keys[top])
-                    : flipSignBit((keys[top] & -256L) | (slots[top] & 0xFF));
+            return topIsLeaf
+                    ? flipSignBit(topKey)
+                    : flipSignBit((topKey & -256L) | (topSlot & 0xFF));
         }
 
         @SuppressWarnings("unchecked")
         public V value() {
             checkPosition();
-            final int top = depth - 1;
-            return levels[top] < 0
-                    ? ((ArtLeaf<V>) path[top]).value
-                    : (V) path[top].childAtSlot(slots[top]);
+            return topIsLeaf
+                    ? ((ArtLeaf<V>) top).value
+                    : (V) top.childAtSlot(topSlot);
         }
 
         /**
@@ -734,94 +696,57 @@ public final class LongAdaptiveRadixTreeMap<V> {
             return removed;
         }
 
-        private boolean start() {
-            depth = 0;
-            expectedModCount = map.modCount;
-            return map.root != null;
+        /** the node of the current key is done: up to the first ancestor with a child on that side, then down */
+        @SuppressWarnings("unchecked")
+        private boolean ascend(final boolean forward) {
+            while (depth > 0) {
+                final ArtNode<V> node = ancestors[depth - 1];
+                final int slot = forward
+                        ? node.slotNext(ancestorSlots[depth - 1])
+                        : node.slotPrev(ancestorSlots[depth - 1]);
+                if (slot >= 0) {
+                    ancestorSlots[depth - 1] = slot;
+                    final ArtNode<V> child = (ArtNode<V>) node.childAtSlot(slot);
+                    if (forward) {
+                        child.pushFirst(this);
+                    } else {
+                        child.pushLast(this);
+                    }
+                    return true;
+                }
+                depth--;
+            }
+            top = null;
+            return false;
         }
 
-        private void push(final ArtNode<V> node, final int slot, final int level, final long nodeKey) {
-            path[depth] = node;
-            slots[depth] = slot;
-            levels[depth] = level;
-            keys[depth] = nodeKey;
+        private void start() {
+            depth = 0;
+            top = null;
+            expectedModCount = map.modCount;
+        }
+
+        void pushInner(final ArtNode<V> node, final int slot) {
+            ancestors[depth] = node;
+            ancestorSlots[depth] = slot;
             depth++;
         }
 
-        private void pushLeaf(final ArtLeaf<V> leaf) {
-            push(leaf, 0, -1, leaf.key);
+        void popInner() {
+            depth--;
         }
 
-        /** pushes the path to the lowest key of the subtree */
-        @SuppressWarnings("unchecked")
-        private boolean descendFirst(ArtNode<V> node) {
-            while (!(node instanceof ArtLeaf)) {
-                final int level = node.nodeLevel();
-                final int slot = node.slotCeiling(0);
-                push(node, slot, level, level == 0 ? node.nodeKey() : 0);
-                if (level == 0) {
-                    return true;
-                }
-                node = (ArtNode<V>) node.childAtSlot(slot);
-            }
-            pushLeaf((ArtLeaf<V>) node);
-            return true;
+        void setTop(final ArtNode<V> node, final int slot, final long nodeKey) {
+            top = node;
+            topSlot = slot;
+            topKey = nodeKey;
+            topIsLeaf = false;
         }
 
-        /** pushes the path to the highest key of the subtree */
-        @SuppressWarnings("unchecked")
-        private boolean descendLast(ArtNode<V> node) {
-            while (!(node instanceof ArtLeaf)) {
-                final int level = node.nodeLevel();
-                final int slot = node.slotFloor(255);
-                push(node, slot, level, level == 0 ? node.nodeKey() : 0);
-                if (level == 0) {
-                    return true;
-                }
-                node = (ArtNode<V>) node.childAtSlot(slot);
-            }
-            pushLeaf((ArtLeaf<V>) node);
-            return true;
-        }
-
-        /** from the last frame up: the first node that has a next slot takes it, then down to the lowest key */
-        @SuppressWarnings("unchecked")
-        private boolean advance() {
-            while (depth > 0) {
-                final int top = depth - 1;
-                if (levels[top] >= 0) {
-                    final ArtNode<V> node = path[top];
-                    // the dense nodes - most of the steps in an order book - without a virtual call
-                    final int next = node instanceof ArtNode256<V> n256
-                            ? n256.nextOccupied(slots[top] + 1)
-                            : node.slotNext(slots[top]);
-                    if (next >= 0) {
-                        slots[top] = next;
-                        return levels[top] == 0 || descendFirst((ArtNode<V>) node.childAtSlot(next));
-                    }
-                }
-                depth--;
-            }
-            return false;
-        }
-
-        @SuppressWarnings("unchecked")
-        private boolean retreat() {
-            while (depth > 0) {
-                final int top = depth - 1;
-                if (levels[top] >= 0) {
-                    final ArtNode<V> node = path[top];
-                    final int prev = node instanceof ArtNode256<V> n256
-                            ? n256.prevOccupied(slots[top] - 1)
-                            : node.slotPrev(slots[top]);
-                    if (prev >= 0) {
-                        slots[top] = prev;
-                        return levels[top] == 0 || descendLast((ArtNode<V>) node.childAtSlot(prev));
-                    }
-                }
-                depth--;
-            }
-            return false;
+        void setTopLeaf(final ArtLeaf<V> leaf) {
+            top = leaf;
+            topKey = leaf.key;
+            topIsLeaf = true;
         }
 
         private void checkModCount() {
@@ -832,7 +757,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
 
         private void checkPosition() {
             checkModCount();
-            if (depth == 0) {
+            if (top == null) {
                 throw new NoSuchElementException();
             }
         }

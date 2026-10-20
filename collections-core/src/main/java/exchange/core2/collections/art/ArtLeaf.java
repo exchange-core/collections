@@ -138,6 +138,34 @@ final class ArtLeaf<V> extends ArtNode<V> {
     }
 
     @Override
+    boolean seekCeiling(final LongAdaptiveRadixTreeMap.Cursor<V> cursor, final long key, final int level) {
+        if (Long.compareUnsigned(this.key, key) < 0) {
+            return false;
+        }
+        cursor.setTopLeaf(this);
+        return true;
+    }
+
+    @Override
+    boolean seekFloor(final LongAdaptiveRadixTreeMap.Cursor<V> cursor, final long key, final int level) {
+        if (Long.compareUnsigned(this.key, key) > 0) {
+            return false;
+        }
+        cursor.setTopLeaf(this);
+        return true;
+    }
+
+    @Override
+    void pushFirst(final LongAdaptiveRadixTreeMap.Cursor<V> cursor) {
+        cursor.setTopLeaf(this);
+    }
+
+    @Override
+    void pushLast(final LongAdaptiveRadixTreeMap.Cursor<V> cursor) {
+        cursor.setTopLeaf(this);
+    }
+
+    @Override
     public void recycle() {
         value = null;
         objectsPool.put(ObjectsPool.ART_LEAF, this);

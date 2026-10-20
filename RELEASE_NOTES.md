@@ -59,17 +59,20 @@
   `lastValue`, `pollFirstValue` / `pollLastValue`, `size()` and `isEmpty()`.** The fused puts are what an order
   book does for a new price level (put it, link it to its neighbour): one descent when the neighbour is in the same
   256-key block - the node of the last level remembers the put, the neighbour is next to the key there - otherwise
-  a second descent finds it (in `ArtOpsJmh`, a new level -7% to -11% on a desktop). `putIfAbsent`,
+  a second descent finds it (in `ArtOpsJmh` on rhel-lat a new level in a 20k-level book -9%, in a 1k-level one -1%;
+  a removal + put of a level pays about 1 ns, +3%, for this and the change counter of the cursor). `putIfAbsent`,
   `computeIfAbsent` and the polls are compositions for now - two descents.
 - **`LongAdaptiveRadixTreeMap.Cursor`** (`map.cursor()`): a position in the map, reusable and allocation-free - seek
   the ceiling, higher, floor or lower key, the first or the last, then move to the next or the previous one; `key()`,
   `value()`, `remove()` (and move on). A change of the key set not made through the cursor makes its next call throw
   `ConcurrentModificationException`. For the stop orders up to a price, a sweep over the levels, and the
-  key-returning navigation `TreeMap` has (`higherKey` = `seekHigher` + `key()`). In `ArtOpsJmh` (desktop) a seek and
-  10 moves take 170-190 ns in a book, the iterators of the trees 95-165 ns - the next thing to make faster.
+  key-returning navigation `TreeMap` has (`higherKey` = `seekHigher` + `key()`). A seek is a recursion like a lookup
+  (each node pushes itself onto the path), the current key is kept in fields of the cursor, the path above it in
+  arrays - a move within a node asks the node one thing. In `ArtOpsJmh` on rhel-lat a seek and 10 moves take 60-83 ns
+  in a book, the iterators of fastutil's tree 72-126 ns, of `TreeMap` 84-140 ns.
 - **`LongAdaptiveRadixTreeMap.forEach(from, consumer, limit)` / `forEachDesc(from, ...)`**: the keys from a key up /
   down - L2 market data from a price. One descent to the key, then the subtrees beyond it are walked whole: 10
-  levels from a price in 57-79 ns, the trees 94-155 ns (`ArtOpsJmh` `range10`, desktop).
+  levels from a price in 44-62 ns, fastutil's tree 73-125 ns, `TreeMap` 81-140 ns (`ArtOpsJmh` `range10`, rhel-lat).
 - **`ArtOpsJmh`** (`tests-perf`): average time of the `LongAdaptiveRadixTreeMap` operations against `TreeMap`
   and fastutil's `Long2ObjectRBTreeMap`, on the key sets of `ArtKeyProfiles`: order-book price levels (asks and
   bids, the distance from the mid hyperbolic - dense near the mid, thinning out further), order ids with 95%

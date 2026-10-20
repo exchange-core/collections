@@ -364,35 +364,109 @@ public final class ArtNode16<V> extends ArtNode<V> {
     }
 
     @Override
-    long nodeKey() {
-        return nodeKey;
-    }
-
-    @Override
-    int nodeLevel() {
-        return nodeLevel;
-    }
-
-    @Override
-    int slotCeiling(final int idx) {
-        for (int i = 0; i < numChildren; i++) {
-            final int keyByte = keys[i];
-            if (keyByte >= idx) {
-                return (i << 8) | keyByte;
+    @SuppressWarnings("unchecked")
+    boolean seekCeiling(final LongAdaptiveRadixTreeMap.Cursor<V> cursor, final long key, final int level) {
+        if (level != nodeLevel) {
+            // the bytes this node skips (path compression): its keys are all above or all below the key
+            final long mask = -1L << (nodeLevel + 8);
+            final int cmp = Long.compareUnsigned(nodeKey & mask, key & mask);
+            if (cmp != 0) {
+                if (cmp > 0) {
+                    pushFirst(cursor);
+                    return true;
+                }
+                return false;
             }
         }
-        return -1;
+        final int idx = (int) ((key >>> nodeLevel) & 0xFF);
+        int pos = 0;
+        while (pos < numChildren && keys[pos] < idx) {
+            pos++;
+        }
+        if (pos == numChildren) {
+            return false;
+        }
+        if (nodeLevel == 0) {
+            cursor.setTop(this, (pos << 8) | keys[pos], nodeKey);
+            return true;
+        }
+        if (keys[pos] == idx) {
+            cursor.pushInner(this, (pos << 8) | idx);
+            if (((ArtNode<V>) nodes[pos]).seekCeiling(cursor, key, nodeLevel - 8)) {
+                return true;
+            }
+            cursor.popInner();
+            if (++pos == numChildren) {
+                return false;
+            }
+        }
+        cursor.pushInner(this, (pos << 8) | keys[pos]);
+        ((ArtNode<V>) nodes[pos]).pushFirst(cursor);
+        return true;
     }
 
     @Override
-    int slotFloor(final int idx) {
-        for (int i = numChildren - 1; i >= 0; i--) {
-            final int keyByte = keys[i];
-            if (keyByte <= idx) {
-                return (i << 8) | keyByte;
+    @SuppressWarnings("unchecked")
+    boolean seekFloor(final LongAdaptiveRadixTreeMap.Cursor<V> cursor, final long key, final int level) {
+        if (level != nodeLevel) {
+            final long mask = -1L << (nodeLevel + 8);
+            final int cmp = Long.compareUnsigned(nodeKey & mask, key & mask);
+            if (cmp != 0) {
+                if (cmp < 0) {
+                    pushLast(cursor);
+                    return true;
+                }
+                return false;
             }
         }
-        return -1;
+        final int idx = (int) ((key >>> nodeLevel) & 0xFF);
+        int pos = numChildren - 1;
+        while (pos >= 0 && keys[pos] > idx) {
+            pos--;
+        }
+        if (pos < 0) {
+            return false;
+        }
+        if (nodeLevel == 0) {
+            cursor.setTop(this, (pos << 8) | keys[pos], nodeKey);
+            return true;
+        }
+        if (keys[pos] == idx) {
+            cursor.pushInner(this, (pos << 8) | idx);
+            if (((ArtNode<V>) nodes[pos]).seekFloor(cursor, key, nodeLevel - 8)) {
+                return true;
+            }
+            cursor.popInner();
+            if (--pos < 0) {
+                return false;
+            }
+        }
+        cursor.pushInner(this, (pos << 8) | keys[pos]);
+        ((ArtNode<V>) nodes[pos]).pushLast(cursor);
+        return true;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    void pushFirst(final LongAdaptiveRadixTreeMap.Cursor<V> cursor) {
+        if (nodeLevel == 0) {
+            cursor.setTop(this, keys[0], nodeKey);
+        } else {
+            cursor.pushInner(this, keys[0]);
+            ((ArtNode<V>) nodes[0]).pushFirst(cursor);
+        }
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    void pushLast(final LongAdaptiveRadixTreeMap.Cursor<V> cursor) {
+        final int last = numChildren - 1;
+        if (nodeLevel == 0) {
+            cursor.setTop(this, (last << 8) | keys[last], nodeKey);
+        } else {
+            cursor.pushInner(this, (last << 8) | keys[last]);
+            ((ArtNode<V>) nodes[last]).pushLast(cursor);
+        }
     }
 
     @Override

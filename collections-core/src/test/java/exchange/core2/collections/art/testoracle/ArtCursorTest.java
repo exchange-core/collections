@@ -39,6 +39,15 @@ public class ArtCursorTest {
         }
     }
 
+    /** 40 blocks of 256 keys: an inner Node48 above them, Node4 / 16 / 48 / 256 and leaves below */
+    @Test
+    public void shouldMatchTreeMapForKeysUnderNode48() {
+        final SplittableRandom random = new SplittableRandom(14);
+        for (int size : new int[]{30, 100, 400, 3000}) {
+            check(size, () -> random.nextInt(40 * 256), random);
+        }
+    }
+
     @Test
     public void shouldMatchTreeMapForAnyKeys() {
         final SplittableRandom random = new SplittableRandom(13);
@@ -131,7 +140,9 @@ public class ArtCursorTest {
     }
 
     private static void walk(TreeMap<Long, String> oracle, LongAdaptiveRadixTreeMap.Cursor<String> cursor, SplittableRandom random) {
-        for (int step = 0; step < 4 && cursor.isValid(); step++) {
+        // now and then a long walk - out of the subtree the seek ended in, up and down the path
+        final int steps = random.nextInt(8) == 0 ? 1000 : 4;
+        for (int step = 0; step < steps && cursor.isValid(); step++) {
             final long from = cursor.key();
             if (random.nextBoolean()) {
                 expect(oracle.higherEntry(from), cursor.next(), cursor, "next from " + from);
