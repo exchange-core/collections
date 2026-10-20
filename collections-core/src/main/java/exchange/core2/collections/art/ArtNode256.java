@@ -261,23 +261,106 @@ public final class ArtNode256<V> extends ArtNode<V> {
     }
 
     @Override
-    long nodeKey() {
-        return nodeKey;
+    @SuppressWarnings("unchecked")
+    boolean seekCeiling(final LongAdaptiveRadixTreeMap.Cursor<V> cursor, final long key, final int level) {
+        if (level != nodeLevel) {
+            // the bytes this node skips (path compression): its keys are all above or all below the key
+            final long mask = -1L << (nodeLevel + 8);
+            final int cmp = Long.compareUnsigned(nodeKey & mask, key & mask);
+            if (cmp != 0) {
+                if (cmp > 0) {
+                    pushFirst(cursor);
+                    return true;
+                }
+                return false;
+            }
+        }
+        final int idx = (int) ((key >>> nodeLevel) & 0xFF);
+        int slot = nextOccupied(idx);
+        if (slot < 0) {
+            return false;
+        }
+        if (nodeLevel == 0) {
+            cursor.setTop(this, slot, nodeKey);
+            return true;
+        }
+        if (slot == idx) {
+            cursor.pushInner(this, slot);
+            if (((ArtNode<V>) nodes[slot]).seekCeiling(cursor, key, nodeLevel - 8)) {
+                return true;
+            }
+            cursor.popInner();
+            slot = nextOccupied(slot + 1);
+            if (slot < 0) {
+                return false;
+            }
+        }
+        cursor.pushInner(this, slot);
+        ((ArtNode<V>) nodes[slot]).pushFirst(cursor);
+        return true;
     }
 
     @Override
-    int nodeLevel() {
-        return nodeLevel;
+    @SuppressWarnings("unchecked")
+    boolean seekFloor(final LongAdaptiveRadixTreeMap.Cursor<V> cursor, final long key, final int level) {
+        if (level != nodeLevel) {
+            final long mask = -1L << (nodeLevel + 8);
+            final int cmp = Long.compareUnsigned(nodeKey & mask, key & mask);
+            if (cmp != 0) {
+                if (cmp < 0) {
+                    pushLast(cursor);
+                    return true;
+                }
+                return false;
+            }
+        }
+        final int idx = (int) ((key >>> nodeLevel) & 0xFF);
+        int slot = prevOccupied(idx);
+        if (slot < 0) {
+            return false;
+        }
+        if (nodeLevel == 0) {
+            cursor.setTop(this, slot, nodeKey);
+            return true;
+        }
+        if (slot == idx) {
+            cursor.pushInner(this, slot);
+            if (((ArtNode<V>) nodes[slot]).seekFloor(cursor, key, nodeLevel - 8)) {
+                return true;
+            }
+            cursor.popInner();
+            slot = prevOccupied(slot - 1);
+            if (slot < 0) {
+                return false;
+            }
+        }
+        cursor.pushInner(this, slot);
+        ((ArtNode<V>) nodes[slot]).pushLast(cursor);
+        return true;
     }
 
     @Override
-    int slotCeiling(final int idx) {
-        return nextOccupied(idx);
+    @SuppressWarnings("unchecked")
+    void pushFirst(final LongAdaptiveRadixTreeMap.Cursor<V> cursor) {
+        final int slot = nextOccupied(0);
+        if (nodeLevel == 0) {
+            cursor.setTop(this, slot, nodeKey);
+        } else {
+            cursor.pushInner(this, slot);
+            ((ArtNode<V>) nodes[slot]).pushFirst(cursor);
+        }
     }
 
     @Override
-    int slotFloor(final int idx) {
-        return prevOccupied(idx);
+    @SuppressWarnings("unchecked")
+    void pushLast(final LongAdaptiveRadixTreeMap.Cursor<V> cursor) {
+        final int slot = prevOccupied(255);
+        if (nodeLevel == 0) {
+            cursor.setTop(this, slot, nodeKey);
+        } else {
+            cursor.pushInner(this, slot);
+            ((ArtNode<V>) nodes[slot]).pushLast(cursor);
+        }
     }
 
     @Override

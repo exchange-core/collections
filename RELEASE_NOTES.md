@@ -65,8 +65,10 @@
   the ceiling, higher, floor or lower key, the first or the last, then move to the next or the previous one; `key()`,
   `value()`, `remove()` (and move on). A change of the key set not made through the cursor makes its next call throw
   `ConcurrentModificationException`. For the stop orders up to a price, a sweep over the levels, and the
-  key-returning navigation `TreeMap` has (`higherKey` = `seekHigher` + `key()`). In `ArtOpsJmh` (desktop) a seek and
-  10 moves take 170-190 ns in a book, the iterators of the trees 95-165 ns - the next thing to make faster.
+  key-returning navigation `TreeMap` has (`higherKey` = `seekHigher` + `key()`). A seek is a recursion like a lookup
+  (each node pushes itself onto the path), the current key is kept in fields of the cursor, the path above it in
+  arrays - a move within a node asks the node one thing. In `ArtOpsJmh` (desktop) a seek and 10 moves take 70-100 ns
+  in a book, the iterator of fastutil's tree 80-145 ns.
 - **`LongAdaptiveRadixTreeMap.forEach(from, consumer, limit)` / `forEachDesc(from, ...)`**: the keys from a key up /
   down - L2 market data from a price. One descent to the key, then the subtrees beyond it are walked whole: 10
   levels from a price in 57-79 ns, the trees 94-155 ns (`ArtOpsJmh` `range10`, desktop).

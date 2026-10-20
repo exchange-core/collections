@@ -117,28 +117,23 @@ public abstract class ArtNode<V> {
     public abstract ObjectsPool getObjectsPool();
 
     /*
-     * Slots, for the cursor: the children in key order. The low byte of a slot is the key byte of the child (ArtNode48 /
-     * 256 use the key byte alone), ArtNode4 / 16 put the position above it - so the cursor gets the key byte without
-     * asking the node. A leaf has no slots - the cursor tells it apart and does not ask.
+     * For the cursor. A seek is a recursion like a lookup: each node finds its slot and pushes itself onto the path of
+     * the cursor, a subtree without a key on that side pops it again. The slots are the children in key order: the
+     * low byte is the key byte of the child (ArtNode48 / 256 use the key byte alone), ArtNode4 / 16 put the position
+     * above it - the cursor gets the key byte without asking the node.
      */
 
-    long nodeKey() {
-        throw new UnsupportedOperationException();
-    }
+    /** pushes the path to the lowest key at or above the internal key; false (nothing pushed) if there is none */
+    abstract boolean seekCeiling(LongAdaptiveRadixTreeMap.Cursor<V> cursor, long key, int level);
 
-    int nodeLevel() {
-        throw new UnsupportedOperationException();
-    }
+    /** pushes the path to the highest key at or below the internal key; false (nothing pushed) if there is none */
+    abstract boolean seekFloor(LongAdaptiveRadixTreeMap.Cursor<V> cursor, long key, int level);
 
-    /** @return the slot of the lowest key byte at or above idx, or -1 */
-    int slotCeiling(int idx) {
-        throw new UnsupportedOperationException();
-    }
+    /** pushes the path to the lowest key of this subtree */
+    abstract void pushFirst(LongAdaptiveRadixTreeMap.Cursor<V> cursor);
 
-    /** @return the slot of the highest key byte at or below idx, or -1 */
-    int slotFloor(int idx) {
-        throw new UnsupportedOperationException();
-    }
+    /** pushes the path to the highest key of this subtree */
+    abstract void pushLast(LongAdaptiveRadixTreeMap.Cursor<V> cursor);
 
     /** @return the slot after this one, or -1 */
     int slotNext(int slot) {
