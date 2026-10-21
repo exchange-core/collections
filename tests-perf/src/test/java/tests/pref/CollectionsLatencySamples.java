@@ -11,6 +11,7 @@ import exchange.core2.collections.hashtable.LongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
 import exchange.core2.collections.hashtable.MigrationService;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectRBTreeMap;
 import org.HdrHistogram.Histogram;
 import org.agrona.collections.Long2LongHashMap;
 import org.junit.Test;
@@ -52,7 +53,10 @@ import java.util.stream.Collectors;
  *     <li>{@code -Dsamples.batch} - operations per service-time sample (default: 1, or enough to make a coarse
  *     clock tick worth under 1ns per operation - 128 on Windows, where nanoTime ticks every 100ns)</li>
  *     <li>{@code -Dsamples.groups} - comma-separated subset of the groups below; {@code ll2-scenarios},
- *     {@code ll2-many-tables}, {@code ll2-big-allocation} and {@code hashtable-collide} run only when named</li>
+ *     {@code ll2-many-tables}, {@code ll2-big-allocation}, {@code hashtable-collide} and {@code art-fill} run only
+ *     when named</li>
+ *     <li>{@code -Dsamples.art.label} - name of the ART series in {@code art-fill} (default "art"), to put the samples
+ *     of two builds of collections-core side by side</li>
  *     <li>{@code -Dsamples.warmup.ms} - warm-up limit per service-time series (default 3000); it ends earlier,
  *     once the JIT has been quiet for 300ms</li>
  *     <li>{@code -Daffinity.reserved} - hex mask of CPUs for the pinned threads (default: the kernel's isolated CPUs),
@@ -213,6 +217,7 @@ public class CollectionsLatencySamples {
             if (GROUPS.contains("hashtable-working-set")) hashtableWorkingSet();
             if (GROUPS.contains("art-vs-treemap")) artVsTreeMap();
             if (GROUPS.contains("art-keys")) artKeys();
+            if (GROUPS.contains("art-fill")) artFill();
             if (GROUPS.contains("ll2-scenarios")) ll2Scenarios();
             if (GROUPS.contains("hashtable-collide")) hashtableCollide();
             if (GROUPS.contains("ll2-many-tables")) ll2ManyTables();
@@ -910,6 +915,151 @@ public class CollectionsLatencySamples {
         final LongAdaptiveRadixTreeMap<Long> m = new LongAdaptiveRadixTreeMap<>();
         for (long k : keys) m.put(k, VALUE);
         return m;
+    }
+
+    /**
+     * get / put / remove with 1M keys of different density (as in art-keys) - the ART against TreeMap and fastutil's
+     * red-black tree. A put takes a key that continues the shape (the next id, the next stride, the clusters growing,
+     * another random key) and is undone, a removal takes a stored key and puts it back: the size stays 1M.
+     */
+    private void artFill() throws IOException {
+        final String group = "art-fill";
+        final String art = System.getProperty("samples.art.label", "art");
+        final Random rand = new Random(21 + SEED);
+        final int total = MAP_SIZE + QUERIES;
+        final long[] clusterNext = new long[16];
+        for (int c = 0; c < clusterNext.length; c++) clusterNext[c] = (rand.nextLong() & Long.MAX_VALUE) >>> 1;
+        final Map<String, long[]> shapes = new HashMap<>();
+        final long[] sequential = new long[total];
+        final long[] sparse = new long[total];
+        final long[] clustered = new long[total];
+        for (int i = 0; i < total; i++) {
+            sequential[i] = i + 1;
+            sparse[i] = (i + 1) * 256L;
+            clustered[i] = clusterNext[rand.nextInt(clusterNext.length)]++;
+        }
+        shapes.put("sequential", sequential);
+        shapes.put("sparse", sparse);
+        shapes.put("clustered", clustered);
+        shapes.put("random", randomKeys(total, 22));
+
+        for (String profile : List.of("sequential", "sparse", "clustered", "random")) {
+            final long[] all = shapes.get(profile);
+            final long[] stored = Arrays.copyOf(all, MAP_SIZE);
+            final long[] fresh = Arrays.copyOfRange(all, MAP_SIZE, total);
+            final long[] hits = sample(stored, 23);
+            final long[] removals = shuffled(stored, 24);
+            for (String impl : List.of(art, "treemap", "fastutil-rbtree")) {
+                serviceTime(group, impl + "-get-" + profile, hits, () -> {
+                    final SortedIndex m = sortedIndex(impl, art, stored);
+                    return (keys, from, to) -> {
+                        long sum = 0;
+                        for (int i = from; i < to; i++) sum += m.get(keys[i]);
+                        return sum;
+                    };
+                });
+                serviceTime(group, impl + "-put-" + profile, fresh, () -> {
+                    final SortedIndex m = sortedIndex(impl, art, stored);
+                    return new Bench() {
+                        @Override
+                        public long run(long[] keys, int from, int to) {
+                            for (int i = from; i < to; i++) m.put(keys[i]);
+                            return to - from;
+                        }
+
+                        @Override
+                        public long undo(long[] keys, int from, int to) {
+                            for (int i = from; i < to; i++) m.remove(keys[i]);
+                            return to - from;
+                        }
+                    };
+                });
+                serviceTime(group, impl + "-remove-" + profile, removals, () -> {
+                    final SortedIndex m = sortedIndex(impl, art, stored);
+                    return new Bench() {
+                        @Override
+                        public long run(long[] keys, int from, int to) {
+                            for (int i = from; i < to; i++) m.remove(keys[i]);
+                            return to - from;
+                        }
+
+                        @Override
+                        public long undo(long[] keys, int from, int to) {
+                            for (int i = from; i < to; i++) m.put(keys[i]);
+                            return to - from;
+                        }
+                    };
+                });
+            }
+        }
+    }
+
+    /** the ordered maps of art-fill; each series loads one implementation, so the calls stay monomorphic */
+    private interface SortedIndex {
+        long get(long key);
+
+        void put(long key);
+
+        void remove(long key);
+    }
+
+    private static SortedIndex sortedIndex(String impl, String artLabel, long[] keys) {
+        if (impl.equals(artLabel)) {
+            final LongAdaptiveRadixTreeMap<Long> m = art(keys);
+            return new SortedIndex() {
+                @Override
+                public long get(long key) {
+                    return m.get(key);
+                }
+
+                @Override
+                public void put(long key) {
+                    m.put(key, VALUE);
+                }
+
+                @Override
+                public void remove(long key) {
+                    m.remove(key);
+                }
+            };
+        }
+        if (impl.equals("treemap")) {
+            final TreeMap<Long, Long> m = treeMap(keys);
+            return new SortedIndex() {
+                @Override
+                public long get(long key) {
+                    return m.get(key);
+                }
+
+                @Override
+                public void put(long key) {
+                    m.put(key, VALUE);
+                }
+
+                @Override
+                public void remove(long key) {
+                    m.remove(key);
+                }
+            };
+        }
+        final Long2ObjectRBTreeMap<Long> m = new Long2ObjectRBTreeMap<>();
+        for (long k : keys) m.put(k, VALUE);
+        return new SortedIndex() {
+            @Override
+            public long get(long key) {
+                return m.get(key);
+            }
+
+            @Override
+            public void put(long key) {
+                m.put(key, VALUE);
+            }
+
+            @Override
+            public void remove(long key) {
+                m.remove(key);
+            }
+        };
     }
 
     private static TreeMap<Long, Long> treeMap(long[] keys) {

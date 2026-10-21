@@ -73,6 +73,10 @@
 - **`LongAdaptiveRadixTreeMap.forEach(from, consumer, limit)` / `forEachDesc(from, ...)`**: the keys from a key up /
   down - L2 market data from a price. One descent to the key, then the subtrees beyond it are walked whole: 10
   levels from a price in 44-62 ns, fastutil's tree 73-125 ns, `TreeMap` 81-140 ns (`ArtOpsJmh` `range10`, rhel-lat).
+- **`CollectionsLatencySamples`: group `art-fill`** (run only when named): `get`, `put` and `remove` latency with 1M
+  keys of four densities (as in `art-keys`) - the ART against `TreeMap` and fastutil's `Long2ObjectRBTreeMap`;
+  `-Dsamples.art.label` names the ART series, to put two builds of collections-core side by side. The initial ART
+  (`8df3bb5`) against the current one, with charts: exchange-charts `samples-art`.
 - **`ArtOpsJmh`** (`tests-perf`): average time of the `LongAdaptiveRadixTreeMap` operations against `TreeMap`
   and fastutil's `Long2ObjectRBTreeMap`, on the key sets of `ArtKeyProfiles`: order-book price levels (asks and
   bids, the distance from the mid hyperbolic - dense near the mid, thinning out further), order ids with 95%
