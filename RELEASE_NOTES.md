@@ -55,7 +55,7 @@
 - **`Automatic-Module-Name`** in the published jars: `exchange.core2.collections`,
   `exchange.core2.collections.orderbook`, `exchange.core2.collections.affinity`.
 - **`LongAdaptiveRadixTreeMap`: `containsKey`, `putIfAbsent`, `computeIfAbsent`, `putAndGetLowerValue` /
-  `putAndGetHigherValue`, `getCeilingValue` / `getFloorValue`, `firstKey` / `lastKey`, `firstValue` /
+  `putAndGetHigherValue`, `ceilingValue` / `floorValue`, `firstKey` / `lastKey`, `firstValue` /
   `lastValue`, `pollFirstValue` / `pollLastValue`, `size()` and `isEmpty()`.** The fused puts are what an order
   book does for a new price level (put it, link it to its neighbour): one descent when the neighbour is in the same
   256-key block - the node of the last level remembers the put, the neighbour is next to the key there - otherwise
@@ -78,6 +78,10 @@
   of the thread. `ObjectsPool.forArt(nodes)` makes a pool for ART nodes only - no exchange-core types to know.
   `new LongAdaptiveRadixTreeMap<>()` gets a pool of ART nodes of the same sizes as before, no longer the test pool
   with places for orders and buckets.
+- **`LongAdaptiveRadixTreeMap`: `keysStream()`, `valuesStream()`, `forEach(consumer)`, `getOrDefault(key, value)`
+  and `toString()`** - as the hashtables have them. The streams are ascending and lazy: a cursor of their own,
+  made when the stream is consumed; a change of the key set during the walk throws
+  `ConcurrentModificationException`. `toString` prints `{key=value, ...}` as `TreeMap` does.
 - **`CollectionsLatencySamples`: group `art-fill`** (run only when named): `get`, `put` and `remove` latency with 1M
   keys of four densities (as in `art-keys`) - the ART against `TreeMap` and fastutil's `Long2ObjectRBTreeMap`;
   `-Dsamples.art.label` names the ART series, to put two builds of collections-core side by side. The initial ART
@@ -320,7 +324,11 @@
 - **`LongAdaptiveRadixTreeMap.put` returns the previous value, `remove` the removed one** (were `void`; null
   for a missing key). Source compatible, but callers have to be recompiled.
 - **`LongAdaptiveRadixTreeMap` keeps its size in a counter**: `size()` is O(1). `size(limit)` used to walk the
-  whole tree up to the limit; it stays, as `Math.min(size(), limit)`, and is deprecated.
+  whole tree up to the limit; it is removed (breaking) - `Math.min(size(), limit)`.
+- **`LongAdaptiveRadixTreeMap`: `getHigherValue` / `getLowerValue` are now `higherValue` / `lowerValue`**
+  (breaking) - the names of `NavigableMap` (`higherKey`, `ceilingEntry`), as `firstValue` and `ceilingValue`
+  already were; the map's lookups have no `get` prefix except `get` itself and `getOrDefault`. A rename, nothing
+  else: replace the calls.
 - **The nodes of `LongAdaptiveRadixTreeMap` are no longer public** (breaking): `ArtNode4`, `ArtNode16`, `ArtNode48`,
   `ArtNode256` and their base class are package-private, as the hashtable internals - a change of the nodes no
   longer changes the API. `IArtNode`, the old interface of the nodes, is gone (see below). The public API of the ART

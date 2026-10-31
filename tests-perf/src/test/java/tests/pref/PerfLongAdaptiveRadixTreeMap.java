@@ -155,7 +155,7 @@ public class PerfLongAdaptiveRadixTreeMap {
                 long sum = 0;
                 long t = System.nanoTime();
                 for (long x : list) {
-                    Long v = art.getHigherValue(x);
+                    Long v = art.higherValue(x);
                     sum += v == null ? 0 : v;
                 }
                 benchmarkConsumer.accept(Benchmark.ART_HIGHER, System.nanoTime() - t);
@@ -178,7 +178,7 @@ public class PerfLongAdaptiveRadixTreeMap {
                 long sum = 0;
                 long t = System.nanoTime();
                 for (long x : list) {
-                    Long v = art.getLowerValue(x);
+                    Long v = art.lowerValue(x);
                     sum += v == null ? 0 : v;
                 }
                 benchmarkConsumer.accept(Benchmark.ART_LOWER, System.nanoTime() - t);
@@ -196,10 +196,10 @@ public class PerfLongAdaptiveRadixTreeMap {
                 log.debug("done ({})", sum);
             });
 
-            log.debug("validate getHigherValue method..");
+            log.debug("validate higherValue method..");
             for (long x : list) {
 //                log.debug("CHECK:{} {} ---------", x, String.format("%Xh", x));
-                Long v1 = art.getHigherValue(x);
+                Long v1 = art.higherValue(x);
                 Map.Entry<Long, Long> entry = bst.higherEntry(x);
                 Long v2 = entry != null ? entry.getValue() : null;
                 if (!Objects.equals(v1, v2)) {
@@ -212,10 +212,10 @@ public class PerfLongAdaptiveRadixTreeMap {
 //                assertThat(v1, is(v2));
             }
 
-            log.debug("validate getLowerValue method..");
+            log.debug("validate lowerValue method..");
             for (long x : list) {
 //                log.debug("CHECK:{} {} ---------", x, String.format("%Xh", x));
-                Long v1 = art.getLowerValue(x);
+                Long v1 = art.lowerValue(x);
                 Map.Entry<Long, Long> entry = bst.lowerEntry(x);
                 Long v2 = entry != null ? entry.getValue() : null;
                 if (!Objects.equals(v1, v2)) {
