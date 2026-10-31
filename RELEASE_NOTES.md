@@ -82,6 +82,10 @@
   and `toString()`** - as the hashtables have them. The streams are ascending and lazy: a cursor of their own,
   made when the stream is consumed; a change of the key set during the walk throws
   `ConcurrentModificationException`. `toString` prints `{key=value, ...}` as `TreeMap` does.
+- **README: the cost of the `LongAdaptiveRadixTreeMap` operations** (descents, what allocates, threads), the cursor
+  with an example, memory per key against `TreeMap` and fastutil's tree (4.4 bytes for dense keys, 12 for an
+  order book, 54 for random ones; `TreeMap` 64, fastutil 40) and the latency of `get` / `put` / `remove` on 1M
+  keys. **`ArtMemoryPerKey`** (`tests-perf`) measures the memory.
 - **`CollectionsLatencySamples`: group `art-fill`** (run only when named): `get`, `put` and `remove` latency with 1M
   keys of four densities (as in `art-keys`) - the ART against `TreeMap` and fastutil's `Long2ObjectRBTreeMap`;
   `-Dsamples.art.label` names the ART series, to put two builds of collections-core side by side. The initial ART
