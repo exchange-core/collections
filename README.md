@@ -134,6 +134,25 @@ map.forEachDesc(1_500L, (key, value) -> System.out.println(key + " -> " + value)
 map.entriesList().forEach(e -> System.out.println(e.getKey() + " -> " + e.getValue()));
 ```
 
+A `Cursor` walks step by step, both ways. Make it once and keep it: seeks and moves allocate nothing. It
+seeks a key — `seekCeiling`, `seekHigher`, `seekFloor`, `seekLower`, `seekFirst`, `seekLast` — then moves
+with `next()` / `prev()`; a seek or a move returns `false` when there is no such key. `remove()` removes
+the key the cursor is at and moves on to the next one:
+
+```java
+final LongAdaptiveRadixTreeMap.Cursor<StopOrder> cursor = stops.cursor();   // once, reused
+
+// the stop orders triggered by a trade at lastPrice
+for (boolean on = cursor.seekFirst(); on && cursor.key() <= lastPrice; on = cursor.isValid()) {
+    trigger(cursor.remove());
+}
+```
+
+The map may change only through the cursor while it is in use: any other change of the key set makes
+the next call of the cursor throw `ConcurrentModificationException` (a seek starts it over). Updating
+the value of a present key is not a change of the key set. For a run of keys from a key,
+`forEach(from, ...)` is faster than a cursor.
+
 The nodes come from a pool and go back to it, so a map of a steady size does not allocate. A map has a pool
 of its own (256 free leaves and 4-key nodes, fewer of the bigger ones) - of another size, or shared by the maps
 of one thread:
@@ -164,18 +183,84 @@ final ObjectsPool pool = new ObjectsPool(config);
 ```
 
 **Notes**
-- not thread-safe — intended for a single application thread
 - values must not be null: a missing key reads as null, so `put(key, null)` throws `NullPointerException`
-- `putIfAbsent`, `computeIfAbsent` and the polls are currently two descents (a lookup and a put / removal); the
-  fused puts one, when the neighbour is in the same 256-key block, otherwise two; `size()` is a counter
-- `clear()` returns the nodes to the pool — O(number of nodes)
-- a `Cursor` (`map.cursor()`, reusable, allocation-free) seeks a key — ceiling, higher, floor, lower, first, last —
-  and moves to the next or previous one; `remove()` removes the key it is at and moves on. A change of the map not
-  made through the cursor makes its next call throw `ConcurrentModificationException`. For a run of keys from a
-  key `forEach(from, ...)` is faster
 - `removeRange(from, toExclusive)` removes a range of keys (e.g. the stop orders up to a price) and returns how
-  many - one removal per key
+  many
 - `validateInternalState()`, `printDiagram()` and `entriesList()` are diagnostics: O(n), the diagram format may change
+
+**Threads.** Not thread-safe, neither is `ObjectsPool`: a map is used by one thread at a time, a pool is
+shared only by the maps of one thread. A map passed to another thread needs a happens-before edge (a
+queue, a volatile write and read), as any object that is not thread-safe.
+
+**Cost of the operations.** A descent walks the key from its highest byte down, a node per byte where the
+keys of the map differ — at most 8; for keys within a 2^32 range, such as prices in ticks, at most 4: a
+node skips the bytes all the keys below it share (path compression). Nothing is rebalanced or rehashed: a
+put or a removal changes the nodes on the path of its key only.
+
+| Operation | Cost |
+|---|---|
+| `get`, `containsKey`, `getOrDefault` | one descent |
+| `put`, `remove` | one descent; a node that fills up is replaced by the next size (4 → 16 → 48 → 256 keys), one that empties by the previous one; a new branch point takes a 4-key node |
+| `higherValue`, `lowerValue`, `ceilingValue`, `floorValue`, `firstKey` / `lastKey`, `firstValue` / `lastValue` | one descent; where the subtree of the key has no neighbour, back up to the closest node that has one and down its edge |
+| `putAndGetLowerValue` / `putAndGetHigherValue` | one descent when the neighbour is in the same 256-key block (the node of the last level remembers the put), otherwise two |
+| `putIfAbsent`, `computeIfAbsent` | one descent if the key is present, two if absent (a lookup and a put) |
+| `pollFirstValue` / `pollLastValue` | two descents: the key, then its removal |
+| `forEach` / `forEachDesc`, with or without `from` | one descent, then O(1) per key visited: 48- and 256-key nodes skip their empty slots with a bitmap |
+| `Cursor` | a seek is one descent, `next()` / `prev()` O(1) on average, `remove()` a removal and a seek |
+| `removeRange` | a seek, then a removal per key removed |
+| `size`, `isEmpty` | a counter |
+| `clear` | every node, back to the pool |
+| `keysStream`, `valuesStream`, `toString`, `entriesList` | the whole map |
+
+**Allocation.** A map of a steady size allocates nothing: the nodes a removal frees go back to the pool,
+a put takes them from there (and allocates when the pool is empty). A node that grows or shrinks goes back
+to the pool too. None of the lookups, the walks, the cursor moves and seeks, `removeRange` (its first call
+makes a cursor for the map) and `clear` allocate; `forEach` allocates nothing but the consumer, so keep a
+non-capturing one or one made once. `cursor()` makes a cursor; the streams, `toString` and `entriesList`
+allocate as they go — for tests, snapshots and debugging. `computeIfAbsent` allocates what its function
+does.
+
+**Memory** per key — `ArtMemoryPerKey` (`tests-perf`): the heap after a full GC, values not counted (one
+object for all keys), JDK 26 with compressed oops; small maps built in copies, 1M keys in all:
+
+| Keys | ART | `TreeMap<Long, V>` | fastutil `Long2ObjectRBTreeMap` |
+|---|---|---|---|
+| sequential, 1M | 4.4 B | 64 B | 40 B |
+| clustered: 16 runs of consecutive keys, 1M | 4.5 B | 64 B | 40 B |
+| an order book: 1k / 20k price levels around the mid, hyperbolic distance | 12.7 / 11.9 B | 64 B | 40 B |
+| ids: 1M, 5% of a range | 18.2 B | 64 B | 40 B |
+| sparse: every key alone in its 256-key block, 1M | 36.4 B | 64 B | 40 B |
+| random 64-bit, 1M | 53.5 B | 64 B | 40 B |
+
+Dense keys share the nodes of the last level, up to 256 keys in a 1128-byte node; a key alone in its
+256-key block is a leaf of 32 bytes (a 4-key node is 56 bytes, a 16-key one 168, a 48-key one 584). An
+empty map with a pool of its own takes 3.6 KB, most of it the arrays of the pool (0.7 KB with
+`poolCapacity(0)`, a few dozen bytes on a shared pool); the pool also keeps the free nodes — up to ~115 KB at
+the default capacity, once the map has shrunk by that much.
+
+**Measured** — `CollectionsLatencySamples -Dsamples.groups=art-fill`: one operation at a time on a map of
+1M keys (a new key for `put`, removed after the sample; a present one for `get` and `remove`, put back), ns,
+p50 / p99, the average of the runs; Xeon Gold 6244, the measuring thread on an isolated core, JDK 27; a
+sample includes the timer read, ~16 ns:
+
+| Operation, keys | ART | `TreeMap` | fastutil RB tree |
+|---|---|---|---|
+| `get`, sequential | 60 / 87 | 476 / 864 | 414 / 677 |
+| `get`, clustered | 71 / 112 | 407 / 783 | 287 / 537 |
+| `get`, sparse | 96 / 237 | 510 / 885 | 420 / 728 |
+| `get`, random | 182 / 461 | 387 / 766 | 282 / 530 |
+| `put`, sequential | 37 / 54 | 122 / 126 | 179 / 196 |
+| `put`, clustered | 62 / 86 | 132 / 189 | 183 / 234 |
+| `put`, sparse | 40 / 56 | 142 / 153 | 201 / 221 |
+| `put`, random | 102 / 318 | 506 / 907 | 440 / 744 |
+| `remove`, sequential | 73 / 112 | 815 / 1292 | 452 / 772 |
+| `remove`, clustered | 85 / 158 | 712 / 1186 | 460 / 790 |
+| `remove`, sparse | 119 / 329 | 837 / 1319 | 452 / 775 |
+| `remove`, random | 212 / 506 | 698 / 1176 | 469 / 804 |
+
+The walks of an order book (`ArtOpsJmh`, average time, a book of 1k / 20k levels; same machine): a seek and
+10 moves of a cursor 60 / 83 ns, fastutil's iterator 72 / 126 ns, `TreeMap`'s 84 / 140 ns; 10 levels from
+a price with `forEach(from, ...)` 44 / 62 ns, 73 / 125 ns, 81 / 140 ns.
 
 ---
 
