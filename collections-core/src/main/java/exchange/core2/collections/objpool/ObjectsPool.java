@@ -40,6 +40,30 @@ public final class ObjectsPool {
     private final ArrayStack[] pools;
 
 
+    /**
+     * A pool for the nodes of {@link exchange.core2.collections.art.LongAdaptiveRadixTreeMap} only: up to
+     * {@code nodes} leaves and 4-key nodes, half as many 16-key nodes, a quarter as many 48-key and an eighth as many
+     * 256-key ones - the bigger the node, the fewer of them a tree has. One pool can serve several maps of one thread.
+     *
+     * @param nodes 0 keeps none: every node a map takes is new, every node it frees is garbage
+     */
+    public static ObjectsPool forArt(final int nodes) {
+        if (nodes < 0) {
+            throw new IllegalArgumentException("pool capacity must not be negative: " + nodes);
+        }
+        final HashMap<Integer, Integer> config = new HashMap<>();
+        config.put(ART_LEAF, nodes);
+        config.put(ART_NODE_4, nodes);
+        config.put(ART_NODE_16, nodes / 2);
+        config.put(ART_NODE_48, nodes / 4);
+        config.put(ART_NODE_256, nodes / 8);
+        return new ObjectsPool(config);
+    }
+
+    /**
+     * The pool of the exchange-core tests: orders, buckets and the ART nodes. A pool for ART maps alone:
+     * {@link #forArt(int)}.
+     */
     public static ObjectsPool createDefaultTestPool() {
 
         // initialize object pools

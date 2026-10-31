@@ -133,16 +133,23 @@ map.forEachDesc(1_500L, (key, value) -> System.out.println(key + " -> " + value)
 map.entriesList().forEach(e -> System.out.println(e.getKey() + " -> " + e.getValue()));
 ```
 
-To recycle nodes across many short-lived maps, pass a shared pool:
+The nodes come from a pool and go back to it, so a map of a steady size does not allocate. A map has a pool
+of its own (256 free leaves and 4-key nodes, fewer of the bigger ones) - of another size, or shared by the maps
+of one thread:
 
 ```java
 import exchange.core2.collections.objpool.ObjectsPool;
 
-final ObjectsPool pool = ObjectsPool.createDefaultTestPool();
-final LongAdaptiveRadixTreeMap<String> map = new LongAdaptiveRadixTreeMap<>(pool);
+final LongAdaptiveRadixTreeMap<String> map = LongAdaptiveRadixTreeMap.builder()
+        .poolCapacity(4096) // free nodes kept for the next puts; 0 - none
+        .build();
+
+final ObjectsPool pool = ObjectsPool.forArt(4096);
+final LongAdaptiveRadixTreeMap<PriceLevel> bids = LongAdaptiveRadixTreeMap.builder().sharedPool(pool).build();
+final LongAdaptiveRadixTreeMap<PriceLevel> asks = LongAdaptiveRadixTreeMap.builder().sharedPool(pool).build();
 ```
 
-…or configure the pool sizes explicitly:
+…or a pool of several types, with the sizes of each (as exchange-core configures it):
 
 ```java
 final Map<Integer, Integer> config = new HashMap<>();
@@ -715,7 +722,7 @@ A simple, non-thread-safe, array-backed pool of pre-allocated objects, used inte
 ```java
 import exchange.core2.collections.objpool.ObjectsPool;
 
-final ObjectsPool pool = ObjectsPool.createDefaultTestPool();
+final ObjectsPool pool = new ObjectsPool(Map.of(ObjectsPool.ORDER, 1024)); // up to 1024 free orders
 
 // take from the pool, or construct if the pool is empty
 final MyOrder order = pool.get(ObjectsPool.ORDER, MyOrder::new);
