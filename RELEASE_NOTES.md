@@ -315,7 +315,14 @@
 - **`LongAdaptiveRadixTreeMap.put` returns the previous value, `remove` the removed one** (were `void`; null
   for a missing key). Source compatible, but callers have to be recompiled.
 - **`LongAdaptiveRadixTreeMap` keeps its size in a counter**: `size()` is O(1). `size(limit)` used to walk the
-  whole tree up to the limit; it stays, as `Math.min(size(), limit)`.
+  whole tree up to the limit; it stays, as `Math.min(size(), limit)`, and is deprecated.
+- **The nodes of `LongAdaptiveRadixTreeMap` are no longer public** (breaking): `ArtNode4`, `ArtNode16`, `ArtNode48`,
+  `ArtNode256` and their base class are package-private, as the hashtable internals - a change of the nodes no
+  longer changes the API. `IArtNode`, the old interface of the nodes, is gone (see below). The public API of the ART
+  is the map, its `Cursor` and `Entry`, `LongObjConsumer` and `ObjectsPool`.
+- **`LongAdaptiveRadixTreeMap.removeRange(fromInclusive, toExclusive)`** works and returns the number of keys removed
+  (was `void` and threw `UnsupportedOperationException`): one removal per key, a cursor kept by the map moves from
+  key to key - nothing allocated per call.
 - **`LongAdaptiveRadixTreeMap.clear()` returns the nodes to the pool** - O(number of nodes) instead of dropping
   the root, so a map that is cleared and refilled no longer allocates its nodes again.
 - **`LongAdaptiveRadixTreeMap`: ordered walks and neighbour searches skip the empty slots.** `ArtNode48` and
@@ -341,10 +348,11 @@
   entry; 100k random keys: 64 to 53 bytes, 7.4 to 5.9 dependent loads per lookup; a 20k-level book: 10.2 to 8.1
   loads. In `ArtOpsJmh` on rhel-lat, 100k random keys: missing key -21%, the mixed stream -12%, removal + put -8%,
   new level -8%; the other key sets within ±4%.
-- **`IArtNode` is now the abstract class `ArtNode`** (the node type inside `LongAdaptiveRadixTreeMap`): a call on a
-  node of a class the JIT can not predict goes through the vtable instead of a search of the itable. In `ArtOpsJmh`
-  on rhel-lat within ±4%, removal + put in a 20k-level book -9%. A lookup in a loop over the levels instead of the
-  recursion was measured too and left out: misses on 1M random keys -12%, hits in a 20k-level book +14-19%.
+- **`IArtNode` is now the abstract class `ArtNode`**, package-private (the node type inside
+  `LongAdaptiveRadixTreeMap`): a call on a node of a class the JIT can not predict goes through the vtable instead of
+  a search of the itable. In `ArtOpsJmh` on rhel-lat within ±4%, removal + put in a 20k-level book -9%. A lookup in a
+  loop over the levels instead of the recursion was measured too and left out: misses on 1M random keys -12%, hits in
+  a 20k-level book +14-19%.
 - **`ObjectsPool`: a type left out of the configuration gets an empty stack** - `get` constructs, `put` drops - where
   it used to fail with `NullPointerException` (or `ArrayIndexOutOfBoundsException` above the highest configured
   type). The new `ART_LEAF` type, unless configured, gets as many places as `ART_NODE_4`, so configurations written

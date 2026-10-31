@@ -32,7 +32,7 @@ import java.util.Map;
  * null, this representation is also very space efficient because
  * only pointers need to be stored.
  */
-public final class ArtNode256<V> extends ArtNode<V> {
+final class ArtNode256<V> extends ArtNode<V> {
 
     /** highest possible key in the unsigned key space the nodes work in */
     private static final long UNSIGNED_MAX_KEY = -1L;
@@ -51,7 +51,7 @@ public final class ArtNode256<V> extends ArtNode<V> {
 
     private final ObjectsPool objectsPool;
 
-    public ArtNode256(ObjectsPool objectsPool) {
+    ArtNode256(ObjectsPool objectsPool) {
         this.objectsPool = objectsPool;
     }
 

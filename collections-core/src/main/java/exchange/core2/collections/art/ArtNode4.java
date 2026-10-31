@@ -28,7 +28,7 @@ import java.util.Map;
  * (48 with compact object headers) and no dependent load, where the paper's layout (an array of keys, an array
  * of pointers) took three objects (96 bytes) and two more loads on every visit.
  */
-public final class ArtNode4<V> extends ArtNode<V> {
+final class ArtNode4<V> extends ArtNode<V> {
 
     /** highest possible key in the unsigned key space the nodes work in */
     private static final long UNSIGNED_MAX_KEY = -1L;
@@ -52,7 +52,7 @@ public final class ArtNode4<V> extends ArtNode<V> {
 
     byte numChildren;
 
-    public ArtNode4(ObjectsPool objectsPool) {
+    ArtNode4(ObjectsPool objectsPool) {
         this.objectsPool = objectsPool;
     }
 

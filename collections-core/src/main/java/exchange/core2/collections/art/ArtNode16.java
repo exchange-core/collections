@@ -30,7 +30,7 @@ import java.util.Map;
  * efficiently with binary search or, on modern hardware, with
  * parallel comparisons using SIMD instructions.
  */
-public final class ArtNode16<V> extends ArtNode<V> {
+final class ArtNode16<V> extends ArtNode<V> {
 
     /** highest possible key in the unsigned key space the nodes work in */
     private static final long UNSIGNED_MAX_KEY = -1L;
@@ -48,7 +48,7 @@ public final class ArtNode16<V> extends ArtNode<V> {
 
     private final ObjectsPool objectsPool;
 
-    public ArtNode16(ObjectsPool objectsPool) {
+    ArtNode16(ObjectsPool objectsPool) {
         this.objectsPool = objectsPool;
     }
 

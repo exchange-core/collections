@@ -30,7 +30,7 @@ import java.util.*;
  * comparison to 256 pointers of 8 bytes, because the indexes
  * only require 6 bits (we use 1 byte for simplicity).
  */
-public final class ArtNode48<V> extends ArtNode<V> {
+final class ArtNode48<V> extends ArtNode<V> {
 
     /** highest possible key in the unsigned key space the nodes work in */
     private static final long UNSIGNED_MAX_KEY = -1L;
@@ -52,7 +52,7 @@ public final class ArtNode48<V> extends ArtNode<V> {
 
     private final ObjectsPool objectsPool;
 
-    public ArtNode48(ObjectsPool objectsPool) {
+    ArtNode48(ObjectsPool objectsPool) {
         this.objectsPool = objectsPool;
     }
 

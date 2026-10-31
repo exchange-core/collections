@@ -165,7 +165,9 @@ final ObjectsPool pool = new ObjectsPool(config);
   and moves to the next or previous one; `remove()` removes the key it is at and moves on. A change of the map not
   made through the cursor makes its next call throw `ConcurrentModificationException`. For a run of keys from a
   key `forEach(from, ...)` is faster
-- `removeRange` is not implemented yet
+- `removeRange(from, toExclusive)` removes a range of keys (e.g. the stop orders up to a price) and returns how
+  many - one removal per key
+- `validateInternalState()`, `printDiagram()` and `entriesList()` are diagnostics: O(n), the diagram format may change
 
 ---
 
