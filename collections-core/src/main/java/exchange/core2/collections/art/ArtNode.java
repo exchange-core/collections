@@ -149,4 +149,12 @@ abstract class ArtNode<V> {
     Object childAtSlot(int slot) {
         throw new UnsupportedOperationException();
     }
+
+    /**
+     * Bulk load (putAllSorted): the next child of a node being built - its key byte above the ones appended before.
+     * The node gets it right after initForAppend, as many children as its size takes.
+     */
+    void append(int keyByte, Object child) {
+        throw new UnsupportedOperationException();
+    }
 }

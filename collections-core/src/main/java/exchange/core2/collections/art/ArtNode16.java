@@ -52,6 +52,20 @@ final class ArtNode16<V> extends ArtNode<V> {
         this.objectsPool = objectsPool;
     }
 
+    /** bulk load: an empty node for 5-16 children, see append - a node from the pool has no children left */
+    void initForAppend(final long nodeKey, final int nodeLevel) {
+        this.nodeKey = nodeKey;
+        this.nodeLevel = nodeLevel;
+        this.numChildren = 0;
+    }
+
+    @Override
+    void append(final int keyByte, final Object child) {
+        keys[numChildren] = (short) keyByte;
+        nodes[numChildren] = child;
+        numChildren++;
+    }
+
     void initFromNode4(ArtNode4<V> node4, short subKey, Object newElement) {
 
         final byte sourceSize = node4.numChildren;

@@ -56,6 +56,21 @@ final class ArtNode4<V> extends ArtNode<V> {
         this.objectsPool = objectsPool;
     }
 
+    /** bulk load: an empty node for 2-4 children, see append - a node from the pool has no children left */
+    void initForAppend(final long nodeKey, final int nodeLevel) {
+        this.nodeKey = nodeKey;
+        this.nodeLevel = nodeLevel;
+        this.keys = 0;
+        this.numChildren = 0;
+    }
+
+    @Override
+    void append(final int keyByte, final Object child) {
+        keys |= keyByte << (numChildren << 3);
+        setChild(numChildren, child);
+        numChildren++;
+    }
+
     // split-compact operation constructor
     void initTwoKeys(final long key1, final Object value1, final long key2, final Object value2, final int level) {
         // create compact node
