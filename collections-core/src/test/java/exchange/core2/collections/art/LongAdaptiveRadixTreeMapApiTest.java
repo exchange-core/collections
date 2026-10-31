@@ -266,6 +266,51 @@ public class LongAdaptiveRadixTreeMapApiTest {
         unpooled.validateInternalState();
     }
 
+    @Test
+    public void poolCapacityShouldDecideWhetherARefillAllocates() {
+        final LongAdaptiveRadixTreeMap<String> pooled = LongAdaptiveRadixTreeMap.builder().poolCapacity(1024).build();
+        final LongAdaptiveRadixTreeMap<String> unpooled = LongAdaptiveRadixTreeMap.builder().poolCapacity(0).build();
+        for (final LongAdaptiveRadixTreeMap<String> m : java.util.List.of(pooled, unpooled)) {
+            putFarKeys(m);
+            m.clear();
+        }
+        final long pooledBytes = allocatedBytes(() -> putFarKeys(pooled));
+        final long unpooledBytes = allocatedBytes(() -> putFarKeys(unpooled));
+        assertTrue("allocated " + pooledBytes + " bytes refilling the pooled map", pooledBytes < 1024);
+        assertTrue("allocated " + unpooledBytes + " bytes refilling the unpooled map", unpooledBytes > 200 * 16);
+        pooled.validateInternalState();
+        unpooled.validateInternalState();
+    }
+
+    @Test
+    public void mapsOfASharedPoolShouldTakeTheNodesOneAnotherFrees() {
+        final ObjectsPool pool = ObjectsPool.forArt(1024);
+        final LongAdaptiveRadixTreeMap<String> first = LongAdaptiveRadixTreeMap.builder().sharedPool(pool).build();
+        final LongAdaptiveRadixTreeMap<String> second = LongAdaptiveRadixTreeMap.builder().sharedPool(pool).build();
+        putFarKeys(first);
+        first.clear();
+        final long allocated = allocatedBytes(() -> putFarKeys(second));
+        assertTrue("allocated " + allocated + " bytes filling the second map", allocated < 1024);
+        assertThat(second.size(), is(200));
+        second.validateInternalState();
+    }
+
+    @Test
+    public void builderShouldRejectAWrongPool() {
+        assertThrows(IllegalArgumentException.class, () -> LongAdaptiveRadixTreeMap.builder().poolCapacity(-1));
+        assertThrows(IllegalArgumentException.class, () -> ObjectsPool.forArt(-1));
+        assertThrows(NullPointerException.class, () -> LongAdaptiveRadixTreeMap.builder().sharedPool(null));
+        assertThrows(IllegalStateException.class,
+                () -> LongAdaptiveRadixTreeMap.builder().poolCapacity(16).sharedPool(ObjectsPool.forArt(16)).build());
+    }
+
+    /** 200 keys that differ in byte 5 only: 200 leaves under one 256-key node, reached through 4, 16 and 48 */
+    private static void putFarKeys(final LongAdaptiveRadixTreeMap<String> m) {
+        for (int i = 0; i < 200; i++) {
+            m.put((long) i << 40, "v");
+        }
+    }
+
     /** forEach used to wrap the consumer into a key-converting lambda on every call */
     @Test
     public void forEachShouldNotAllocate() {

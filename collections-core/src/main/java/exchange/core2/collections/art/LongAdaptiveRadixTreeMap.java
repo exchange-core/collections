@@ -78,9 +78,63 @@ public final class LongAdaptiveRadixTreeMap<V> {
         this.objectsPool = objectsPool;
     }
 
-    /** A map with a pool of its own, of the sizes of {@link ObjectsPool#createDefaultTestPool()}. */
+    /** A map with a pool of its own, of the default capacity - see {@link Builder#poolCapacity(int)}. */
     public LongAdaptiveRadixTreeMap() {
-        objectsPool = ObjectsPool.createDefaultTestPool();
+        this(ObjectsPool.forArt(Builder.DEFAULT_POOL_CAPACITY));
+    }
+
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /**
+     * Parameters of a {@link LongAdaptiveRadixTreeMap}, all optional.
+     */
+    public static final class Builder {
+
+        static final int DEFAULT_POOL_CAPACITY = 256;
+
+        private int poolCapacity = -1;
+        private ObjectsPool sharedPool;
+
+        private Builder() {
+        }
+
+        /**
+         * Free nodes the map keeps in a pool of its own for its next puts (default
+         * {@value LongAdaptiveRadixTreeMap.Builder#DEFAULT_POOL_CAPACITY}): up to that many leaves and 4-key nodes, fewer
+         * of the bigger ones - see {@link ObjectsPool#forArt(int)}. A map that shrinks and grows back by more than that
+         * allocates the rest; 0 keeps none.
+         */
+        public Builder poolCapacity(int nodes) {
+            if (nodes < 0) {
+                throw new IllegalArgumentException("pool capacity must not be negative: " + nodes);
+            }
+            this.poolCapacity = nodes;
+            return this;
+        }
+
+        /**
+         * A pool shared with other maps of the same thread instead of a pool of the map's own: the nodes one map frees,
+         * another takes. The pool has its sizes - not together with {@link #poolCapacity(int)}.
+         */
+        public Builder sharedPool(ObjectsPool pool) {
+            this.sharedPool = Objects.requireNonNull(pool, "pool");
+            return this;
+        }
+
+        /**
+         * @throws IllegalStateException if both a pool capacity and a shared pool are set
+         */
+        public <V> LongAdaptiveRadixTreeMap<V> build() {
+            if (sharedPool == null) {
+                return new LongAdaptiveRadixTreeMap<>(ObjectsPool.forArt(poolCapacity < 0 ? DEFAULT_POOL_CAPACITY : poolCapacity));
+            }
+            if (poolCapacity >= 0) {
+                throw new IllegalStateException("a pool capacity and a shared pool: the shared pool has sizes of its own");
+            }
+            return new LongAdaptiveRadixTreeMap<>(sharedPool);
+        }
     }
 
     /**

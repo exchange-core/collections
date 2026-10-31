@@ -73,6 +73,11 @@
 - **`LongAdaptiveRadixTreeMap.forEach(from, consumer, limit)` / `forEachDesc(from, ...)`**: the keys from a key up /
   down - L2 market data from a price. One descent to the key, then the subtrees beyond it are walked whole: 10
   levels from a price in 44-62 ns, fastutil's tree 73-125 ns, `TreeMap` 81-140 ns (`ArtOpsJmh` `range10`, rhel-lat).
+- **`LongAdaptiveRadixTreeMap.builder()`**: `poolCapacity(nodes)` sizes the pool of the map's own (default 256 free
+  leaves and 4-key nodes, fewer of the bigger ones; 0 - none), `sharedPool(pool)` takes a pool shared with other maps
+  of the thread. `ObjectsPool.forArt(nodes)` makes a pool for ART nodes only - no exchange-core types to know.
+  `new LongAdaptiveRadixTreeMap<>()` gets a pool of ART nodes of the same sizes as before, no longer the test pool
+  with places for orders and buckets.
 - **`CollectionsLatencySamples`: group `art-fill`** (run only when named): `get`, `put` and `remove` latency with 1M
   keys of four densities (as in `art-keys`) - the ART against `TreeMap` and fastutil's `Long2ObjectRBTreeMap`;
   `-Dsamples.art.label` names the ART series, to put two builds of collections-core side by side. The initial ART
