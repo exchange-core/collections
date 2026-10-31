@@ -82,8 +82,8 @@ latency spikes caused by insertion.
 - keys are kept in **signed** ascending order (same order as `TreeMap<Long, V>`)
 - no re-balancing, no whole-tree resize — a put or remove changes at most the nodes on the key's path
 - internal nodes are recycled through `ObjectsPool` — low GC pressure
-- neighbour lookups (`getHigherValue` / `getLowerValue`, `getCeilingValue` / `getFloorValue`), first / last
-  key and value, and ordered traversal
+- neighbour lookups (`higherValue` / `lowerValue`, `ceilingValue` / `floorValue`), first / last
+  key and value, ordered traversal, a cursor, `keysStream()` / `valuesStream()`
 
 ```java
 import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
@@ -98,11 +98,12 @@ map.get(2_000L);        // "second"
 map.get(12_345L);       // null — missing keys return null
 map.put(2_000L, "2nd"); // "second" — the previous value
 
-map.getHigherValue(1_000L);   // "2nd"      — closest key strictly above
-map.getLowerValue(1_000L);    // "negative" — closest key strictly below
-map.getCeilingValue(1_000L);  // "first"    — the key itself, or the closest above
-map.firstKey();               // -500
-map.lastValue();              // "2nd"
+map.higherValue(1_000L);   // "2nd"      — closest key strictly above
+map.lowerValue(1_000L);    // "negative" — closest key strictly below
+map.ceilingValue(1_000L);  // "first"    — the key itself, or the closest above
+map.firstKey();            // -500
+map.lastValue();           // "2nd"
+map.toString();            // "{-500=negative, 1000=first, 2000=2nd}"
 
 map.remove(1_000L);     // "first" — the removed value
 map.size();             // 2

@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
@@ -46,8 +47,17 @@ final class ArtOracleAssertions {
         final List<Long> expectedDesc = new ArrayList<>(oracle.descendingKeySet());
         assertEquals("forEachDesc() order", expectedDesc, viaForEachDesc);
 
+        final List<Long> viaForEachAll = new ArrayList<>();
+        tested.forEach((k, v) -> viaForEachAll.add(k));
+        assertEquals("forEach(all) order", expectedKeys, viaForEachAll);
+
+        // the streams and toString walk the map the same way
+        assertEquals("keysStream()", expectedKeys, tested.keysStream().boxed().collect(Collectors.toList()));
+        assertEquals("valuesStream()", new ArrayList<>(oracle.values()),
+                tested.valuesStream().collect(Collectors.toList()));
+        assertEquals("toString()", oracle.toString(), tested.toString());
+
         assertEquals("size()", oracle.size(), tested.size());
-        assertEquals("size(limit)", oracle.size(), tested.size(Integer.MAX_VALUE));
         assertEquals("isEmpty()", oracle.isEmpty(), tested.isEmpty());
 
         // 3. every stored key must be retrievable - ordering can be right while get() is broken
@@ -57,14 +67,14 @@ final class ArtOracleAssertions {
 
         // 4. ordered lookups around every stored key, plus the range boundaries
         for (final Long key : probePoints(oracle)) {
-            assertEquals("getHigherValue(" + key + ")",
-                    valueOf(oracle.higherEntry(key)), tested.getHigherValue(key));
-            assertEquals("getLowerValue(" + key + ")",
-                    valueOf(oracle.lowerEntry(key)), tested.getLowerValue(key));
-            assertEquals("getCeilingValue(" + key + ")",
-                    valueOf(oracle.ceilingEntry(key)), tested.getCeilingValue(key));
-            assertEquals("getFloorValue(" + key + ")",
-                    valueOf(oracle.floorEntry(key)), tested.getFloorValue(key));
+            assertEquals("higherValue(" + key + ")",
+                    valueOf(oracle.higherEntry(key)), tested.higherValue(key));
+            assertEquals("lowerValue(" + key + ")",
+                    valueOf(oracle.lowerEntry(key)), tested.lowerValue(key));
+            assertEquals("ceilingValue(" + key + ")",
+                    valueOf(oracle.ceilingEntry(key)), tested.ceilingValue(key));
+            assertEquals("floorValue(" + key + ")",
+                    valueOf(oracle.floorEntry(key)), tested.floorValue(key));
             assertEquals("containsKey(" + key + ")", oracle.containsKey(key), tested.containsKey(key));
 
             final List<Long> up = new ArrayList<>();

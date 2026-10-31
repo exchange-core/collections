@@ -451,12 +451,12 @@ public class ArtOpsJmh {
 
         @Override
         public Object lower(long key) {
-            return map.getLowerValue(key);
+            return map.lowerValue(key);
         }
 
         @Override
         public Object higher(long key) {
-            return map.getHigherValue(key);
+            return map.higherValue(key);
         }
 
         @Override

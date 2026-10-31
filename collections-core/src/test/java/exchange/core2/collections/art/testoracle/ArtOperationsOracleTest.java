@@ -101,8 +101,8 @@ public class ArtOperationsOracleTest {
                 assertEquals(step + ": removeRange to " + to, expected, tested.removeRange(key, to));
             } else {
                 assertEquals(step + ": get", oracle.get(key), tested.get(key));
-                assertEquals(step + ": getCeilingValue", valueOf(oracle.ceilingEntry(key)), tested.getCeilingValue(key));
-                assertEquals(step + ": getFloorValue", valueOf(oracle.floorEntry(key)), tested.getFloorValue(key));
+                assertEquals(step + ": ceilingValue", valueOf(oracle.ceilingEntry(key)), tested.ceilingValue(key));
+                assertEquals(step + ": floorValue", valueOf(oracle.floorEntry(key)), tested.floorValue(key));
             }
             assertEquals(step + ": size", oracle.size(), tested.size());
             if ((i & 63) == 0) {

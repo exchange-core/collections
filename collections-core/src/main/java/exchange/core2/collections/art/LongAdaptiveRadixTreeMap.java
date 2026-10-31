@@ -19,12 +19,19 @@ import exchange.core2.collections.objpool.ObjectsPool;
 
 import java.util.Collections;
 import java.util.ConcurrentModificationException;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.PrimitiveIterator;
+import java.util.Spliterator;
+import java.util.Spliterators;
 import java.util.function.Function;
 import java.util.function.LongFunction;
+import java.util.stream.LongStream;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 /**
  * A sorted map of {@code long} keys to object values: an Adaptive Radix Tree (V. Leis, A. Kemper, T. Neumann,
@@ -34,13 +41,19 @@ import java.util.function.LongFunction;
  * as null. A lookup, put or removal walks at most the 8 bytes of the key and never rebalances or rehashes; the nodes
  * come from an {@link ObjectsPool} and go back to it, so a map of a steady size does not allocate. Ordered walks: from
  * the ends ({@link #forEach(LongObjConsumer, int)}), from a key ({@link #forEach(long, LongObjConsumer, int)}), step by
- * step ({@link #cursor()}).
+ * step ({@link #cursor()}), as streams ({@link #keysStream()}, {@link #valuesStream()}).
  * <p>
  * Not thread-safe.
  */
 public final class LongAdaptiveRadixTreeMap<V> {
 
     private static final int INITIAL_LEVEL = 56;
+
+    // the streams: ascending, of the size the map has when a stream is consumed
+    private static final int KEYS_STREAM = Spliterator.ORDERED | Spliterator.DISTINCT | Spliterator.SORTED
+            | Spliterator.NONNULL | Spliterator.SIZED | Spliterator.SUBSIZED;
+    private static final int VALUES_STREAM = Spliterator.ORDERED | Spliterator.NONNULL
+            | Spliterator.SIZED | Spliterator.SUBSIZED;
 
     private ArtNode<V> root = null;
 
@@ -163,6 +176,14 @@ public final class LongAdaptiveRadixTreeMap<V> {
     }
 
     /**
+     * @return the value of the key, or defaultValue if the key is absent
+     */
+    public V getOrDefault(final long key, final V defaultValue) {
+        final V value = get(key);
+        return value != null ? value : defaultValue;
+    }
+
+    /**
      * @return true if the key is present - the same as {@code get(key) != null}, a value is never null
      */
     public boolean containsKey(final long key) {
@@ -262,7 +283,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
             }
         }
         // a key alone in its 256-key block, or at its edge: the neighbour is elsewhere, if anywhere
-        return lower ? getLowerValue(key) : getHigherValue(key);
+        return lower ? lowerValue(key) : higherValue(key);
     }
 
     /** a node of the last level that has just put the key - see lastPutNode */
@@ -340,7 +361,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
     /**
      * @return the value of the closest key strictly above the key, or null if there is none
      */
-    public V getHigherValue(final long key) {
+    public V higherValue(final long key) {
         // Long.MAX_VALUE is the top of the signed range - nothing can be above it.
         if (root != null && key != Long.MAX_VALUE) {
             return root.getCeilingValue(flipSignBit(key) + 1, INITIAL_LEVEL);
@@ -352,7 +373,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
     /**
      * @return the value of the closest key strictly below the key, or null if there is none
      */
-    public V getLowerValue(final long key) {
+    public V lowerValue(final long key) {
         // Long.MIN_VALUE is the bottom of the signed range. The guard used to be "key != 0", which
         // was the bottom of the UNSIGNED range - correct for the old, unsigned-ordered map only.
         if (root != null && key != Long.MIN_VALUE) {
@@ -365,7 +386,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
     /**
      * @return the value of the key, or else of the closest key above it; null if there is none
      */
-    public V getCeilingValue(final long key) {
+    public V ceilingValue(final long key) {
         return root != null
                 ? root.getCeilingValue(flipSignBit(key), INITIAL_LEVEL)
                 : null;
@@ -374,7 +395,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
     /**
      * @return the value of the key, or else of the closest key below it; null if there is none
      */
-    public V getFloorValue(final long key) {
+    public V floorValue(final long key) {
         return root != null
                 ? root.getFloorValue(flipSignBit(key), INITIAL_LEVEL)
                 : null;
@@ -384,14 +405,14 @@ public final class LongAdaptiveRadixTreeMap<V> {
      * @return the value of the lowest key, or null if the map is empty
      */
     public V firstValue() {
-        return getCeilingValue(Long.MIN_VALUE);
+        return ceilingValue(Long.MIN_VALUE);
     }
 
     /**
      * @return the value of the highest key, or null if the map is empty
      */
     public V lastValue() {
-        return getFloorValue(Long.MAX_VALUE);
+        return floorValue(Long.MAX_VALUE);
     }
 
     /**
@@ -432,6 +453,13 @@ public final class LongAdaptiveRadixTreeMap<V> {
      */
     public V pollLastValue() {
         return root != null ? remove(lastKey()) : null;
+    }
+
+    /**
+     * Visits all keys, ascending - allocation-free, as {@link #forEach(LongObjConsumer, int)}.
+     */
+    public void forEach(final LongObjConsumer<V> consumer) {
+        forEach(consumer, Integer.MAX_VALUE);
     }
 
     /**
@@ -487,14 +515,60 @@ public final class LongAdaptiveRadixTreeMap<V> {
     }
 
     /**
-     * Same as {@code Math.min(size(), limit)}. The size used to be counted by walking the tree, the limit bounded
-     * that walk - now the size is a counter.
-     *
-     * @deprecated use {@link #size()}
+     * The keys, ascending. The stream reads the map lazily, through a cursor of its own made when the stream is
+     * consumed: a change of the key set during the walk makes it throw ConcurrentModificationException.
      */
-    @Deprecated
-    public int size(int limit) {
-        return Math.min(size, limit);
+    public LongStream keysStream() {
+        return StreamSupport.longStream(() -> {
+            final Cursor<V> c = cursor();
+            final PrimitiveIterator.OfLong keys = new PrimitiveIterator.OfLong() {
+                private boolean on = c.seekFirst();
+
+                @Override
+                public boolean hasNext() {
+                    return on;
+                }
+
+                @Override
+                public long nextLong() {
+                    if (!on) {
+                        throw new NoSuchElementException();
+                    }
+                    final long key = c.key();
+                    on = c.next();
+                    return key;
+                }
+            };
+            return Spliterators.spliterator(keys, size, KEYS_STREAM);
+        }, KEYS_STREAM, false);
+    }
+
+    /**
+     * The values in the order of {@link #keysStream()}, with the same restriction.
+     */
+    public Stream<V> valuesStream() {
+        return StreamSupport.stream(() -> {
+            final Cursor<V> c = cursor();
+            final Iterator<V> values = new Iterator<>() {
+                private boolean on = c.seekFirst();
+
+                @Override
+                public boolean hasNext() {
+                    return on;
+                }
+
+                @Override
+                public V next() {
+                    if (!on) {
+                        throw new NoSuchElementException();
+                    }
+                    final V value = c.value();
+                    on = c.next();
+                    return value;
+                }
+            };
+            return Spliterators.spliterator(values, size, VALUES_STREAM);
+        }, VALUES_STREAM, false);
     }
 
     /**
@@ -502,6 +576,22 @@ public final class LongAdaptiveRadixTreeMap<V> {
      */
     public List<Map.Entry<Long, V>> entriesList() {
         return root != null ? root.entries() : Collections.emptyList();
+    }
+
+    /**
+     * All entries as {@code {key=value, ...}}, ascending - the format of {@code TreeMap}; for tests and debugging, it
+     * walks the whole map.
+     */
+    @Override
+    public String toString() {
+        final StringBuilder sb = new StringBuilder("{");
+        forEach((key, value) -> {
+            if (sb.length() > 1) {
+                sb.append(", ");
+            }
+            sb.append(key).append('=').append(value == this ? "(this Map)" : value);
+        });
+        return sb.append('}').toString();
     }
 
     /**

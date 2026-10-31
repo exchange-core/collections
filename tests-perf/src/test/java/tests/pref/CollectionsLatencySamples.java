@@ -831,7 +831,7 @@ public class CollectionsLatencySamples {
             return (keys, from, to) -> {
                 long s = 0;
                 for (int i = from; i < to; i++) {
-                    final Long v = m.getHigherValue(keys[i]);
+                    final Long v = m.higherValue(keys[i]);
                     if (v != null) s += v;
                 }
                 return s;

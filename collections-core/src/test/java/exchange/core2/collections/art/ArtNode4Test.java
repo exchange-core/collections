@@ -62,9 +62,9 @@ public class ArtNode4Test {
             final long key = base + ((long) b << shift);
             assertEquals("get " + Long.toHexString(key), oracle.get(key), map.get(key));
             final var ceiling = oracle.ceilingEntry(key);
-            assertEquals("ceiling " + Long.toHexString(key), ceiling == null ? null : ceiling.getValue(), map.getCeilingValue(key));
+            assertEquals("ceiling " + Long.toHexString(key), ceiling == null ? null : ceiling.getValue(), map.ceilingValue(key));
             final var floor = oracle.floorEntry(key);
-            assertEquals("floor " + Long.toHexString(key), floor == null ? null : floor.getValue(), map.getFloorValue(key));
+            assertEquals("floor " + Long.toHexString(key), floor == null ? null : floor.getValue(), map.floorValue(key));
         }
         final List<Long> keys = new ArrayList<>();
         map.forEach((k, v) -> keys.add(k), Integer.MAX_VALUE);

@@ -522,6 +522,10 @@
                                     <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#removeRange(long,long)</exclude>
                                     <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#getOrInsert(long,java.util.function.Supplier)</exclude>
                                     <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#getOrInsertFromNode(exchange.core2.collections.art.IArtNode,java.util.function.Supplier)</exclude>
+                                    <!-- ART: the neighbour lookups lose "get", as in NavigableMap; size(limit) is gone -->
+                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#getHigherValue(long)</exclude>
+                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#getLowerValue(long)</exclude>
+                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#size(int)</exclude>
                                     <!-- hashtables: the internals hidden or removed, LongLongRadixHashtable removed -->
                                     <exclude>exchange.core2.collections.hashtable.HashingUtils</exclude>
                                     <exclude>exchange.core2.collections.hashtable.HashtableAsync2Resizer</exclude>

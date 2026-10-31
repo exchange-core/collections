@@ -6,12 +6,18 @@ import org.junit.Test;
 
 import java.lang.management.ManagementFactory;
 import java.util.AbstractMap;
+import java.util.ConcurrentModificationException;
+import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.stream.LongStream;
+import java.util.stream.Stream;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
@@ -98,7 +104,7 @@ public class LongAdaptiveRadixTreeMapApiTest {
         assertThat(map.removeRange(10, -10), is(0));
         assertThat(map.removeRange(-1, 256), is(4));        // -1, 0, 1, 255
         assertThat(map.firstKey(), is(Long.MIN_VALUE));
-        assertThat(map.getHigherValue(-300), is("v256"));
+        assertThat(map.higherValue(-300), is("v256"));
         assertThat(map.removeRange(Long.MIN_VALUE, Long.MAX_VALUE), is(4)); // the upper bound stays
         assertThat(map.size(), is(1));
         assertThat(map.firstKey(), is(Long.MAX_VALUE));
@@ -216,8 +222,8 @@ public class LongAdaptiveRadixTreeMapApiTest {
         assertThat(map.firstKey(), is(1001L));
         map.put(-5_000_000L, "c");     // far away - an inner node over two leaves
         map.validateInternalState();
-        assertThat(map.getLowerValue(1001), is("c"));
-        assertThat(map.getHigherValue(-5_000_000L), is("b"));
+        assertThat(map.lowerValue(1001), is("c"));
+        assertThat(map.higherValue(-5_000_000L), is("b"));
         assertThat(map.remove(1001), is("b"));
         map.validateInternalState();   // collapsed into the remaining leaf
         assertThat(map.firstKey(), is(-5_000_000L));
@@ -270,7 +276,7 @@ public class LongAdaptiveRadixTreeMapApiTest {
     public void poolCapacityShouldDecideWhetherARefillAllocates() {
         final LongAdaptiveRadixTreeMap<String> pooled = LongAdaptiveRadixTreeMap.builder().poolCapacity(1024).build();
         final LongAdaptiveRadixTreeMap<String> unpooled = LongAdaptiveRadixTreeMap.builder().poolCapacity(0).build();
-        for (final LongAdaptiveRadixTreeMap<String> m : java.util.List.of(pooled, unpooled)) {
+        for (final LongAdaptiveRadixTreeMap<String> m : List.of(pooled, unpooled)) {
             putFarKeys(m);
             m.clear();
         }
@@ -309,6 +315,41 @@ public class LongAdaptiveRadixTreeMapApiTest {
         for (int i = 0; i < 200; i++) {
             m.put((long) i << 40, "v");
         }
+    }
+
+    /** the content of the streams and toString is checked against TreeMap in testoracle; here: when they read */
+    @Test
+    public void streamsShouldReadTheMapWhenConsumed() {
+        assertThat(map.keysStream().count(), is(0L));
+        assertThat(map.toString(), is("{}"));
+
+        final LongStream keys = map.keysStream();
+        final Stream<String> values = map.valuesStream();
+        map.put(-7, "a");
+        map.put(300, "b");
+        assertArrayEquals(new long[]{-7, 300}, keys.toArray());
+        assertThat(values.collect(Collectors.toList()), is(List.of("a", "b")));
+        assertThat(map.toString(), is("{-7=a, 300=b}"));
+    }
+
+    @Test
+    public void streamsShouldFailFastOnAChangeOfTheKeySet() {
+        map.put(1, "a");
+        map.put(2, "b");
+        assertThrows(ConcurrentModificationException.class, () -> map.keysStream().forEach(k -> map.put(k + 10, "c")));
+        assertThrows(ConcurrentModificationException.class, () -> map.valuesStream().forEach(v -> map.remove(2)));
+
+        // value updates are not changes of the key set
+        map.keysStream().forEach(k -> map.put(k, "d"));
+        assertThat(map.valuesStream().distinct().collect(Collectors.toList()), is(List.of("d")));
+    }
+
+    @Test
+    public void getOrDefaultShouldTellAMissingKey() {
+        map.put(5, "a");
+        assertThat(map.getOrDefault(5, "z"), is("a"));
+        assertThat(map.getOrDefault(6, "z"), is("z"));
+        assertNull(map.getOrDefault(6, null));
     }
 
     /** forEach used to wrap the consumer into a key-converting lambda on every call */
