@@ -21,7 +21,7 @@ and designed for low-latency, single-threaded hot paths.
 ### Requirements
 
 - **To use the published artifacts:** Java 26+ (0.6.0). The next release drops the published
-  bytecode level to Java 17; `collections-affinity` (new) needs Java 22+, as it uses the Foreign
+  bytecode level to Java 21; `collections-affinity` (new) needs Java 22+, as it uses the Foreign
   Function and Memory API.
 - **To build from source:** JDK 26 and Maven 3.9+ — the benchmark and stress modules use newer
   language APIs than the published ones.
@@ -857,18 +857,29 @@ mvn test
 ```
 
 Long-running randomized stress tests (`tests-stress`) and latency / throughput benchmarks
-(`tests-perf`) live in separate modules — run them explicitly:
+(`tests-perf`) live in separate modules and are left out of a plain build — run them with their
+profiles (`-Dtest=<class>` for one class of benchmarks):
 
 ```bash
-mvn -pl tests-stress test
+mvn -Pstress -pl tests-stress -am test
 ```
 
 ```bash
-mvn -pl tests-perf test
+mvn -Pbenchmarks -pl tests-perf -am test
 ```
 
 Benchmarks are latency-sensitive: run them on an idle machine, ideally with CPU isolation — the
 measuring threads pin themselves to the isolated CPUs through `collections-affinity`.
+
+The API of the published modules against the last release ([japicmp](https://github.com/siom79/japicmp)):
+a binary or source incompatible change fails the build unless it is listed in the excludes of the
+`api-check` profile; the report goes to `target/japicmp`.
+
+```bash
+mvn -Papi-check -DskipTests verify
+```
+
+The javadoc is strict: a broken reference or bad HTML fails the build.
 
 ### Contributing
 Exchange Collections is an open-source project and contributions are welcome!

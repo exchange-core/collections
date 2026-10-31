@@ -83,10 +83,13 @@ public interface IOrderBook<S extends ISymbolSpecification> extends StateHash {
     void validateInternalState();
 
     /**
-     * Search for all orders for specified user.<p>
-     * Slow, because order book do not maintain uid-to-order index.<p>
-     * Produces garbage.<p>
-     * Orders must be processed before doing any other mutable call.<p>
+     * Search for all orders for specified user.
+     * <p>
+     * Slow, because order book do not maintain uid-to-order index.
+     * <p>
+     * Produces garbage.
+     * <p>
+     * Orders must be processed before doing any other mutable call.
      *
      * @param uid user id
      * @return list of orders
