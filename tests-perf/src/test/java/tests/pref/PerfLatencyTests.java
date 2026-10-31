@@ -646,7 +646,7 @@ public class PerfLatencyTests {
             final long putNs = System.nanoTime() - startTimeNs;
             histogramPut.recordValue(putNs);
             if (putNs > 300_000) {
-                log.debug("{} key:{} {}us", hashtable.size(Integer.MAX_VALUE), key, putNs / 1000);
+                log.debug("{} key:{} {}us", hashtable.size(), key, putNs / 1000);
             }
         }
 

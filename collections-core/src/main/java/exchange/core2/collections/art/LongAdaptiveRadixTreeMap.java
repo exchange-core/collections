@@ -27,26 +27,16 @@ import java.util.function.Function;
 import java.util.function.LongFunction;
 
 /**
- * Adaptive Radix Tree (ART) Java implementation
+ * A sorted map of {@code long} keys to object values: an Adaptive Radix Tree (V. Leis, A. Kemper, T. Neumann,
+ * "The Adaptive Radix Tree: ARTful Indexing for Main-Memory Databases", https://db.in.tum.de/~leis/papers/ART.pdf).
  * <p>
- * based on original paper:
+ * The keys are ordered as signed longs, as in {@code TreeMap<Long, V>}. Values must not be null: a missing key reads
+ * as null. A lookup, put or removal walks at most the 8 bytes of the key and never rebalances or rehashes; the nodes
+ * come from an {@link ObjectsPool} and go back to it, so a map of a steady size does not allocate. Ordered walks: from
+ * the ends ({@link #forEach(LongObjConsumer, int)}), from a key ({@link #forEach(long, LongObjConsumer, int)}), step by
+ * step ({@link #cursor()}).
  * <p>
- * The Adaptive Radix Tree:
- * ARTful Indexing for Main-Memory Databases
- * <p>
- * Viktor Leis, Alfons Kemper, Thomas Neumann
- * Fakultat fur Informatik
- * Technische Universitat Munchen
- * Boltzmannstrae 3, D-85748 Garching
- * <p>
- * https://db.in.tum.de/~leis/papers/ART.pdf
- * <p>
- * Target operations:
- * - GET or (PUT + GET_LOWER/HIGHER) - placing/moving/bulkload order - often GET, more rare PUT ??cache
- * - REMOVE - cancel or move - last order in the bucket
- * - TRAVERSE from LOWER - filling L2 market data, in hot area (Node256 or Node48).
- * - REMOVE price during matching - !! can use RANGE removal operation - rare, but latency critical
- * - GET or PUT if not exists - inserting back own orders, very rare
+ * Not thread-safe.
  */
 public final class LongAdaptiveRadixTreeMap<V> {
 
@@ -78,10 +68,17 @@ public final class LongAdaptiveRadixTreeMap<V> {
     private boolean rememberPut;
     private ArtNode<V> lastPutNode;
 
+    /** the cursor of removeRange, created at its first call */
+    private Cursor<V> rangeCursor;
+
+    /**
+     * @param objectsPool where the nodes come from and go back to - one pool can serve several maps of the same thread
+     */
     public LongAdaptiveRadixTreeMap(ObjectsPool objectsPool) {
         this.objectsPool = objectsPool;
     }
 
+    /** A map with a pool of its own, of the sizes of {@link ObjectsPool#createDefaultTestPool()}. */
     public LongAdaptiveRadixTreeMap() {
         objectsPool = ObjectsPool.createDefaultTestPool();
     }
@@ -100,16 +97,20 @@ public final class LongAdaptiveRadixTreeMap<V> {
     }
 
     /**
-     * A recursion through the nodes. A loop over the levels (the node class told apart by instanceof, the child
-     * lookups inlined) was measured on rhel-lat: misses on 1M random keys -12%, but hits in a 20k-level order book
-     * +14-19% (patch kept outside the repository) - the recursion stays.
+     * @return the value of the key, or null if the key is absent
      */
     public V get(final long key) {
+        // A recursion through the nodes. A loop over the levels (the node class told apart by instanceof, the child
+        // lookups inlined) was measured on rhel-lat: misses on 1M random keys -12%, but hits in a 20k-level order book
+        // +14-19% (patch kept outside the repository) - the recursion stays.
         return root != null
                 ? root.getValue(flipSignBit(key), INITIAL_LEVEL)
                 : null;
     }
 
+    /**
+     * @return true if the key is present - the same as {@code get(key) != null}, a value is never null
+     */
     public boolean containsKey(final long key) {
         return get(key) != null;
     }
@@ -260,17 +261,27 @@ public final class LongAdaptiveRadixTreeMap<V> {
     }
 
     /**
-     * remove keys range
+     * Removes the keys from keyFromInclusive up to keyToExclusive - e.g. the stop orders up to a price. One removal per
+     * key, the cursor moves on from it: O(number of keys removed), each step a descent.
      *
-     * @param keyFromInclusive from key inclusive
-     * @param keyToExclusive   to key exclusive
+     * @return the number of keys removed; 0 if keyToExclusive is not above keyFromInclusive
      */
-    public void removeRange(final long keyFromInclusive, final long keyToExclusive) {
-        // TODO
-        throw new UnsupportedOperationException();
+    public int removeRange(final long keyFromInclusive, final long keyToExclusive) {
+        if (root == null || keyFromInclusive >= keyToExclusive) {
+            return 0;
+        }
+        // no user code runs in between, so the map can keep a cursor for it - nothing allocated per call
+        if (rangeCursor == null) {
+            rangeCursor = cursor();
+        }
+        final Cursor<V> c = rangeCursor;
+        int removed = 0;
+        for (boolean on = c.seekCeiling(keyFromInclusive); on && c.key() < keyToExclusive; on = c.isValid()) {
+            c.remove();
+            removed++;
+        }
+        return removed;
     }
-
-    // TODO moveToAnotherKey(long oldKey, long newKey) - throw exception if not found
 
     /**
      * @return the value of the closest key strictly above the key, or null if there is none
@@ -369,10 +380,20 @@ public final class LongAdaptiveRadixTreeMap<V> {
         return root != null ? remove(lastKey()) : null;
     }
 
+    /**
+     * Visits the lowest keys, ascending - e.g. the best asks for L2 market data.
+     *
+     * @return the number of keys visited, at most limit
+     */
     public int forEach(LongObjConsumer<V> consumer, int limit) {
         return root != null ? root.forEach(consumer, limit) : 0;
     }
 
+    /**
+     * Visits the highest keys, descending.
+     *
+     * @return the number of keys visited, at most limit
+     */
     public int forEachDesc(LongObjConsumer<V> consumer, int limit) {
         return root != null ? root.forEachDesc(consumer, limit) : 0;
     }
@@ -414,18 +435,27 @@ public final class LongAdaptiveRadixTreeMap<V> {
     /**
      * Same as {@code Math.min(size(), limit)}. The size used to be counted by walking the tree, the limit bounded
      * that walk - now the size is a counter.
+     *
+     * @deprecated use {@link #size()}
      */
+    @Deprecated
     public int size(int limit) {
         return Math.min(size, limit);
     }
 
     /**
-     * Materializes all entries - produces garbage, avoid on hot paths.
+     * A snapshot of all entries, ascending - allocates them all, for tests and diagnostics, not for hot paths.
      */
     public List<Map.Entry<Long, V>> entriesList() {
         return root != null ? root.entries() : Collections.emptyList();
     }
 
+    /**
+     * Diagnostics: checks the invariants of the tree (node sizes and order, occupancy bitmaps, the size counter) -
+     * O(number of nodes).
+     *
+     * @throws IllegalStateException if one does not hold
+     */
     public void validateInternalState() {
         if (previousValue != null || lastPutNode != null || rememberPut) {
             throw new IllegalStateException("previousValue / lastPutNode retained");
@@ -441,6 +471,9 @@ public final class LongAdaptiveRadixTreeMap<V> {
         }
     }
 
+    /**
+     * Diagnostics: the nodes of the tree as text - the format may change from version to version.
+     */
     public String printDiagram() {
         if (root != null) {
             return root.printDiagram("", INITIAL_LEVEL);
@@ -582,6 +615,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
             return top != null;
         }
 
+        /** at the lowest key; false if the map is empty */
         public boolean seekFirst() {
             start();
             if (map.root == null) {
@@ -591,6 +625,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
             return true;
         }
 
+        /** at the highest key; false if the map is empty */
         public boolean seekLast() {
             start();
             if (map.root == null) {
@@ -669,6 +704,10 @@ public final class LongAdaptiveRadixTreeMap<V> {
             return ascend(false);
         }
 
+        /**
+         * @return the key the cursor is at
+         * @throws NoSuchElementException if the cursor is not positioned
+         */
         public long key() {
             checkPosition();
             return topIsLeaf
@@ -676,6 +715,10 @@ public final class LongAdaptiveRadixTreeMap<V> {
                     : flipSignBit((topKey & -256L) | (topSlot & 0xFF));
         }
 
+        /**
+         * @return the value of the key the cursor is at
+         * @throws NoSuchElementException if the cursor is not positioned
+         */
         @SuppressWarnings("unchecked")
         public V value() {
             checkPosition();
@@ -763,6 +806,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
         }
     }
 
+    /** An entry of {@link #entriesList()} - a copy, not a view of the map. */
     public static final class Entry<V> implements Map.Entry<Long, V> {
 
         final long key;

@@ -26,7 +26,7 @@ import java.util.Map;
  * interface: a call on a node whose class the JIT can not predict (most of them - five classes meet at every
  * level) goes through the vtable, one indexed load, where an interface call searches the itable of the class.
  */
-public abstract class ArtNode<V> {
+abstract class ArtNode<V> {
 
     public abstract V getValue(long key, int level);
 

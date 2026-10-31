@@ -89,6 +89,42 @@ public class LongAdaptiveRadixTreeMapApiTest {
     }
 
     @Test
+    public void removeRangeShouldTakeTheKeysFromInclusiveToExclusive() {
+        assertThat(map.removeRange(Long.MIN_VALUE, Long.MAX_VALUE), is(0));
+        for (long key : new long[]{Long.MIN_VALUE, -300, -1, 0, 1, 255, 256, 300, Long.MAX_VALUE}) {
+            map.put(key, "v" + key);
+        }
+        assertThat(map.removeRange(5, 5), is(0));
+        assertThat(map.removeRange(10, -10), is(0));
+        assertThat(map.removeRange(-1, 256), is(4));        // -1, 0, 1, 255
+        assertThat(map.firstKey(), is(Long.MIN_VALUE));
+        assertThat(map.getHigherValue(-300), is("v256"));
+        assertThat(map.removeRange(Long.MIN_VALUE, Long.MAX_VALUE), is(4)); // the upper bound stays
+        assertThat(map.size(), is(1));
+        assertThat(map.firstKey(), is(Long.MAX_VALUE));
+        map.validateInternalState();
+    }
+
+    @Test
+    public void removeRangeShouldNotAllocate() {
+        for (int i = 0; i < 1000; i++) {
+            map.put(i * 3L, "v");
+        }
+        for (int i = 0; i < 20_000; i++) {
+            map.removeRange(10, 13);   // takes 12
+            map.put(12, "v");
+        }
+        final long allocated = allocatedBytes(() -> {
+            for (int i = 0; i < 10_000; i++) {
+                map.removeRange(10, 13);
+                map.put(12, "v");
+            }
+        });
+        assertTrue("allocated " + allocated + " bytes in 10000 calls", allocated < 10_000);
+        map.validateInternalState();
+    }
+
+    @Test
     public void endsOfAnEmptyMap() {
         assertThrows(NoSuchElementException.class, map::firstKey);
         assertThrows(NoSuchElementException.class, map::lastKey);

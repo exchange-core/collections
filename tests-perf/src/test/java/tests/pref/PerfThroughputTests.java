@@ -248,7 +248,7 @@ public class PerfThroughputTests {
         t = System.nanoTime();
         for (long key : keys) map.remove(key);
         long removNs = (System.nanoTime() - t) / keys.length;
-        return new SingleResult(map.size(Integer.MAX_VALUE), putNs, getNs, removNs, acc);
+        return new SingleResult(map.size(), putNs, getNs, removNs, acc);
     }
 
 

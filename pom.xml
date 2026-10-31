@@ -127,6 +127,12 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
                 <version>${maven.javadoc.plugin.version}</version>
+                <configuration>
+                    <!-- "missing" (no @param, @return or description) is left to the author; everything else -
+                         a broken reference, bad HTML, a wrong @param name - fails the build -->
+                    <doclint>all,-missing</doclint>
+                    <failOnWarnings>true</failOnWarnings>
+                </configuration>
                 <executions>
                     <execution>
                         <id>attach-javadocs</id>
@@ -190,6 +196,9 @@
         <maven.javadoc.plugin.version>3.12.0</maven.javadoc.plugin.version>
         <maven.jar.plugin.version>3.5.0</maven.jar.plugin.version>
         <maven.gpg.plugin.version>3.2.8</maven.gpg.plugin.version>
+        <japicmp.plugin.version>0.23.1</japicmp.plugin.version>
+        <!-- the last release: api-check compares the published modules with it -->
+        <api.baseline.version>0.6.0</api.baseline.version>
         <maven.deploy.plugin.version>3.1.4</maven.deploy.plugin.version>
     </properties>
 
@@ -417,9 +426,9 @@
             The trade-off is that the failure is late. To run the same check on demand:
                 mvn -DperformRelease=true clean verify
 
-            Floor is 17, set by agrona 2.x (Java 17 class files) in collections-orderbook.
-            collections-core has no compile-scope dependencies at all and would go as low as 9
-            (java.lang.ref.Cleaner, Thread.onSpinWait).
+            The level is 21, an LTS. The floor would be 17, set by agrona 2.x (Java 17 class files) in
+            collections-orderbook - collections-core has no compile-scope dependencies at all and would go
+            as low as 9 (java.lang.ref.Cleaner, Thread.onSpinWait) - but 17 is not targeted.
         -->
         <profile>
             <id>release-bytecode</id>
@@ -430,7 +439,7 @@
                 </property>
             </activation>
             <properties>
-                <published.compiler.release>17</published.compiler.release>
+                <published.compiler.release>21</published.compiler.release>
             </properties>
         </profile>
 
@@ -463,6 +472,79 @@
                                         <arg>loopback</arg>
                                     </gpgArguments>
                                 </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <!--
+            The API of the published modules against the last release (api.baseline.version):
+                mvn -Papi-check -DskipTests verify
+            Fails on any binary or source incompatible change that is not listed in the excludes - every break
+            since the release is deliberate and written down there. A module without a release (yet) is skipped.
+            After a release: the new version as the baseline, the excludes emptied. Report: target/japicmp.
+        -->
+        <profile>
+            <id>api-check</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.github.siom79.japicmp</groupId>
+                        <artifactId>japicmp-maven-plugin</artifactId>
+                        <version>${japicmp.plugin.version}</version>
+                        <configuration>
+                            <oldVersion>
+                                <dependency>
+                                    <groupId>${project.groupId}</groupId>
+                                    <artifactId>${project.artifactId}</artifactId>
+                                    <version>${api.baseline.version}</version>
+                                    <type>jar</type>
+                                </dependency>
+                            </oldVersion>
+                            <parameter>
+                                <onlyModified>true</onlyModified>
+                                <ignoreMissingOldVersion>true</ignoreMissingOldVersion>
+                                <skipPomModules>true</skipPomModules>
+                                <breakBuildOnBinaryIncompatibleModifications>true</breakBuildOnBinaryIncompatibleModifications>
+                                <breakBuildOnSourceIncompatibleModifications>true</breakBuildOnSourceIncompatibleModifications>
+                                <!-- the breaks accepted since 0.6.0, see RELEASE_NOTES "Unreleased" -->
+                                <excludes>
+                                    <!-- ART: the nodes are internal, IArtNode is gone -->
+                                    <exclude>exchange.core2.collections.art.IArtNode</exclude>
+                                    <exclude>exchange.core2.collections.art.ArtNode4</exclude>
+                                    <exclude>exchange.core2.collections.art.ArtNode16</exclude>
+                                    <exclude>exchange.core2.collections.art.ArtNode48</exclude>
+                                    <exclude>exchange.core2.collections.art.ArtNode256</exclude>
+                                    <!-- ART: put / remove / removeRange return a value; getOrInsert (a stub) is gone -->
+                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#put(long,java.lang.Object)</exclude>
+                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#remove(long)</exclude>
+                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#removeRange(long,long)</exclude>
+                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#getOrInsert(long,java.util.function.Supplier)</exclude>
+                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#getOrInsertFromNode(exchange.core2.collections.art.IArtNode,java.util.function.Supplier)</exclude>
+                                    <!-- hashtables: the internals hidden or removed, LongLongRadixHashtable removed -->
+                                    <exclude>exchange.core2.collections.hashtable.HashingUtils</exclude>
+                                    <exclude>exchange.core2.collections.hashtable.HashtableAsync2Resizer</exclude>
+                                    <exclude>exchange.core2.collections.hashtable.HashtableAsyncResizer</exclude>
+                                    <exclude>exchange.core2.collections.hashtable.HashtableResizer</exclude>
+                                    <exclude>exchange.core2.collections.hashtable.LongLongRadixHashtable</exclude>
+                                    <!-- hashtables: the tables are final, their constructors replaced by builders - a class-level
+                                         change, so the whole classes stay unchecked until the next release -->
+                                    <exclude>exchange.core2.collections.hashtable.LongLongHashtable</exclude>
+                                    <exclude>exchange.core2.collections.hashtable.LongLongLL2Hashtable</exclude>
+                                    <!-- hashtables: new methods of the interface (an implementation outside has to add them) -->
+                                    <exclude>exchange.core2.collections.hashtable.ILongLongHashtable#capacity()</exclude>
+                                    <exclude>exchange.core2.collections.hashtable.ILongLongHashtable#ensureCapacity(int)</exclude>
+                                    <exclude>exchange.core2.collections.hashtable.ILongLongHashtable#missingValue()</exclude>
+                                </excludes>
+                            </parameter>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>cmp</goal>
+                                </goals>
                             </execution>
                         </executions>
                     </plugin>

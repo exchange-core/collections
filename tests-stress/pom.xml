@@ -15,6 +15,7 @@
     <properties>
         <!-- internal module: never goes to Maven Central -->
         <maven.deploy.skip>true</maven.deploy.skip>
+        <japicmp.skip>true</japicmp.skip>
         <!-- central-publishing-maven-plugin REPLACES maven-deploy-plugin, so it needs
              its own flag: maven.deploy.skip alone does not stop it -->
         <skipPublishing>true</skipPublishing>

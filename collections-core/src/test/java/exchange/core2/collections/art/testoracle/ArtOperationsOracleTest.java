@@ -89,6 +89,16 @@ public class ArtOperationsOracleTest {
             } else if (op == 16 && r.nextInt(100) == 0) {
                 oracle.clear();
                 tested.clear();
+            } else if (op == 17) {
+                // mostly a few keys around the key, now and then a wide or an empty range
+                final long span = r.nextInt(10) == 0 ? r.nextLong() >>> 1 : r.nextInt(300) - 20;
+                final long to = key > Long.MAX_VALUE - span ? Long.MAX_VALUE : key + span;
+                final Map<Long, String> range = key < to ? oracle.subMap(key, true, to, false) : Map.of();
+                final int expected = range.size();
+                if (key < to) {
+                    range.clear();
+                }
+                assertEquals(step + ": removeRange to " + to, expected, tested.removeRange(key, to));
             } else {
                 assertEquals(step + ": get", oracle.get(key), tested.get(key));
                 assertEquals(step + ": getCeilingValue", valueOf(oracle.ceilingEntry(key)), tested.getCeilingValue(key));
