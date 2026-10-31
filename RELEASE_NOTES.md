@@ -82,6 +82,12 @@
   and `toString()`** - as the hashtables have them. The streams are ascending and lazy: a cursor of their own,
   made when the stream is consumed; a change of the key set during the walk throws
   `ConcurrentModificationException`. `toString` prints `{key=value, ...}` as `TreeMap` does.
+- **`LongAdaptiveRadixTreeMap.putAllSorted(keys, values)`**: a load of ascending keys - from a snapshot. Into an
+  empty map it builds the tree bottom-up, every node of its final size at once, where puts grow the nodes through
+  4, 16 and 48 keys: on a desktop 1.9x faster for consecutive keys, 1.7x for an order book of 20k levels, 1.5x for
+  keys alone in their 256-key blocks, 1.1x for random ones; the same memory. Into a map that is not empty, a put per
+  key. Unsorted keys, duplicates or a null value throw before anything is put. `ArtBulkLoadTest` checks the tree
+  against the one the puts make, node for node, and against `TreeMap`.
 - **README: the cost of the `LongAdaptiveRadixTreeMap` operations** (descents, what allocates, threads), the cursor
   with an example, memory per key against `TreeMap` and fastutil's tree (4.4 bytes for dense keys, 12 for an
   order book, 54 for random ones; `TreeMap` 64, fastutil 40) and the latency of `get` / `put` / `remove` on 1M

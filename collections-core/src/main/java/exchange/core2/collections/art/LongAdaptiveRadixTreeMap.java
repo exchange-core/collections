@@ -217,6 +217,98 @@ public final class LongAdaptiveRadixTreeMap<V> {
     }
 
     /**
+     * Puts the keys with their values - a load from a snapshot. Into an empty map it builds the tree bottom-up, every
+     * node of its final size at once: no node grows through the smaller ones (4, 16, 48 keys) as puts make it, none
+     * is copied. Into a map that is not empty it puts them one by one.
+     *
+     * @param keys   ascending, without duplicates
+     * @param values not null, as many as the keys
+     * @throws IllegalArgumentException if the keys are not ascending or there are not as many values - the map is
+     *                                  not changed then
+     * @throws NullPointerException     if a value is null - the map is not changed then
+     */
+    public void putAllSorted(final long[] keys, final V[] values) {
+        if (keys.length != values.length) {
+            throw new IllegalArgumentException(keys.length + " keys, but " + values.length + " values");
+        }
+        for (int i = 0; i < keys.length; i++) {
+            if (values[i] == null) {
+                throw new NullPointerException("values[" + i + "]");
+            }
+            if (i > 0 && keys[i] <= keys[i - 1]) {
+                throw new IllegalArgumentException("keys not ascending: keys[" + (i - 1) + "] = " + keys[i - 1]
+                        + ", keys[" + i + "] = " + keys[i]);
+            }
+        }
+        if (keys.length == 0) {
+            return;
+        }
+        if (root != null) {
+            for (int i = 0; i < keys.length; i++) {
+                put(keys[i], values[i]);
+            }
+            return;
+        }
+        root = buildSubtree(keys, values, 0, keys.length);
+        size = keys.length;
+        modCount++;
+    }
+
+    /**
+     * The subtree of keys[from, to) - in the internal order (the sign bit flipped) the keys stay ascending, so the
+     * children of a node are runs of keys with the same byte at its level.
+     */
+    private ArtNode<V> buildSubtree(final long[] keys, final V[] values, final int from, final int to) {
+        final long first = flipSignBit(keys[from]);
+        if (to - from == 1) {
+            return ArtLeaf.create(objectsPool, first, values[from]);
+        }
+        // the highest byte where the keys differ - the first and the last one differ there the most
+        final int level = (63 - Long.numberOfLeadingZeros(first ^ flipSignBit(keys[to - 1]))) & 0xF8;
+        int children = 1;
+        for (int i = from + 1; i < to; i++) {
+            if (keyByte(keys[i], level) != keyByte(keys[i - 1], level)) {
+                children++;
+            }
+        }
+
+        final ArtNode<V> node;
+        if (children <= 4) {
+            final ArtNode4<V> n = objectsPool.get(ObjectsPool.ART_NODE_4, ArtNode4::new);
+            n.initForAppend(first, level);
+            node = n;
+        } else if (children <= 16) {
+            final ArtNode16<V> n = objectsPool.get(ObjectsPool.ART_NODE_16, ArtNode16::new);
+            n.initForAppend(first, level);
+            node = n;
+        } else if (children <= 48) {
+            final ArtNode48<V> n = objectsPool.get(ObjectsPool.ART_NODE_48, ArtNode48::new);
+            n.initForAppend(first, level);
+            node = n;
+        } else {
+            final ArtNode256<V> n = objectsPool.get(ObjectsPool.ART_NODE_256, ArtNode256::new);
+            n.initForAppend(first, level);
+            node = n;
+        }
+
+        int run = from;
+        for (int i = from + 1; i <= to; i++) {
+            if (i == to || keyByte(keys[i], level) != keyByte(keys[run], level)) {
+                // at level 0 a run is a single key: the node holds its value
+                node.append(keyByte(keys[run], level),
+                        level == 0 ? values[run] : buildSubtree(keys, values, run, i));
+                run = i;
+            }
+        }
+        return node;
+    }
+
+    /** the byte of the internal key at the level */
+    private static int keyByte(final long key, final int level) {
+        return (int) ((flipSignBit(key) >>> level) & 0xFF);
+    }
+
+    /**
      * Puts the value only if the key is absent. Two descents when it is absent (a get and a put).
      *
      * @return the existing value, or null if the key was absent and the value has been put

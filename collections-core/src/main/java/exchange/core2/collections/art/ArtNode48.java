@@ -56,6 +56,26 @@ final class ArtNode48<V> extends ArtNode<V> {
         this.objectsPool = objectsPool;
     }
 
+    /** bulk load: an empty node for 17-48 children, see append */
+    void initForAppend(final long nodeKey, final int nodeLevel) {
+        this.nodeKey = nodeKey;
+        this.nodeLevel = nodeLevel;
+        // a new node has zeros in indexes, one that has grown into a 256 keeps its old bitmap
+        Arrays.fill(indexes, (byte) -1);
+        Arrays.fill(occupied, 0);
+        this.freeBitMask = 0;
+        this.numChildren = 0;
+    }
+
+    @Override
+    void append(final int keyByte, final Object child) {
+        indexes[keyByte] = numChildren;
+        nodes[numChildren] = child;
+        setOccupied(keyByte);
+        freeBitMask |= 1L << numChildren;
+        numChildren++;
+    }
+
     void initFromNode16(ArtNode16<V> node16, short subKey, Object newElement) {
 
         final byte sourceSize = 16;

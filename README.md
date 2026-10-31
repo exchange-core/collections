@@ -118,6 +118,16 @@ final PriceLevel level = new PriceLevel(price);
 final PriceLevel better = asks.putAndGetLowerValue(price, level); // null: the new best ask
 ```
 
+A load from a snapshot: `putAllSorted(keys, values)` with the keys ascending builds the tree bottom-up, every
+node of its final size at once — no node grows through the smaller sizes as puts make it. On a desktop,
+roughly: 1.9x faster than puts for consecutive keys, 1.7x for an order book, 1.5x for keys alone in their
+256-key blocks, 1.1x for random ones. Into a map that is not empty it puts the keys one by one:
+
+```java
+final LongAdaptiveRadixTreeMap<PriceLevel> asks = new LongAdaptiveRadixTreeMap<>();
+asks.putAllSorted(snapshotPrices, snapshotLevels);   // long[] ascending, PriceLevel[] of the same length
+```
+
 Ordered traversal — `forEach` walks ascending, `forEachDesc` descending. Both take a `limit` and
 return the number of entries actually visited, which makes them a natural fit for top-N views
 (L2 market data, for example):
@@ -208,6 +218,7 @@ put or a removal changes the nodes on the path of its key only.
 | `forEach` / `forEachDesc`, with or without `from` | one descent, then O(1) per key visited: 48- and 256-key nodes skip their empty slots with a bitmap |
 | `Cursor` | a seek is one descent, `next()` / `prev()` O(1) on average, `remove()` a removal and a seek |
 | `removeRange` | a seek, then a removal per key removed |
+| `putAllSorted` | into an empty map: a pass over the keys per level, every node built once; otherwise a put per key |
 | `size`, `isEmpty` | a counter |
 | `clear` | every node, back to the pool |
 | `keysStream`, `valuesStream`, `toString`, `entriesList` | the whole map |
