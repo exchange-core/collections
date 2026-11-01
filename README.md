@@ -20,7 +20,7 @@ and designed for low-latency, single-threaded hot paths.
 
 ### Requirements
 
-- **To use the published artifacts:** Java 26+ (0.6.0). The next release drops the published
+- **To use the published artifacts:** Java 26+ (0.6.0). The next release, 0.7.0, drops the published
   bytecode level to Java 21; `collections-affinity` (new) needs Java 22+, as it uses the Foreign
   Function and Memory API.
 - **To build from source:** JDK 26 and Maven 3.9+ — the benchmark and stress modules use newer
