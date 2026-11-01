@@ -344,6 +344,86 @@ public class LongAdaptiveRadixTreeMapApiTest {
         assertThat(map.valuesStream().distinct().collect(Collectors.toList()), is(List.of("d")));
     }
 
+    /** the limit used to reach the nodes as it was: a 4- or 16-key root of the last level returned it */
+    @Test
+    public void walksShouldVisitNothingForALimitOfZeroOrLess() {
+        final LongObjConsumer<String> fail = (k, v) -> {
+            throw new AssertionError("visited " + k);
+        };
+        // empty, a leaf, a 4-, 16- and 256-key node of the last level, a tree of inner nodes
+        for (final int keys : new int[]{0, 1, 3, 10, 100, 2000}) {
+            map.clear();
+            for (int i = 0; i < keys; i++) {
+                map.put(keys == 2000 ? i * 1000L : i, "v");
+            }
+            for (final int limit : new int[]{0, -1, Integer.MIN_VALUE}) {
+                final String shape = keys + " keys, limit " + limit;
+                assertThat(shape, map.forEach(fail, limit), is(0));
+                assertThat(shape, map.forEachDesc(fail, limit), is(0));
+                assertThat(shape, map.forEach(0, fail, limit), is(0));
+                assertThat(shape, map.forEachDesc(Long.MAX_VALUE, fail, limit), is(0));
+            }
+        }
+    }
+
+    @Test
+    public void walksShouldFailFastWhenTheConsumerChangesTheKeySet() {
+        for (int i = 0; i < 100; i++) {
+            map.put(i, "a");
+        }
+        final List<LongObjConsumer<String>> changes = List.of(
+                (k, v) -> map.put(k + 1000, "new"),
+                (k, v) -> map.remove(k),
+                (k, v) -> map.clear());
+        for (final LongObjConsumer<String> change : changes) {
+            assertThrows(ConcurrentModificationException.class, () -> map.forEach(change, 3));
+            refill();
+            assertThrows(ConcurrentModificationException.class, () -> map.forEachDesc(change, 3));
+            refill();
+            assertThrows(ConcurrentModificationException.class, () -> map.forEach(50, change, 3));
+            refill();
+            assertThrows(ConcurrentModificationException.class, () -> map.forEachDesc(50, change, 3));
+            refill();
+            assertThrows(ConcurrentModificationException.class, () -> map.forEach(change));
+            refill();
+        }
+
+        // value updates are not changes of the key set
+        map.forEach((k, v) -> map.put(k, "b"));
+        map.forEachDesc((k, v) -> map.put(k, "c"), 10);
+        assertThat(map.get(0), is("b"));
+        assertThat(map.get(99), is("c"));
+        map.validateInternalState();
+    }
+
+    /** back to the keys 0..99 after a walk that changed them */
+    private void refill() {
+        map.clear();
+        for (int i = 0; i < 100; i++) {
+            map.put(i, "a");
+        }
+    }
+
+    @Test
+    public void computeIfAbsentShouldRejectAFunctionThatChangesTheKeySet() {
+        map.put(1, "a");
+        assertThrows(ConcurrentModificationException.class, () -> map.computeIfAbsent(2, k -> {
+            map.put(3, "c");
+            return "b";
+        }));
+        assertNull("nothing put", map.get(2));
+        assertThat("the change of the function stays", map.get(3), is("c"));
+
+        // a value update is not a change of the key set; the key the function returns for is put
+        assertThat(map.computeIfAbsent(4, k -> {
+            map.put(1, "a2");
+            return "d";
+        }), is("d"));
+        assertThat(map.get(1), is("a2"));
+        assertThat(map.size(), is(3));
+        map.validateInternalState();
+    }
+
     @Test
     public void getOrDefaultShouldTellAMissingKey() {
         map.put(5, "a");

@@ -20,7 +20,7 @@ and designed for low-latency, single-threaded hot paths.
 
 ### Requirements
 
-- **To use the published artifacts:** Java 26+ (0.6.0). The next release drops the published
+- **To use the published artifacts:** Java 26+ (0.6.0). The next release, 0.7.0, drops the published
   bytecode level to Java 21; `collections-affinity` (new) needs Java 22+, as it uses the Foreign
   Function and Memory API.
 - **To build from source:** JDK 26 and Maven 3.9+ — the benchmark and stress modules use newer
@@ -74,9 +74,10 @@ mvn clean install
 
 ### LongAdaptiveRadixTreeMap
 
-An [Adaptive Radix Tree](https://db.in.tum.de/~leis/papers/ART.pdf) map: a sorted `long` → object map
-that behaves like `TreeMap<Long, V>`, but never re-balances and never re-hashes, so there are no
-latency spikes caused by insertion.
+An [Adaptive Radix Tree](https://db.in.tum.de/~leis/papers/ART.pdf) map: a sorted `long` → object map,
+ordered as `TreeMap<Long, V>`, with an API of its own — primitive keys, no null values, not a
+`java.util.Map`. It never rebalances and never resizes as a whole: a put or a removal changes the nodes
+on the path of its key, and allocates only when the pool has no free node of the size it takes.
 
 **Features**
 - keys are kept in **signed** ascending order (same order as `TreeMap<Long, V>`)
@@ -194,6 +195,9 @@ final ObjectsPool pool = new ObjectsPool(config);
 
 **Notes**
 - values must not be null: a missing key reads as null, so `put(key, null)` throws `NullPointerException`
+- the consumer of `forEach` / `forEachDesc` and the function of `computeIfAbsent` must not change the key set
+  (updating the value of a present key is fine): a walk throws `ConcurrentModificationException` once it is
+  over, `computeIfAbsent` right after the function, putting nothing; `limit` 0 or less visits nothing
 - `removeRange(from, toExclusive)` removes a range of keys (e.g. the stop orders up to a price) and returns how
   many
 - `validateInternalState()`, `printDiagram()` and `entriesList()` are diagnostics: O(n), the diagram format may change

@@ -1,6 +1,18 @@
 # Release notes
 
-## Unreleased
+## 0.7.0 (unreleased)
+
+The API changes since 0.6.0, hence 0.7.0 - each is described below, in short:
+
+- `LongAdaptiveRadixTreeMap`: `put` / `remove` return the previous / removed value (recompile);
+  `getHigherValue` / `getLowerValue` are `higherValue` / `lowerValue`; `size(limit)` is gone -
+  `Math.min(size(), limit)`; `getOrInsert` is gone - `computeIfAbsent`; the nodes and `IArtNode` are not public;
+  the consumer of a walk and the function of `computeIfAbsent` must not change the key set.
+- Hashtables: `LongLongHashtable` and `LongLongLL2Hashtable` are `final`, the constructors with a missing value
+  are replaced by builders; `LongLongLL2Hashtable` takes a `MigrationService` instead of an executor;
+  `ILongLongHashtable` has new abstract methods (`capacity()`, `ensureCapacity(int)`, `missingValue()`); the
+  internals (`HashingUtils`, the resizers), `LongLongRadixHashtable`, `extractMatching`, `remove(key, hash)` and
+  `printLayout()` are gone.
 
 ### Added
 
@@ -141,6 +153,9 @@
 
 ### Fixed
 
+- **`LongAdaptiveRadixTreeMap.forEach(consumer, limit)` with a negative limit returned the limit** when the root
+  was a 4- or 16-key node of the last level, 0 otherwise. All the walks now visit nothing for a limit of 0 or less
+  and return 0.
 - **`remove(0)` corrupted the size** of `LongLongHashtable` and `LongLongLL2Hashtable`. Key `0` marks
   empty slots, and `hash(0)` is `0`: when slot 0 was empty, the removal took it for the key and
   decremented the size, without removing anything. A negative size never reaches the resize threshold,
@@ -243,6 +258,12 @@
 
 ### Changed
 
+- **`LongAdaptiveRadixTreeMap`: the consumer of a walk and the function of `computeIfAbsent` must not change the key
+  set of the map** (put a new key, remove one, clear) - updating the value of a present key is fine. A walk that
+  was changed under it skipped keys or handed out removed ones; now it throws `ConcurrentModificationException`
+  once it is over (the walk does not check per key, it costs nothing there). `computeIfAbsent` throws it right
+  after the function and puts nothing - it is two descents for now, and a function that changed the map would not
+  survive one. As `HashMap` and `TreeMap` do.
 - **`LongLongHashtable` and `LongLongLL2Hashtable` are `final`.**
 - **Hashtables: any key, and a configurable value for missing keys** (breaking). Key `0` can be stored - it
   still marks the empty slots, so its entry is kept in two fields of the table; `put(0, v)` no longer throws.
