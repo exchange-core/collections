@@ -243,6 +243,12 @@
 
 ### Changed
 
+- **`LongAdaptiveRadixTreeMap`: the consumer of a walk and the function of `computeIfAbsent` must not change the key
+  set of the map** (put a new key, remove one, clear) - updating the value of a present key is fine. A walk that
+  was changed under it skipped keys or handed out removed ones; now it throws `ConcurrentModificationException`
+  once it is over (the walk does not check per key, it costs nothing there). `computeIfAbsent` throws it right
+  after the function and puts nothing - it is two descents for now, and a function that changed the map would not
+  survive one. As `HashMap` and `TreeMap` do.
 - **`LongLongHashtable` and `LongLongLL2Hashtable` are `final`.**
 - **Hashtables: any key, and a configurable value for missing keys** (breaking). Key `0` can be stored - it
   still marks the empty slots, so its entry is kept in two fields of the table; `put(0, v)` no longer throws.

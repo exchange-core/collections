@@ -37,9 +37,10 @@ import java.util.stream.StreamSupport;
  * A sorted map of {@code long} keys to object values: an Adaptive Radix Tree (V. Leis, A. Kemper, T. Neumann,
  * "The Adaptive Radix Tree: ARTful Indexing for Main-Memory Databases", https://db.in.tum.de/~leis/papers/ART.pdf).
  * <p>
- * The keys are ordered as signed longs, as in {@code TreeMap<Long, V>}. Values must not be null: a missing key reads
- * as null. A lookup, put or removal walks at most the 8 bytes of the key and never rebalances or rehashes; the nodes
- * come from an {@link ObjectsPool} and go back to it, so a map of a steady size does not allocate. Ordered walks: from
+ * The keys are ordered as signed longs, as in {@code TreeMap<Long, V>}; the API is its own, not {@code java.util.Map}.
+ * Values must not be null: a missing key reads as null. A lookup, put or removal walks at most the 8 bytes of the key
+ * and never rebalances or rehashes; the nodes come from an {@link ObjectsPool} and go back to it, so a map of a steady
+ * size does not allocate - a put allocates a node only when the pool has none of that size. Ordered walks: from
  * the ends ({@link #forEach(LongObjConsumer, int)}), from a key ({@link #forEach(long, LongObjConsumer, int)}), step by
  * step ({@link #cursor()}), as streams ({@link #keysStream()}, {@link #valuesStream()}).
  * <p>
@@ -154,7 +155,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
      * A radix tree walks keys byte by byte, so it inevitably orders them as UNSIGNED - which puts
      * every negative key after every positive one. Flipping the sign bit maps the signed order onto
      * the unsigned one (it is an order-isomorphism), so the nodes can keep working with plain
-     * unsigned bytes while the public API behaves like {@code TreeMap<Long, V>}.
+     * unsigned bytes while the public API orders the keys as {@code TreeMap<Long, V>} does.
      * <p>
      * The conversion is its own inverse, hence one method used in both directions - also by the nodes,
      * which hand out map keys in forEach and entries.
@@ -324,16 +325,22 @@ public final class LongAdaptiveRadixTreeMap<V> {
 
     /**
      * Returns the value of the key, creating it if absent. The function is called only for an absent key; if it
-     * returns null, nothing is put. Two descents when the key is absent (a get and a put).
+     * returns null, nothing is put. Two descents when the key is absent (a get and a put) - for now: the function
+     * must not change the key set of the map, so that they can become one.
      *
      * @return the existing or the created value, null if the function returned null
+     * @throws ConcurrentModificationException if the function changed the key set - nothing is put then
      */
     public V computeIfAbsent(final long key, final LongFunction<? extends V> mappingFunction) {
         final V existing = get(key);
         if (existing != null) {
             return existing;
         }
+        final int expectedModCount = modCount;
         final V created = mappingFunction.apply(key);
+        if (modCount != expectedModCount) {
+            throw new ConcurrentModificationException("the mapping function changed the key set");
+        }
         if (created != null) {
             put(key, created);
         }
@@ -548,7 +555,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
     }
 
     /**
-     * Visits all keys, ascending - allocation-free, as {@link #forEach(LongObjConsumer, int)}.
+     * Visits all keys, ascending - allocation-free; the consumer as in {@link #forEach(LongObjConsumer, int)}.
      */
     public void forEach(final LongObjConsumer<V> consumer) {
         forEach(consumer, Integer.MAX_VALUE);
@@ -556,43 +563,71 @@ public final class LongAdaptiveRadixTreeMap<V> {
 
     /**
      * Visits the lowest keys, ascending - e.g. the best asks for L2 market data.
+     * <p>
+     * The consumer must not change the key set of the map (put a new key, remove one, clear): the walk would skip
+     * keys or hand out ones that are gone. Such a change throws ConcurrentModificationException once the walk is
+     * over - the walk itself does not check, it costs nothing per key. Updating the value of a present key is not a
+     * change of the key set. The same for all the walks.
      *
+     * @param limit at most that many keys; 0 or less - none
      * @return the number of keys visited, at most limit
      */
-    public int forEach(LongObjConsumer<V> consumer, int limit) {
-        return root != null ? root.forEach(consumer, limit) : 0;
+    public int forEach(final LongObjConsumer<V> consumer, final int limit) {
+        if (root == null || limit <= 0) {
+            return 0;
+        }
+        final int expectedModCount = modCount;
+        return walked(root.forEach(consumer, limit), expectedModCount);
     }
 
     /**
-     * Visits the highest keys, descending.
+     * Visits the highest keys, descending; the consumer and the limit as in {@link #forEach(LongObjConsumer, int)}.
      *
      * @return the number of keys visited, at most limit
      */
-    public int forEachDesc(LongObjConsumer<V> consumer, int limit) {
-        return root != null ? root.forEachDesc(consumer, limit) : 0;
+    public int forEachDesc(final LongObjConsumer<V> consumer, final int limit) {
+        if (root == null || limit <= 0) {
+            return 0;
+        }
+        final int expectedModCount = modCount;
+        return walked(root.forEachDesc(consumer, limit), expectedModCount);
     }
 
     /**
      * Visits the keys from fromInclusive up, ascending - an L2 snapshot from a price. One descent to the key, then the
-     * subtrees above it are walked as {@link #forEach(LongObjConsumer, int)} does.
+     * subtrees above it are walked as {@link #forEach(LongObjConsumer, int)} does; the consumer and the limit as there.
      *
      * @return the number of keys visited, at most limit
      */
     public int forEach(final long fromInclusive, final LongObjConsumer<V> consumer, final int limit) {
-        return root != null && limit > 0
-                ? root.forEachFrom(flipSignBit(fromInclusive), INITIAL_LEVEL, consumer, limit)
-                : 0;
+        if (root == null || limit <= 0) {
+            return 0;
+        }
+        final int expectedModCount = modCount;
+        return walked(root.forEachFrom(flipSignBit(fromInclusive), INITIAL_LEVEL, consumer, limit), expectedModCount);
     }
 
     /**
-     * Visits the keys from fromInclusive down, descending.
+     * Visits the keys from fromInclusive down, descending; the consumer and the limit as in
+     * {@link #forEach(LongObjConsumer, int)}.
      *
      * @return the number of keys visited, at most limit
      */
     public int forEachDesc(final long fromInclusive, final LongObjConsumer<V> consumer, final int limit) {
-        return root != null && limit > 0
-                ? root.forEachDescFrom(flipSignBit(fromInclusive), INITIAL_LEVEL, consumer, limit)
-                : 0;
+        if (root == null || limit <= 0) {
+            return 0;
+        }
+        final int expectedModCount = modCount;
+        return walked(root.forEachDescFrom(flipSignBit(fromInclusive), INITIAL_LEVEL, consumer, limit),
+                expectedModCount);
+    }
+
+    /** the end of a walk: the consumer has not changed the key set, or the walk was wrong */
+    private int walked(final int visited, final int expectedModCount) {
+        if (modCount != expectedModCount) {
+            throw new ConcurrentModificationException("the consumer changed the key set during the walk");
+        }
+        return visited;
     }
 
     /**
