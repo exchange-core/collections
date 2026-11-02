@@ -90,7 +90,7 @@ public final class LongAdaptiveRadixTreeMap<V> {
      * @param objectsPool where the nodes come from and go back to - one pool can serve several maps of the same thread
      */
     public LongAdaptiveRadixTreeMap(ObjectsPool objectsPool) {
-        this.objectsPool = objectsPool;
+        this.objectsPool = Objects.requireNonNull(objectsPool, "objectsPool");
     }
 
     /** A map with a pool of its own, of the default capacity - see {@link Builder#poolCapacity(int)}. */
@@ -895,10 +895,16 @@ public final class LongAdaptiveRadixTreeMap<V> {
 
         Cursor(final LongAdaptiveRadixTreeMap<V> map) {
             this.map = map;
+            this.expectedModCount = map.modCount;
         }
 
-        /** @return true if the cursor is at a key */
+        /**
+         * @return true if the cursor is at a key
+         * @throws ConcurrentModificationException after a change of the key set, as the other calls: false would end a
+         *                                         loop over the cursor silently
+         */
         public boolean isValid() {
+            checkModCount();
             return top != null;
         }
 

@@ -307,6 +307,7 @@ public class LongAdaptiveRadixTreeMapApiTest {
         assertThrows(IllegalArgumentException.class, () -> LongAdaptiveRadixTreeMap.builder().poolCapacity(-1));
         assertThrows(IllegalArgumentException.class, () -> ObjectsPool.forArt(-1));
         assertThrows(NullPointerException.class, () -> LongAdaptiveRadixTreeMap.builder().sharedPool(null));
+        assertThrows(NullPointerException.class, () -> new LongAdaptiveRadixTreeMap<String>((ObjectsPool) null));
         assertThrows(IllegalStateException.class,
                 () -> LongAdaptiveRadixTreeMap.builder().poolCapacity(16).sharedPool(ObjectsPool.forArt(16)).build());
     }
