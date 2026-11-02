@@ -22,6 +22,7 @@ import java.util.ConcurrentModificationException;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.PrimitiveIterator;
@@ -37,8 +38,8 @@ import java.util.stream.StreamSupport;
  * A sorted map of {@code long} keys to object values: an Adaptive Radix Tree (V. Leis, A. Kemper, T. Neumann,
  * "The Adaptive Radix Tree: ARTful Indexing for Main-Memory Databases", https://db.in.tum.de/~leis/papers/ART.pdf).
  * <p>
- * The keys are ordered as signed longs, as in {@code TreeMap<Long, V>}; the API is its own, not {@code java.util.Map}.
- * Values must not be null: a missing key reads as null. A lookup, put or removal walks at most the 8 bytes of the key
+ * The keys are ordered as signed longs, as in {@code TreeMap<Long, V>}; the API is its own, not {@code java.util.Map} -
+ * {@link #asNavigableMap()} is a view of the map as one. Values must not be null: a missing key reads as null. A lookup, put or removal walks at most the 8 bytes of the key
  * and never rebalances or rehashes; the nodes come from an {@link ObjectsPool} and go back to it, so a map of a steady
  * size does not allocate - a put allocates a node only when the pool has none of that size. Ordered walks: from
  * the ends ({@link #forEach(LongObjConsumer, int)}), from a key ({@link #forEach(long, LongObjConsumer, int)}), step by
@@ -696,6 +697,21 @@ public final class LongAdaptiveRadixTreeMap<V> {
             };
             return Spliterators.spliterator(values, size, VALUES_STREAM);
         }, VALUES_STREAM, false);
+    }
+
+    /**
+     * This map as a {@code NavigableMap<Long, V>}, for code that takes a {@code java.util} map: a view, its reads and
+     * writes go to this map. Its sub-maps ({@code subMap}, {@code headMap}, {@code tailMap}), {@code descendingMap},
+     * key sets, entry set and values are views too, under the rules of {@code TreeMap}'s: a put out of the bounds of
+     * a sub-map throws IllegalArgumentException, the iterators fail fast and can remove, the entries of an iterator
+     * set the value in the map, the entries of {@code firstEntry()}, {@code ceilingEntry(key)} etc. are snapshots.
+     * <p>
+     * Not for the hot paths: every call boxes the keys, a navigation or an iterator allocates a cursor, an iterator its
+     * entries. The keys and the values are never null (NullPointerException). The size of a sub-map counts its keys,
+     * O(keys in it), as in TreeMap; of the whole map it is the counter.
+     */
+    public NavigableMap<Long, V> asNavigableMap() {
+        return new ArtNavigableMap<>(this);
     }
 
     /**

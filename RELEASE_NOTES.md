@@ -100,6 +100,11 @@ The API changes since 0.6.0, hence 0.7.0 - each is described below, in short:
   keys alone in their 256-key blocks, 1.1x for random ones; the same memory. Into a map that is not empty, a put per
   key. Unsorted keys, duplicates or a null value throw before anything is put. `ArtBulkLoadTest` checks the tree
   against the one the puts make, node for node, and against `TreeMap`.
+- **`LongAdaptiveRadixTreeMap.asNavigableMap()`**: the map as a `NavigableMap<Long, V>`, for code that takes a
+  `java.util` map - a view, its reads and writes go to the map. The sub-maps (`subMap` / `headMap` / `tailMap`,
+  inclusive or not), `descendingMap`, the key sets, the entry set and `values` are views too, with the bounds and
+  the checks of `TreeMap`'s; the iterators fail fast and remove, their entries set the value in the map. It boxes the
+  keys and allocates the entries - not for the hot paths.
 - **README: the cost of the `LongAdaptiveRadixTreeMap` operations** (descents, what allocates, threads), the cursor
   with an example, memory per key against `TreeMap` and fastutil's tree (4.4 bytes for dense keys, 12 for an
   order book, 54 for random ones; `TreeMap` 64, fastutil 40) and the latency of `get` / `put` / `remove` on 1M
@@ -409,6 +414,10 @@ The API changes since 0.6.0, hence 0.7.0 - each is described below, in short:
   breaks of this release are listed there.
 - **Strict javadoc**: doclint checks everything but missing comments, and a warning fails the build (it found an
   empty `<p>` in `IOrderBook`).
+- **The `java.util` contract of the ART view**: Guava's `NavigableMapTestSuiteBuilder` (`guava-testlib`, test scope)
+  runs some 64 thousand tests on `asNavigableMap()` and the views it derives, for keys far apart and next to each
+  other; `ArtNavigableMapOracleTest` builds random chains of views on it and on a `TreeMap` and compares every
+  result, the bounds at the ends of the long range included.
 
 ## 0.6.0
 
