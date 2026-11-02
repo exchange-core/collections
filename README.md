@@ -85,6 +85,7 @@ on the path of its key, and allocates only when the pool has no free node of the
 - internal nodes are recycled through `ObjectsPool` — low GC pressure
 - neighbour lookups (`higherValue` / `lowerValue`, `ceilingValue` / `floorValue`), first / last
   key and value, ordered traversal, a cursor, `keysStream()` / `valuesStream()`
+- a `NavigableMap<Long, V>` view for the code that takes a `java.util` map: `asNavigableMap()`
 
 ```java
 import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
@@ -164,6 +165,18 @@ the next call of the cursor throw `ConcurrentModificationException` (a seek star
 the value of a present key is not a change of the key set. For a run of keys from a key,
 `forEach(from, ...)` is faster than a cursor.
 
+For code that takes a `java.util` map — a report, a library, a test — `asNavigableMap()` is a view of the
+map as a `NavigableMap<Long, V>`: its reads and writes go to the map. Its sub-maps, `descendingMap`, key
+sets and iterators are views too, with the rules of `TreeMap`'s. It boxes every key and allocates the
+entries — not for hot paths:
+
+```java
+final NavigableMap<Long, PriceLevel> view = asks.asNavigableMap();
+view.headMap(price, true).size();     // the levels at or below a price - a sub-map counts its keys
+view.descendingMap().firstEntry();    // the highest level, a snapshot entry
+publish(view.tailMap(price, false));  // to the code that takes a SortedMap
+```
+
 The nodes come from a pool and go back to it, so a map of a steady size does not allocate. A map has a pool
 of its own (256 free leaves and 4-key nodes, fewer of the bigger ones) - of another size, or shared by the maps
 of one thread:
@@ -200,6 +213,8 @@ final ObjectsPool pool = new ObjectsPool(config);
   over, `computeIfAbsent` right after the function, putting nothing; `limit` 0 or less visits nothing
 - `removeRange(from, toExclusive)` removes a range of keys (e.g. the stop orders up to a price) and returns how
   many
+- `asNavigableMap()`: a null key or value throws `NullPointerException`, a put out of the bounds of a sub-map
+  `IllegalArgumentException`; the size of a sub-map is O(keys in it), as in `TreeMap`, of the whole map O(1)
 - `validateInternalState()`, `printDiagram()` and `entriesList()` are diagnostics: O(n), the diagram format may change
 
 **Threads.** Not thread-safe, neither is `ObjectsPool`: a map is used by one thread at a time, a pool is

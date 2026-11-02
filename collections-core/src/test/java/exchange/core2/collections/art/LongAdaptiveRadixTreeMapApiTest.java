@@ -9,6 +9,7 @@ import java.util.AbstractMap;
 import java.util.ConcurrentModificationException;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -421,6 +422,38 @@ public class LongAdaptiveRadixTreeMapApiTest {
         }), is("d"));
         assertThat(map.get(1), is("a2"));
         assertThat(map.size(), is(3));
+        map.validateInternalState();
+    }
+
+    /** the java.util contract itself: ArtNavigableMapGuavaSuiteTest; against TreeMap: testoracle.ArtNavigableMapOracleTest */
+    @Test
+    public void asNavigableMapShouldBeAViewOfTheMap() {
+        final NavigableMap<Long, String> view = map.asNavigableMap();
+        map.put(5, "a");
+        assertThat(view.get(5L), is("a"));
+        assertNull(view.put(7L, "b"));
+        assertThat(map.get(7), is("b"));
+
+        final NavigableMap<Long, String> head = view.headMap(7L, false);
+        assertThat(head.toString(), is("{5=a}"));
+        assertThrows(IllegalArgumentException.class, () -> head.put(7L, "c"));
+        map.put(6, "c");
+        assertThat(head.toString(), is("{5=a, 6=c}"));
+        assertThat(view.descendingMap().toString(), is("{7=b, 6=c, 5=a}"));
+
+        // an entry of an iterator writes to the map; one of a navigation is a snapshot
+        final Map.Entry<Long, String> e = view.entrySet().iterator().next();
+        assertThat(e.setValue("z"), is("a"));
+        assertThat(map.get(5), is("z"));
+        map.remove(5);
+        assertThrows(IllegalStateException.class, () -> e.setValue("y"));
+        assertThrows(UnsupportedOperationException.class, () -> view.firstEntry().setValue("y"));
+
+        // never null, a Long key only
+        assertThrows(NullPointerException.class, () -> view.put(8L, null));
+        assertThrows(NullPointerException.class, () -> view.put(null, "x"));
+        assertThrows(NullPointerException.class, () -> view.get(null));
+        assertThrows(ClassCastException.class, () -> view.get(6));
         map.validateInternalState();
     }
 

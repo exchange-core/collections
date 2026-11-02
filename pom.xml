@@ -185,6 +185,7 @@
         <logback.version>1.6.3</logback.version>
         <junit.version>4.13.2</junit.version>
         <junit-quickcheck.version>1.0</junit-quickcheck.version>
+        <guava-testlib.version>31.1-jre</guava-testlib.version>
 
 
         <central.publishing.plugin.version>0.11.0</central.publishing.plugin.version>
@@ -342,6 +343,13 @@
                 <groupId>com.pholser</groupId>
                 <artifactId>junit-quickcheck-generators</artifactId>
                 <version>${junit-quickcheck.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <!-- the java.util contract suites (NavigableMapTestSuiteBuilder) for the ART NavigableMap view -->
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava-testlib</artifactId>
+                <version>${guava-testlib.version}</version>
                 <scope>test</scope>
             </dependency>
 
