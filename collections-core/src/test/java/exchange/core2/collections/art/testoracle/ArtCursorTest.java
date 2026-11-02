@@ -58,6 +58,43 @@ public class ArtCursorTest {
     }
 
     @Test
+    public void isValidShouldFailFastLikeTheOtherCalls() {
+        final LongAdaptiveRadixTreeMap<String> map = new LongAdaptiveRadixTreeMap<>();
+        map.put(1, "a");
+        final LongAdaptiveRadixTreeMap.Cursor<String> cursor = map.cursor();
+
+        assertTrue(cursor.seekFirst());
+        assertTrue(cursor.isValid());
+        map.clear();
+        assertThrows(ConcurrentModificationException.class, cursor::isValid);
+        assertFalse(cursor.seekFirst());   // a seek starts over
+        assertFalse(cursor.isValid());
+
+        map.put(1, "a");
+        assertTrue(cursor.seekFirst());
+        map.put(2, "b");
+        assertThrows(ConcurrentModificationException.class, cursor::isValid);
+        assertTrue(cursor.seekFirst());
+        map.put(1, "a2");                  // a value update - not a change of the key set
+        assertTrue(cursor.isValid());
+    }
+
+    /** the change counter of a used map is not 0: a new cursor must not take that for a change it did not make */
+    @Test
+    public void aNewCursorOverAUsedMapShouldNotBePositioned() {
+        final LongAdaptiveRadixTreeMap<String> map = new LongAdaptiveRadixTreeMap<>();
+        map.put(1, "a");
+        final LongAdaptiveRadixTreeMap.Cursor<String> cursor = map.cursor();
+
+        assertFalse(cursor.isValid());
+        assertFalse(cursor.next());
+        assertFalse(cursor.prev());
+        assertThrows(NoSuchElementException.class, cursor::key);
+        assertThrows(NoSuchElementException.class, cursor::value);
+        assertThrows(NoSuchElementException.class, cursor::remove);
+    }
+
+    @Test
     public void shouldFailFastAfterAChangeItDidNotMake() {
         final LongAdaptiveRadixTreeMap<String> map = new LongAdaptiveRadixTreeMap<>();
         final LongAdaptiveRadixTreeMap.Cursor<String> cursor = map.cursor();
