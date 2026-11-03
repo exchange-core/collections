@@ -21,7 +21,8 @@ The API changes since 0.6.0, hence 0.7.0 - each is described below, in short:
   hyper-threading siblings, within the process and across processes (lock files). Linux and Windows,
   through the Foreign Function and Memory API: Java 22+, no dependencies, no native library, works in a
   GraalVM native image (reachability metadata included). Replaces OpenHFT Affinity (JNA) in the benchmarks;
-  `net.openhft:affinity` is no longer used anywhere in the build.
+  `net.openhft:affinity` is no longer used anywhere in the build. `CpuAffinity.acquireCpu(cpu)` pins to one
+  logical CPU and leaves its sibling free, for threads that are meant to share a core.
 - **`LongLongHashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`.** The README documented
   them, but all four threw `UnsupportedOperationException`. `forEach` does not allocate.
 - **`LongLongLL2Hashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`** - they threw
