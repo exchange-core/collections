@@ -118,6 +118,85 @@ public class CpuAffinityTest {
         }
     }
 
+    @Test
+    public void knowsItsNode() {
+        try (CpuAffinity affinity = CpuAffinity.acquireCore(0)) {
+            assertEquals(NumaTopology.current().nodeOfCpu(0), affinity.node());
+            assertTrue(affinity.toString(), affinity.toString().startsWith("cpu 0 on node " + affinity.node()));
+        }
+    }
+
+    @Test
+    public void notPinnedHasNoNode() {
+        try (CpuAffinity affinity = CpuAffinity.acquireCoreOnNode(1 << 16)) {
+            assertFalse(affinity.isPinned());
+            assertEquals(-1, affinity.node());
+            assertTrue(affinity.toString(), affinity.toString().contains("node 65536"));
+        }
+    }
+
+    @Test
+    public void negativeNodeIsRefused() {
+        assertThrows(IllegalArgumentException.class, () -> CpuAffinity.acquireCoreOnNode(-1));
+    }
+
+    @Test
+    public void nearANotPinnedHandleAsAcquireCore() {
+        assumeTrue("reserved CPUs configured", CpuAffinity.reservedCpus().isEmpty());
+        try (CpuAffinity notPinned = CpuAffinity.acquireCore(); CpuAffinity affinity = CpuAffinity.acquireCoreNear(notPinned)) {
+            assertFalse(affinity.isPinned());
+        }
+    }
+
+    /**
+     * The tests below need reserved CPUs: isolcpus or -Daffinity.reserved.
+     */
+    @Test
+    public void onANodeIsOnThatNode() {
+        assumeTrue("no reserved CPUs", !CpuAffinity.reservedCpus().isEmpty());
+        final BitSet reserved = CpuAffinity.reservedCpus();
+        final NumaTopology topology = NumaTopology.current();
+        final int node = topology.nodeOfCpu(reserved.length() - 1);
+        try (CpuAffinity affinity = CpuAffinity.acquireCoreOnNode(node)) {
+            assertTrue(affinity.toString(), affinity.isPinned());
+            assertEquals(node, affinity.node());
+            assertTrue(affinity.toString(), reserved.get(affinity.cpu()));
+        }
+    }
+
+    @Test
+    public void nodeWithoutFreeReservedCoreIsNotPinned() {
+        assumeTrue("no reserved CPUs", !CpuAffinity.reservedCpus().isEmpty());
+        final BitSet reserved = CpuAffinity.reservedCpus();
+        final NumaTopology topology = NumaTopology.current();
+        for (int node = topology.nodes().nextSetBit(0); node >= 0; node = topology.nodes().nextSetBit(node + 1)) {
+            if (topology.cpusOf(node).intersects(reserved)) continue;
+            try (CpuAffinity affinity = CpuAffinity.acquireCoreOnNode(node)) {
+                assertFalse(affinity.toString(), affinity.isPinned());
+            }
+        }
+    }
+
+    @Test
+    public void nearIsOnTheSameNodeWhileItHasCores() throws InterruptedException {
+        assumeTrue("no reserved CPUs", !CpuAffinity.reservedCpus().isEmpty());
+        try (CpuAffinity first = CpuAffinity.acquireCore()) {
+            assertTrue(first.toString(), first.isPinned());
+            final BitSet others = NumaTopology.current().cpusOf(first.node());
+            others.and(CpuAffinity.reservedCpus());
+            others.andNot(first.core());
+            assumeTrue("one reserved core on the node", !others.isEmpty());
+            final Throwable error = inOtherThread(() -> {
+                try (CpuAffinity second = CpuAffinity.acquireCoreNear(first)) {
+                    assertTrue(second.toString(), second.isPinned());
+                    assertEquals(first.node(), second.node());
+                    assertFalse(second.toString(), first.core().get(second.cpu()));
+                }
+            });
+            assertNull(String.valueOf(error), error);
+        }
+    }
+
     /**
      * Linux: the mask of the calling thread as the kernel reports it; elsewhere a constant.
      */

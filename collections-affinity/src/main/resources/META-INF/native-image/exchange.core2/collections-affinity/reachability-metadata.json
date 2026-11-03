@@ -16,6 +16,16 @@
       {
         "returnType": "jint",
         "parameterTypes": ["void*", "void*"]
+      },
+      {
+        "returnType": "jlong",
+        "parameterTypes": ["jlong", "jlong", "jlong", "jlong", "jlong", "jlong", "jlong"],
+        "options": {"firstVariadicArg": 1}
+      },
+      {
+        "returnType": "jlong",
+        "parameterTypes": ["void*", "void*", "jlong"],
+        "options": {"critical": {"allowHeapAccess": true}}
       }
     ]
   }

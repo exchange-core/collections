@@ -12,6 +12,8 @@ import java.util.List;
  * Java 22+, run with {@code --enable-native-access=ALL-UNNAMED} (or this module's name) to avoid the JDK's
  * restricted-method warning. Works in a GraalVM native image (the jar carries its reachability metadata).
  * {@link #acquireCpu(int)} reserves only the logical CPU, for threads that are meant to share a core.
+ * {@link #acquireCoreOnNode(int)} and {@link #acquireCoreNear(CpuAffinity)} choose by NUMA node - see
+ * {@link NumaTopology}.
  * <pre>
  * try (CpuAffinity ignore = CpuAffinity.acquireCore()) {
  *     // hot loop
@@ -34,6 +36,11 @@ public final class CpuAffinity implements AutoCloseable {
 
     private static final AffinityPlatform PLATFORM = AffinityPlatform.detect(LOG);
     private static final BitSet RESERVED = reserved();
+    /**
+     * The order of {@link #acquireCore()}: nearest to the highest reserved CPU, so that threads stay on one NUMA node
+     * as long as it has cores, even where the OS numbers the CPUs of the sockets in turn.
+     */
+    private static final int[] RESERVED_ORDER = NumaTopology.current().nearestFirst(RESERVED.length() - 1, RESERVED);
     private static final CpuLockFiles LOCK_FILES = new CpuLockFiles(
             Path.of(System.getProperty("affinity.lockDir", System.getProperty("java.io.tmpdir"))));
     /**
@@ -59,17 +66,56 @@ public final class CpuAffinity implements AutoCloseable {
     }
 
     /**
-     * Pins the calling thread to the highest reserved CPU whose core is free. Never throws: if no core is free, no
-     * CPU is reserved or the platform is not supported, the handle is not pinned ({@link #isPinned()}).
+     * Pins the calling thread to the first reserved CPU whose core is free - the highest CPU first, one NUMA node
+     * before the next. Never throws: if no core is free, no CPU is reserved or the platform is not supported, the
+     * handle is not pinned ({@link #isPinned()}).
      */
     public static CpuAffinity acquireCore() {
         if (PLATFORM == null) return notPinned("thread affinity not supported here");
+        final CpuAffinity affinity = firstFree(RESERVED_ORDER);
+        return affinity != null ? affinity : noReservedCore();
+    }
+
+    /**
+     * Pins the calling thread to the highest reserved CPU of this NUMA node whose core is free. Never throws for that:
+     * if there is none or the platform is not supported, the handle is not pinned ({@link #isPinned()}).
+     *
+     * @throws IllegalArgumentException if the node is negative
+     */
+    public static CpuAffinity acquireCoreOnNode(int node) {
+        if (node < 0) throw new IllegalArgumentException("node " + node);
+        if (PLATFORM == null) return notPinned("thread affinity not supported here");
+        final NumaTopology topology = NumaTopology.current();
+        final BitSet cpus = topology.cpusOf(node);
+        cpus.and(RESERVED);
+        final CpuAffinity affinity = firstFree(topology.nearestFirst(cpus.length() - 1, cpus));
+        return affinity != null
+                ? affinity
+                : notPinned("no free reserved core on node " + node + ", reserved: " + CpuSets.toList(RESERVED));
+    }
+
+    /**
+     * Pins the calling thread to the free reserved core nearest to this handle's: sharing its last-level cache, then
+     * on its NUMA node, then on the other nodes by distance - {@link #node()} tells where it landed. If that handle is
+     * not pinned, as {@link #acquireCore()}. Never throws: if no core is free, the handle is not pinned.
+     */
+    public static CpuAffinity acquireCoreNear(CpuAffinity other) {
+        if (!other.isPinned()) return acquireCore();
+        final CpuAffinity affinity = firstFree(NumaTopology.current().nearestFirst(other.cpu, RESERVED));
+        return affinity != null ? affinity : noReservedCore();
+    }
+
+    private static CpuAffinity firstFree(int[] cpus) {
         synchronized (TAKEN) {
-            for (int cpu = RESERVED.length() - 1; cpu >= 0; cpu = RESERVED.previousSetBit(cpu - 1)) {
+            for (int cpu : cpus) {
                 final CpuAffinity affinity = tryAcquire(cpu, PLATFORM.coreOf(cpu));
                 if (affinity != null) return affinity;
             }
         }
+        return null;
+    }
+
+    private static CpuAffinity noReservedCore() {
         return notPinned(RESERVED.isEmpty()
                 ? "no reserved CPUs (isolcpus or -Daffinity.reserved)"
                 : "all reserved cores are taken: " + CpuSets.toList(RESERVED));
@@ -147,6 +193,13 @@ public final class CpuAffinity implements AutoCloseable {
     }
 
     /**
+     * The NUMA node of that CPU, -1 if not pinned.
+     */
+    public int node() {
+        return NumaTopology.current().nodeOfCpu(cpu);
+    }
+
+    /**
      * The logical CPUs reserved with it: its physical core, only the CPU itself after {@link #acquireCpu(int)},
      * empty if not pinned.
      */
@@ -197,6 +250,8 @@ public final class CpuAffinity implements AutoCloseable {
 
     @Override
     public String toString() {
-        return isPinned() ? "cpu " + cpu + " (holds " + CpuSets.toList(held) + ")" : "not pinned: " + notPinnedReason;
+        return isPinned()
+                ? "cpu " + cpu + " on node " + node() + " (holds " + CpuSets.toList(held) + ")"
+                : "not pinned: " + notPinnedReason;
     }
 }

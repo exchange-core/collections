@@ -10,7 +10,7 @@
 
     <artifactId>collections-affinity</artifactId>
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>Pinning threads to CPU cores (Linux, Windows) through the Foreign Function and Memory API - no runtime dependencies</description>
+    <description>Pinning threads to CPU cores (Linux, Windows), NUMA topology and memory placement checks (Linux) through the Foreign Function and Memory API - no runtime dependencies</description>
 
     <properties>
         <!-- the FFM API is final since Java 22: fixed here, independent of java.version and of the
