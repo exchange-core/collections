@@ -11,6 +11,7 @@ import java.util.List;
  * native access, nothing is pinned and the returned handle says so. Uses the Foreign Function and Memory API:
  * Java 22+, run with {@code --enable-native-access=ALL-UNNAMED} (or this module's name) to avoid the JDK's
  * restricted-method warning. Works in a GraalVM native image (the jar carries its reachability metadata).
+ * {@link #acquireCpu(int)} reserves only the logical CPU, for threads that are meant to share a core.
  * <pre>
  * try (CpuAffinity ignore = CpuAffinity.acquireCore()) {
  *     // hot loop
@@ -41,16 +42,16 @@ public final class CpuAffinity implements AutoCloseable {
     private static final BitSet TAKEN = new BitSet();
 
     private final int cpu;
-    private final BitSet core;
+    private final BitSet held;
     private final BitSet previous;
     private final List<FileChannel> lockFiles;
     private final Thread owner;
     private final String notPinnedReason;
     private boolean closed;
 
-    private CpuAffinity(int cpu, BitSet core, BitSet previous, List<FileChannel> lockFiles, String notPinnedReason) {
+    private CpuAffinity(int cpu, BitSet held, BitSet previous, List<FileChannel> lockFiles, String notPinnedReason) {
         this.cpu = cpu;
-        this.core = core;
+        this.held = held;
         this.previous = previous;
         this.lockFiles = lockFiles;
         this.owner = Thread.currentThread();
@@ -65,7 +66,7 @@ public final class CpuAffinity implements AutoCloseable {
         if (PLATFORM == null) return notPinned("thread affinity not supported here");
         synchronized (TAKEN) {
             for (int cpu = RESERVED.length() - 1; cpu >= 0; cpu = RESERVED.previousSetBit(cpu - 1)) {
-                final CpuAffinity affinity = tryAcquire(cpu);
+                final CpuAffinity affinity = tryAcquire(cpu, PLATFORM.coreOf(cpu));
                 if (affinity != null) return affinity;
             }
         }
@@ -84,29 +85,47 @@ public final class CpuAffinity implements AutoCloseable {
         if (cpu < 0) throw new IllegalArgumentException("cpu " + cpu);
         if (PLATFORM == null) return notPinned("thread affinity not supported here");
         synchronized (TAKEN) {
-            final CpuAffinity affinity = tryAcquire(cpu);
+            final CpuAffinity affinity = tryAcquire(cpu, PLATFORM.coreOf(cpu));
             if (affinity == null) throw new IllegalStateException("core of cpu " + cpu + " is taken");
             return affinity;
         }
     }
 
     /**
-     * Holding TAKEN: null if the core is taken, a not pinned handle if pinning failed.
+     * Pins the calling thread to this logical CPU (reserved or not) and reserves only it: its hyper-threading sibling
+     * stays free for another thread pinned the same way. If pinning fails or the platform is not supported, the
+     * handle is not pinned.
+     *
+     * @throws IllegalStateException if the CPU is held in this or another process
      */
-    private static CpuAffinity tryAcquire(int cpu) {
-        final BitSet core = PLATFORM.coreOf(cpu);
-        if (core.intersects(TAKEN)) return null;
-        final List<FileChannel> locks = LOCK_FILES.tryLock(core, Thread.currentThread().getName());
+    public static CpuAffinity acquireCpu(int cpu) {
+        if (cpu < 0) throw new IllegalArgumentException("cpu " + cpu);
+        if (PLATFORM == null) return notPinned("thread affinity not supported here");
+        final BitSet single = new BitSet();
+        single.set(cpu);
+        synchronized (TAKEN) {
+            final CpuAffinity affinity = tryAcquire(cpu, single);
+            if (affinity == null) throw new IllegalStateException("cpu " + cpu + " is taken");
+            return affinity;
+        }
+    }
+
+    /**
+     * Holding TAKEN: null if one of the CPUs is taken, a not pinned handle if pinning failed.
+     */
+    private static CpuAffinity tryAcquire(int cpu, BitSet cpus) {
+        if (cpus.intersects(TAKEN)) return null;
+        final List<FileChannel> locks = LOCK_FILES.tryLock(cpus, Thread.currentThread().getName());
         if (locks == null) return null;
         final BitSet previous = PLATFORM.pin(cpu);
         if (previous == null) {
             CpuLockFiles.release(locks);
             return notPinned("cannot pin to cpu " + cpu);
         }
-        TAKEN.or(core);
-        LOG.log(System.Logger.Level.DEBUG, "{0} pinned to cpu {1}, core {2}",
-                Thread.currentThread().getName(), cpu, CpuSets.toList(core));
-        return new CpuAffinity(cpu, core, previous, locks, null);
+        TAKEN.or(cpus);
+        LOG.log(System.Logger.Level.DEBUG, "{0} pinned to cpu {1}, holds {2}",
+                Thread.currentThread().getName(), cpu, CpuSets.toList(cpus));
+        return new CpuAffinity(cpu, cpus, previous, locks, null);
     }
 
     private static CpuAffinity notPinned(String reason) {
@@ -128,10 +147,11 @@ public final class CpuAffinity implements AutoCloseable {
     }
 
     /**
-     * The logical CPUs reserved with it (its physical core), empty if not pinned.
+     * The logical CPUs reserved with it: its physical core, only the CPU itself after {@link #acquireCpu(int)},
+     * empty if not pinned.
      */
     public BitSet core() {
-        return (BitSet) core.clone();
+        return (BitSet) held.clone();
     }
 
     public boolean isPinned() {
@@ -153,8 +173,8 @@ public final class CpuAffinity implements AutoCloseable {
     }
 
     /**
-     * Restores the thread's previous affinity and releases the core. Call it from the pinned thread: from another
-     * thread the core is released but the pinned thread keeps its mask.
+     * Restores the thread's previous affinity and releases what it reserved. Call it from the pinned thread: from
+     * another thread the CPUs are released but the pinned thread keeps its mask.
      */
     @Override
     public void close() {
@@ -171,12 +191,12 @@ public final class CpuAffinity implements AutoCloseable {
         }
         CpuLockFiles.release(lockFiles);
         synchronized (TAKEN) {
-            TAKEN.andNot(core);
+            TAKEN.andNot(held);
         }
     }
 
     @Override
     public String toString() {
-        return isPinned() ? "cpu " + cpu + " (core " + CpuSets.toList(core) + ")" : "not pinned: " + notPinnedReason;
+        return isPinned() ? "cpu " + cpu + " (holds " + CpuSets.toList(held) + ")" : "not pinned: " + notPinnedReason;
     }
 }

@@ -877,7 +877,10 @@ try (CpuAffinity affinity = CpuAffinity.acquireCore()) {   // or acquireCore(cpu
   (e.g. `AAAA` = CPUs 1,3,…,15), otherwise the kernel's isolated CPUs (`isolcpus`). If none is free it
   returns a handle that is not pinned (`isPinned()`), it never throws.
 - `acquireCore(int cpu)` pins to that CPU and throws `IllegalStateException` if its core is held.
-- `close()` restores the thread's previous mask and releases the core — call it from the pinned thread.
+- `acquireCpu(int cpu)` pins to that logical CPU and reserves only it, so that two threads can share a core
+  (e.g. `acquireCpu(5)` and `acquireCpu(21)`). It throws `IllegalStateException` if the CPU is held;
+  `acquireCore` does not take a core while one of its CPUs is held.
+- `close()` restores the thread's previous mask and releases what it reserved — call it from the pinned thread.
 - Run with `--enable-native-access=ALL-UNNAMED` to avoid the JDK's restricted-method warning.
 - Lock files: `exchange-core2-cpu-<n>.lock` in `-Daffinity.lockDir` (default `java.io.tmpdir`).
 - Threads started by a pinned thread inherit its single-CPU mask: start helper threads before pinning, or

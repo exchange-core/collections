@@ -6,10 +6,12 @@ import org.junit.Test;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.BitSet;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
@@ -53,11 +55,57 @@ public class CpuAffinityTest {
         try (CpuAffinity affinity = CpuAffinity.acquireCore(0)) {
             final int sibling = affinity.core().nextSetBit(1);
             assumeTrue("no hyper-threading sibling of cpu 0", sibling > 0);
-            final AtomicReference<Throwable> error = new AtomicReference<>();
-            final Thread other = new Thread(() -> error.set(catchThrowable(() -> CpuAffinity.acquireCore(sibling))));
-            other.start();
-            other.join();
-            assertTrue(String.valueOf(error.get()), error.get() instanceof IllegalStateException);
+            final Throwable core = inOtherThread(() -> CpuAffinity.acquireCore(sibling));
+            assertTrue(String.valueOf(core), core instanceof IllegalStateException);
+            final Throwable cpu = inOtherThread(() -> CpuAffinity.acquireCpu(sibling));
+            assertTrue(String.valueOf(cpu), cpu instanceof IllegalStateException);
+        }
+    }
+
+    @Test
+    public void cpuPinsAndRestores() throws IOException {
+        final String before = allowedCpus();
+        final BitSet onlyCpu0 = new BitSet();
+        onlyCpu0.set(0);
+        try (CpuAffinity affinity = CpuAffinity.acquireCpu(0)) {
+            assertTrue(affinity.toString(), affinity.isPinned());
+            assertEquals(0, affinity.cpu());
+            assertEquals(onlyCpu0, affinity.core());
+            if (LINUX) assertEquals("0", allowedCpus());
+        }
+        assertEquals(before, allowedCpus());
+    }
+
+    @Test
+    public void cpuIsReservedUntilClosed() {
+        try (CpuAffinity ignore = CpuAffinity.acquireCpu(0)) {
+            assertThrows(IllegalStateException.class, () -> CpuAffinity.acquireCpu(0));
+            assertThrows(IllegalStateException.class, () -> CpuAffinity.acquireCore(0));
+        }
+        try (CpuAffinity again = CpuAffinity.acquireCore(0)) {
+            assertTrue(again.isPinned());
+        }
+    }
+
+    @Test
+    public void siblingsCanBeHeldSeparately() throws InterruptedException {
+        final int sibling;
+        try (CpuAffinity whole = CpuAffinity.acquireCore(0)) {
+            sibling = whole.core().nextSetBit(1);
+        }
+        assumeTrue("no hyper-threading sibling of cpu 0", sibling > 0);
+        try (CpuAffinity first = CpuAffinity.acquireCpu(0)) {
+            assertTrue(first.toString(), first.isPinned());
+            final Throwable error = inOtherThread(() -> {
+                try (CpuAffinity second = CpuAffinity.acquireCpu(sibling)) {
+                    assertTrue(second.toString(), second.isPinned());
+                    assertEquals(sibling, second.cpu());
+                }
+            });
+            assertNull(String.valueOf(error), error);
+            // the sibling is free again, its core is not: cpu 0 is held
+            final Throwable core = inOtherThread(() -> CpuAffinity.acquireCore(sibling));
+            assertTrue(String.valueOf(core), core instanceof IllegalStateException);
         }
     }
 
@@ -81,12 +129,17 @@ public class CpuAffinityTest {
                 .findFirst().orElseThrow();
     }
 
-    private static Throwable catchThrowable(Runnable action) {
-        try {
-            action.run();
-            return null;
-        } catch (Throwable e) {
-            return e;
-        }
+    private static Throwable inOtherThread(Runnable action) throws InterruptedException {
+        final AtomicReference<Throwable> error = new AtomicReference<>();
+        final Thread other = new Thread(() -> {
+            try {
+                action.run();
+            } catch (Throwable e) {
+                error.set(e);
+            }
+        });
+        other.start();
+        other.join();
+        return error.get();
     }
 }
