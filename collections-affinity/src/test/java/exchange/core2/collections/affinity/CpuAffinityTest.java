@@ -283,8 +283,7 @@ public class CpuAffinityTest {
 
         final NumaTopology topology = NumaTopology.current();
         final BitSet reserved = CpuAffinity.reservedCpus();
-        final BitSet highestFrom = reserved.isEmpty() ? CpuAffinity.spareCpus() : reserved;
-        final int firstNode = Integer.getInteger("affinity.firstNode", topology.nodeOfCpu(highestFrom.length() - 1));
+        final int firstNode = firstNode();
         final List<Integer> nodes = cpus.stream().map(topology::nodeOfCpu).toList();
         final List<Integer> visited = nodes.stream().distinct().toList();
         if (topology.cpusOf(firstNode).intersects(allowed())) {
@@ -302,6 +301,65 @@ public class CpuAffinityTest {
         final long otherNodes = visited.stream().filter(node -> node != firstNode).count();
         final long left = warnings.stream().filter(warning -> warning.contains(" pinned to cpu ")).count();
         assertEquals(warnings.toString(), otherNodes, left);
+    }
+
+    @Test
+    public void memoryIsCheckedOnceOnTheNodeFilledFirst() {
+        final int node = Math.max(firstNode(), 0);
+        CpuAffinity.MEMORY_CHECKED.clear();
+        final List<String> expected = ProcessPlacement.current().warningsFor(node);
+        final List<String> warnings = warningsDuring(() -> {
+            CpuAffinity.warnAboutMemory(node);
+            CpuAffinity.warnAboutMemory(node);
+        });
+        assertEquals(warnings.toString(), expected.size(), warnings.size());
+    }
+
+    @Test
+    public void otherNodesHearOnlyIfTheyHaveNoMemory() {
+        final NumaTopology topology = NumaTopology.current();
+        final int first = Math.max(firstNode(), 0);
+        CpuAffinity.MEMORY_CHECKED.clear();
+        CpuAffinity.warnAboutMemory(first);
+        for (int node = topology.nodes().nextSetBit(0); node >= 0; node = topology.nodes().nextSetBit(node + 1)) {
+            if (node == first || topology.memoryOf(node).total() == 0) continue;
+            final int other = node;
+            assertEquals(List.of(), warningsDuring(() -> CpuAffinity.warnAboutMemory(other)));
+        }
+    }
+
+    @Test
+    public void pinningChecksTheMemory() {
+        assumeTrue("no reserved CPUs", !nothingAllowed());
+        final int node = firstNode();
+        assumeTrue("nothing allowed on the first node", NumaTopology.current().cpusOf(node).intersects(allowed()));
+        CpuAffinity.MEMORY_CHECKED.clear();
+        final List<String> expected = ProcessPlacement.current().warningsFor(node);
+        final List<String> warnings = warningsDuring(() -> {
+            try (CpuAffinity affinity = CpuAffinity.acquireCoreOnNode(node)) {
+                assertTrue(affinity.toString(), affinity.isPinned());
+            }
+        });
+        assertEquals(warnings.toString(), expected.size(), warnings.size());
+    }
+
+    /**
+     * With -Daffinity.offHeap larger than any node.
+     */
+    @Test
+    public void theDeclaredOffHeapCounts() {
+        assumeTrue("needs -Daffinity.offHeap", System.getProperty("affinity.offHeap") != null);
+        final ProcessPlacement placement = ProcessPlacement.current();
+        final int node = NumaTopology.current().nodeOfCpu(placement.cpus().nextSetBit(0));
+        final List<String> warnings = placement.warningsFor(node);
+        assertTrue(warnings.toString(), warnings.stream().anyMatch(warning -> warning.contains("has not enough memory")));
+    }
+
+    @Test
+    public void noNodeNoCheck() {
+        CpuAffinity.MEMORY_CHECKED.clear();
+        CpuAffinity.warnAboutMemory(-1);
+        assertTrue(CpuAffinity.MEMORY_CHECKED.isEmpty());
     }
 
     @Test
@@ -325,8 +383,9 @@ public class CpuAffinityTest {
                 warnings = warningsDuring(() -> error.set(nearInOtherThread(first)));
             }
             assertNull(String.valueOf(error.get()), error.get());
-            assertEquals(warnings.toString(), 1, warnings.size());
-            assertTrue(warnings.get(0), warnings.get(0).contains("no free core on node " + node));
+            final List<String> left = warnings.stream().filter(warning -> warning.contains(" pinned to cpu ")).toList();
+            assertEquals(warnings.toString(), 1, left.size());
+            assertTrue(left.get(0), left.get(0).contains("no free core on node " + node));
         }
     }
 
@@ -421,6 +480,15 @@ public class CpuAffinityTest {
             });
             assertNull(String.valueOf(error), error);
         }
+    }
+
+    /**
+     * The node acquireCore() starts on, -1 if nothing is allowed and no node asked for.
+     */
+    private static int firstNode() {
+        final BitSet reserved = CpuAffinity.reservedCpus();
+        final BitSet highestFrom = reserved.isEmpty() ? CpuAffinity.spareCpus() : reserved;
+        return Integer.getInteger("affinity.firstNode", NumaTopology.current().nodeOfCpu(highestFrom.length() - 1));
     }
 
     private static boolean nothingAllowed() {

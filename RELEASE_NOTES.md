@@ -32,6 +32,10 @@ The API changes since 0.6.0, hence 0.7.0 - each is described below, in short:
   taken on each node after its reserved ones, for machines with one socket isolated. `-Daffinity.firstNode=<node>` is
   where `acquireCore()` starts. The first landing on a node other than wanted is logged as a warning.
   `CpuAffinity.threadFactory(name)` and `threadFactory(name, node)` give threads that pin themselves.
+- **`collections-affinity`: checking memory.** `ProcessPlacement` reports the memory policy, CPU mask and memory by
+  node of the process, `warningsFor(node)` what stands in the way of threads on that node: no memory there, the policy,
+  the cpuset or the mask of the JVM sending it elsewhere, the heap limit plus `-Daffinity.offHeap` not fitting.
+  `CpuAffinity` logs that once, for the node it fills first. `NumaTopology.memoryOf(node)` reads the node's memory.
 - **`LongLongHashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`.** The README documented
   them, but all four threw `UnsupportedOperationException`. `forEach` does not allocate.
 - **`LongLongLL2Hashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`** - they threw

@@ -36,6 +36,8 @@ import java.util.function.Supplier;
  * reserved CPU.
  * Lock files go to {@code -Daffinity.lockDir} (default: java.io.tmpdir).
  * <p>
+ * The first thread on the node filled first logs what stands in the way of its memory, see {@link ProcessPlacement}.
+ * <p>
  * Threads created by a pinned thread inherit its single-CPU mask: create helper threads before pinning, or pin
  * them to cores of their own.
  */
@@ -62,6 +64,10 @@ public final class CpuAffinity implements AutoCloseable {
      * The nodes {@link #warnIfOnOtherNode} has warned about. Guarded by TAKEN.
      */
     static final BitSet WARNED_NODES = new BitSet();
+    /**
+     * The nodes {@link #warnAboutMemory} has looked at. Guarded by TAKEN.
+     */
+    static final BitSet MEMORY_CHECKED = new BitSet();
 
     private final int cpu;
     private final BitSet held;
@@ -235,6 +241,7 @@ public final class CpuAffinity implements AutoCloseable {
         if (cpus.intersects(TAKEN)) return null;
         final List<FileChannel> locks = LOCK_FILES.tryLock(cpus, Thread.currentThread().getName());
         if (locks == null) return null;
+        warnAboutMemory(NumaTopology.current().nodeOfCpu(cpu));
         final BitSet previous = PLATFORM.pin(cpu);
         if (previous == null) {
             CpuLockFiles.release(locks);
@@ -244,6 +251,22 @@ public final class CpuAffinity implements AutoCloseable {
         LOG.log(System.Logger.Level.DEBUG, "{0} pinned to cpu {1}, holds {2}",
                 Thread.currentThread().getName(), cpu, CpuSets.toList(cpus));
         return new CpuAffinity(cpu, cpus, previous, locks, null);
+    }
+
+    /**
+     * Holding TAKEN, once for each node, before pinning: it can take a while, see {@link ProcessPlacement}, and that is
+     * better spent off an isolated core. The node filled first, or without one the first node pinned on, is where the
+     * memory of the process is expected: the others hold threads sent there on purpose and hear only if they have no
+     * memory at all.
+     */
+    static void warnAboutMemory(int node) {
+        if (node < 0 || MEMORY_CHECKED.get(node)) return;
+        final boolean expected = FIRST_NODE >= 0 ? node == FIRST_NODE : MEMORY_CHECKED.isEmpty();
+        MEMORY_CHECKED.set(node);
+        final List<String> warnings = expected
+                ? ProcessPlacement.current().warningsFor(node)
+                : ProcessPlacement.ownMemoryWarnings(node, NumaTopology.current());
+        warnings.forEach(warning -> LOG.log(System.Logger.Level.WARNING, warning));
     }
 
     private static CpuAffinity notPinned(String reason) {

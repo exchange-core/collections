@@ -159,6 +159,55 @@ public class NumaTopologyTest {
     }
 
     @Test
+    public void readsTheMemoryOfANode() throws IOException {
+        final NumaTopology topology = twoSockets();
+        write("devices/system/node/node1/meminfo", """
+                Node 1 MemTotal:       99082668 kB
+                Node 1 MemFree:        98015332 kB
+                Node 1 MemUsed:         1067336 kB
+                Node 1 Active(file):     110880 kB
+                Node 1 Inactive(file):     6728 kB
+                Node 1 FilePages:        118608 kB
+                Node 1 SReclaimable:        248 kB
+                Node 1 SUnreclaim:        22896 kB
+                Node 1 HugePages_Total:     4
+                Node 1 HugePages_Free:      3
+                """);
+        write("devices/system/node/node1/hugepages/hugepages-2048kB/free_hugepages", "3\n");
+        write("devices/system/node/node1/hugepages/hugepages-1048576kB/free_hugepages", "1\n");
+        write("devices/system/node/node1/hugepages/other/free_hugepages", "7\n");
+        assertEquals(new NumaTopology.NodeMemory(99082668L * 1024, 98015332L * 1024, (110880L + 6728 + 248) * 1024,
+                (3 * 2048L + 1048576) * 1024), topology.memoryOf(1));
+    }
+
+    @Test
+    public void aNodeWithoutMemoryOfItsOwn() throws IOException {
+        final NumaTopology topology = twoSockets();
+        write("devices/system/node/node1/meminfo", "Node 1 MemTotal: 0 kB\nNode 1 MemFree: 0 kB\n");
+        assertEquals(new NumaTopology.NodeMemory(0, 0, 0, 0), topology.memoryOf(1));
+    }
+
+    @Test
+    public void memoryThatIsNotReportedIsUnknown() throws IOException {
+        final NumaTopology topology = twoSockets();
+        final NumaTopology.NodeMemory unknown = new NumaTopology.NodeMemory(-1, -1, -1, -1);
+        assertEquals(unknown, topology.memoryOf(0));
+        assertEquals(unknown, topology.memoryOf(7));
+        assertEquals(unknown, topology.memoryOf(-1));
+        write("devices/system/node/node1/meminfo", "Node 1 MemTotal: lots kB\nsomething else\n");
+        assertEquals(unknown, topology.memoryOf(1));
+    }
+
+    @Test
+    public void memoryIsReadEachTime() throws IOException {
+        final NumaTopology topology = twoSockets();
+        write("devices/system/node/node1/meminfo", "Node 1 MemTotal: 10 kB\nNode 1 MemFree: 9 kB\n");
+        assertEquals(9 * 1024, topology.memoryOf(1).free());
+        write("devices/system/node/node1/meminfo", "Node 1 MemTotal: 10 kB\nNode 1 MemFree: 8 kB\n");
+        assertEquals(8 * 1024, topology.memoryOf(1).free());
+    }
+
+    @Test
     public void nearestFirstStaysOnOneNodeWhenTheSocketsAreNumberedInTurn() throws IOException {
         assertArrayEquals(new int[]{15, 13, 11, 9, 14, 12, 10, 8}, twoSockets().nearestFirst(15, range(8, 15)));
     }

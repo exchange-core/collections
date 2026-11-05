@@ -1,12 +1,15 @@
 package exchange.core2.collections.affinity;
 
 import java.io.IOException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The NUMA nodes of this machine: their CPUs, how far apart they are, which node a device is attached to. Only reads
@@ -19,6 +22,7 @@ import java.util.List;
  * topology.distance(0, 1);                      // 21
  * topology.lastLevelCacheOf(13);                // {1, 3, 5, ...} - less than the node on many AMD CPUs
  * topology.nodeOfNetworkInterface("eno1np0");   // 0
+ * topology.memoryOf(1).free();                  // bytes, now
  * </pre>
  * What does not exist is -1 or an empty set, it does not throw: an unknown node, a CPU that is offline.
  */
@@ -29,6 +33,20 @@ public final class NumaTopology {
      */
     private static final int LOCAL_DISTANCE = 10;
     private static final int REMOTE_DISTANCE = 20;
+
+    /**
+     * The memory of a node in bytes.
+     *
+     * @param total         0 for a node without memory of its own
+     * @param free          not used by anything
+     * @param reclaimable   what the OS could free: the file cache and reclaimable kernel objects. An estimate, as there
+     *                      is no MemAvailable for a node: a part of it may be in use
+     * @param freeHugePages reserved huge pages of all sizes that are free: not a part of free, and only for mappings
+     *                      that ask for them
+     */
+    public record NodeMemory(long total, long free, long reclaimable, long freeHugePages) {
+        static final NodeMemory UNKNOWN = new NodeMemory(-1, -1, -1, -1);
+    }
 
     private static final class Current {
         static final NumaTopology INSTANCE = System.getProperty("os.name", "").startsWith("Linux")
@@ -185,6 +203,55 @@ public final class NumaTopology {
      */
     public int nodeOfPciDevice(String address) {
         return readNode("bus/pci/devices/" + address + "/numa_node");
+    }
+
+    /**
+     * The memory of this node as the OS reports it now: read each time. All -1 for an unknown node, and off Linux.
+     */
+    public NodeMemory memoryOf(int node) {
+        if (sys == null || !isNode(node)) return NodeMemory.UNKNOWN;
+        final Path dir = sys.resolve("devices/system/node/node" + node);
+        final Map<String, Long> bytes = readMemInfo(dir.resolve("meminfo"));
+        if (!bytes.containsKey("MemTotal")) return NodeMemory.UNKNOWN;
+        return new NodeMemory(bytes.get("MemTotal"), bytes.getOrDefault("MemFree", 0L),
+                bytes.getOrDefault("Active(file)", 0L) + bytes.getOrDefault("Inactive(file)", 0L)
+                        + bytes.getOrDefault("SReclaimable", 0L),
+                readFreeHugePages(dir.resolve("hugepages")));
+    }
+
+    /**
+     * Lines such as "Node 1 MemFree:   98015332 kB": those in kB, by name. Empty if there is no such file.
+     */
+    private static Map<String, Long> readMemInfo(Path file) {
+        final Map<String, Long> bytes = new HashMap<>();
+        try {
+            for (String line : Files.readAllLines(file)) {
+                final String[] parts = line.trim().split("\\s+");
+                if (parts.length == 5 && parts[4].equals("kB")) {
+                    bytes.put(parts[2].replace(":", ""), Long.parseLong(parts[3]) * 1024);
+                }
+            }
+        } catch (IOException | RuntimeException e) {
+            // not there or not as expected: as much as was read
+        }
+        return bytes;
+    }
+
+    /**
+     * Directories such as hugepages-2048kB, each with its free_hugepages.
+     */
+    private static long readFreeHugePages(Path dir) {
+        long bytes = 0;
+        try (DirectoryStream<Path> sizes = Files.newDirectoryStream(dir, "hugepages-*kB")) {
+            for (Path size : sizes) {
+                final String name = size.getFileName().toString();
+                final long pageKb = Long.parseLong(name.substring("hugepages-".length(), name.length() - "kB".length()));
+                bytes += Math.max(0, readInt(size.resolve("free_hugepages"))) * pageKb * 1024;
+            }
+        } catch (IOException | RuntimeException e) {
+            // no huge pages on this machine
+        }
+        return bytes;
     }
 
     private int readNode(String file) {

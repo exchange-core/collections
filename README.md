@@ -924,6 +924,24 @@ try (CpuAffinity hot = CpuAffinity.acquireCoreOnNode(1)) {    // a reserved core
 
   A factory's thread pins itself when it starts and releases the core when it ends. The cores of a group are not set
   aside: threads overflowing from node 1 can take them, so start the group first if they may run short.
+- The JVM can not be moved from inside: it sizes its thread pools from the CPU mask it starts with (`taskset -c 0-31`
+  gives 23 GC threads and 15 compiler threads, `1,3` two of each) and its memory goes by the policy it starts with.
+  So the first thread on the node filled first logs a warning for each thing that stands in the way, once:
+  the node has no memory, the policy or the cpuset sends the memory elsewhere, there is no policy and the JVM started on
+  CPUs of other nodes (148 ns instead of 89 ns on the machine above), the memory already is elsewhere, the heap limit
+  plus `-Daffinity.offHeap=<size>` does not fit. Threads on other nodes hear only if their node has no memory.
+
+  ```java
+  ProcessPlacement placement = ProcessPlacement.current();   // from /proc/self, no native access needed
+  placement.policy();                                        // "bind:1", or "default" without numactl
+  placement.bytesOn(1);                                      // the heap and native memory there now
+  placement.warningsFor(1);                                  // the same warnings, to fail at start-up
+  NumaTopology.current().memoryOf(1).free();                 // bytes, also total(), reclaimable(), freeHugePages()
+  ```
+
+  The free memory of a node is an estimate: there is no `MemAvailable` per node. It does not tell the memory channels
+  apart: on the machine above node 0 has 2, node 1 has 6, and only their sizes differ. `ProcessPlacement` walks the page
+  tables, so at start-up or between runs: with a heap of 16 GiB about 2 ms in huge pages, 65 ms in 4 KB pages.
 - `NumaMemory.nodesOf` only reports, it moves nothing, and it is an estimate: up to 4096 random pages, one from
   each equal part of the segment, a few milliseconds, not for a hot path. Native memory and arrays, Linux on
   x86-64 and AArch64. `isSupported()` tried the system call: the default seccomp profile of Docker refuses it.
