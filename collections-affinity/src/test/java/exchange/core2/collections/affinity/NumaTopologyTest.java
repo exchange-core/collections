@@ -159,6 +159,55 @@ public class NumaTopologyTest {
     }
 
     @Test
+    public void readsTheMemoryOfANode() throws IOException {
+        final NumaTopology topology = twoSockets();
+        write("devices/system/node/node1/meminfo", """
+                Node 1 MemTotal:       99082668 kB
+                Node 1 MemFree:        98015332 kB
+                Node 1 MemUsed:         1067336 kB
+                Node 1 Active(file):     110880 kB
+                Node 1 Inactive(file):     6728 kB
+                Node 1 FilePages:        118608 kB
+                Node 1 SReclaimable:        248 kB
+                Node 1 SUnreclaim:        22896 kB
+                Node 1 HugePages_Total:     4
+                Node 1 HugePages_Free:      3
+                """);
+        write("devices/system/node/node1/hugepages/hugepages-2048kB/free_hugepages", "3\n");
+        write("devices/system/node/node1/hugepages/hugepages-1048576kB/free_hugepages", "1\n");
+        write("devices/system/node/node1/hugepages/other/free_hugepages", "7\n");
+        assertEquals(new NumaTopology.NodeMemory(99082668L * 1024, 98015332L * 1024, (110880L + 6728 + 248) * 1024,
+                (3 * 2048L + 1048576) * 1024), topology.memoryOf(1));
+    }
+
+    @Test
+    public void aNodeWithoutMemoryOfItsOwn() throws IOException {
+        final NumaTopology topology = twoSockets();
+        write("devices/system/node/node1/meminfo", "Node 1 MemTotal: 0 kB\nNode 1 MemFree: 0 kB\n");
+        assertEquals(new NumaTopology.NodeMemory(0, 0, 0, 0), topology.memoryOf(1));
+    }
+
+    @Test
+    public void memoryThatIsNotReportedIsUnknown() throws IOException {
+        final NumaTopology topology = twoSockets();
+        final NumaTopology.NodeMemory unknown = new NumaTopology.NodeMemory(-1, -1, -1, -1);
+        assertEquals(unknown, topology.memoryOf(0));
+        assertEquals(unknown, topology.memoryOf(7));
+        assertEquals(unknown, topology.memoryOf(-1));
+        write("devices/system/node/node1/meminfo", "Node 1 MemTotal: lots kB\nsomething else\n");
+        assertEquals(unknown, topology.memoryOf(1));
+    }
+
+    @Test
+    public void memoryIsReadEachTime() throws IOException {
+        final NumaTopology topology = twoSockets();
+        write("devices/system/node/node1/meminfo", "Node 1 MemTotal: 10 kB\nNode 1 MemFree: 9 kB\n");
+        assertEquals(9 * 1024, topology.memoryOf(1).free());
+        write("devices/system/node/node1/meminfo", "Node 1 MemTotal: 10 kB\nNode 1 MemFree: 8 kB\n");
+        assertEquals(8 * 1024, topology.memoryOf(1).free());
+    }
+
+    @Test
     public void nearestFirstStaysOnOneNodeWhenTheSocketsAreNumberedInTurn() throws IOException {
         assertArrayEquals(new int[]{15, 13, 11, 9, 14, 12, 10, 8}, twoSockets().nearestFirst(15, range(8, 15)));
     }
@@ -201,5 +250,85 @@ public class NumaTopologyTest {
     @Test
     public void nearestFirstOfNothing() throws IOException {
         assertArrayEquals(new int[0], twoSockets().nearestFirst(-1, new BitSet()));
+    }
+
+    /**
+     * The reserved CPUs on one socket, as isolcpus usually are: the spare ones of the other socket come last.
+     */
+    @Test
+    public void fillsTheReservedCpusThenTheSpareOnesOfTheOtherNode() throws IOException {
+        assertArrayEquals(new int[]{15, 13, 11, 12, 10, 8},
+                twoSockets().fillOrder(1, bits(11, 13, 15), bits(8, 10, 12)));
+    }
+
+    @Test
+    public void startsOnTheNodeAskedFor() throws IOException {
+        assertArrayEquals(new int[]{12, 10, 8, 15, 13, 11},
+                twoSockets().fillOrder(0, bits(11, 13, 15), bits(8, 10, 12)));
+    }
+
+    @Test
+    public void onANodeTheReservedCpusBeforeTheSpareOnes() throws IOException {
+        assertArrayEquals(new int[]{13, 11, 15, 12, 14, 10},
+                twoSockets().fillOrder(1, bits(11, 12, 13), bits(10, 14, 15)));
+    }
+
+    @Test
+    public void aNodeOfNoAllowedCpusIsSkipped() throws IOException {
+        assertArrayEquals(new int[]{15, 13}, twoSockets().fillOrder(0, bits(13, 15), new BitSet()));
+    }
+
+    @Test
+    public void anUnknownNodeStillGivesAllTheCpus() throws IOException {
+        assertArrayEquals(new int[]{15, 13, 12}, twoSockets().fillOrder(7, bits(13, 15), bits(12)));
+        assertArrayEquals(new int[]{15, 13, 12}, twoSockets().fillOrder(-1, bits(13, 15), bits(12)));
+    }
+
+    @Test
+    public void nothingToFill() throws IOException {
+        assertArrayEquals(new int[0], twoSockets().fillOrder(0, new BitSet(), new BitSet()));
+    }
+
+    /**
+     * A spare CPU sharing the last-level cache does not come before a reserved one of the node.
+     */
+    @Test
+    public void reservedCpusBeforeASpareOneInTheCache() throws IOException {
+        write("devices/system/node/online", "0\n");
+        node(0, "0-7", "10");
+        cache(7, 0, 3, "4-7");
+        assertArrayEquals(new int[]{7, 6, 3, 2, 5, 1, 0},
+                NumaTopology.read(sys()).fillOrder(0, bits(2, 3, 6, 7), bits(0, 1, 5)));
+    }
+
+    /**
+     * The last-level cache that counts is that of the highest reserved CPU, not of a spare one.
+     */
+    @Test
+    public void startsAtTheHighestReservedCpu() throws IOException {
+        write("devices/system/node/online", "0\n");
+        node(0, "0-7", "10");
+        cache(3, 0, 3, "0-3");
+        cache(5, 0, 3, "4-7");
+        assertArrayEquals(new int[]{5, 2, 1, 3},
+                NumaTopology.read(sys()).fillOrder(0, bits(1, 2, 5), bits(3)));
+    }
+
+    /**
+     * Two clusters of a socket sharing their last-level cache: still one node at a time.
+     */
+    @Test
+    public void oneNodeAtATimeWhenACacheSpansNodes() throws IOException {
+        write("devices/system/node/online", "0-1\n");
+        node(0, "0,2,4", "10 11");
+        node(1, "1,3,5", "11 10");
+        cache(4, 0, 3, "2-5");
+        assertArrayEquals(new int[]{4, 2, 0, 5, 3, 1},
+                NumaTopology.read(sys()).nearestFirst(4, bits(0, 1, 2, 3, 4, 5), new BitSet()));
+    }
+
+    @Test
+    public void nearASpareCpuTheCpusOfItsNodeFirst() throws IOException {
+        assertArrayEquals(new int[]{12, 8, 13, 11}, twoSockets().nearestFirst(10, bits(11, 13), bits(8, 12)));
     }
 }

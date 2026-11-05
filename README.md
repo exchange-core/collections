@@ -904,21 +904,59 @@ try (CpuAffinity hot = CpuAffinity.acquireCoreOnNode(1)) {    // a reserved core
     // on another thread: CpuAffinity.acquireCoreNear(hot) - same cache, then same node, then by distance
     long[] table = new long[1 << 27];
     Arrays.fill(table, 1);
-    NumaMemory.nodesOf(MemorySegment.ofArray(table));         // node 1 100% of 4096 pages
+    NumaMemory.nodesOf(MemorySegment.ofArray(table));         // node 1 100% of 4096 sampled pages
 }
 ```
 
 - `acquireCoreOnNode` and `acquireCoreNear` never throw for lack of a core, the handle is then not pinned;
   `node()` tells where a handle landed. Without NUMA, or off Linux, the machine is one node 0.
-- `NumaMemory.nodesOf` only reports, it moves nothing: up to 4096 pages spread over the segment, a few
-  milliseconds, not for a hot path. Native memory and arrays, Linux on x86-64 and AArch64 (`isSupported()`).
-  `absentPages()` are the pages not touched yet. For an array the answer holds until the GC moves it.
+- Where only one socket is isolated, `-Daffinity.spare=<hex mask>` allows CPUs of the other one, which are not
+  taken otherwise: they may serve interrupts. Each node gives its reserved CPUs before its spare ones.
+  `acquireCore()` fills one node and goes on to the next by distance. It starts on `-Daffinity.firstNode=<node>`, by
+  default the node of the highest reserved CPU, and the first landing on another node is logged as a warning.
+  A group of threads can go to its node from the start, without taking the cores of the first one:
+
+  ```java
+  // -Daffinity.spare=5554: on top of isolcpus 5-15 (odd), the CPUs 2,4,..,14 of node 0
+  try (CpuAffinity hot = CpuAffinity.acquireCore()) { /* node 1 while it has cores, then node 0 */ }
+  ExecutorService background = Executors.newFixedThreadPool(2, CpuAffinity.threadFactory("bg", 0));   // bg-0, bg-1
+  ```
+
+  A factory's thread pins itself when it starts and releases the core when it ends. The cores of a group are not set
+  aside: threads overflowing from node 1 can take them, so start the group first if they may run short.
+- The JVM can not be moved from inside: it sizes its thread pools from the CPU mask it starts with (`taskset -c 0-31`
+  gives 23 GC threads and 15 compiler threads, `1,3` two of each) and its memory goes by the policy it starts with.
+  So the first thread on the node filled first logs a warning for each thing that stands in the way, once:
+  the node has no memory, the policy or the cpuset sends the memory elsewhere, there is no policy and the JVM started on
+  CPUs of other nodes (148 ns instead of 89 ns on the machine above), the memory already is elsewhere, the heap limit
+  plus `-Daffinity.offHeap=<size>` does not fit. Threads on other nodes hear only if their node has no memory.
+
+  ```java
+  ProcessPlacement placement = ProcessPlacement.current();   // from /proc/self, no native access needed
+  placement.policy();                                        // "bind:1", or "default" without numactl
+  placement.bytesOn(1);                                      // the heap and native memory there now
+  placement.warningsFor(1);                                  // the same warnings, to fail at start-up
+  NumaTopology.current().memoryOf(1).free();                 // bytes, also total(), reclaimable(), freeHugePages()
+  ```
+
+  The free memory of a node is an estimate: there is no `MemAvailable` per node. It does not tell the memory channels
+  apart: on the machine above node 0 has 2, node 1 has 6, and only their sizes differ. `ProcessPlacement` walks the page
+  tables, so at start-up or between runs: with a heap of 16 GiB about 2 ms in huge pages, 65 ms in 4 KB pages.
+- `NumaMemory.nodesOf` only reports, it moves nothing, and it is an estimate: up to 4096 random pages, one from
+  each equal part of the segment, a few milliseconds, not for a hot path. Native memory and arrays, Linux on
+  x86-64 and AArch64. `isSupported()` tried the system call: the default seccomp profile of Docker refuses it.
+  `absentPages()` are the pages not touched yet. An array is asked about again if the GC moved it during the call,
+  and the answer is for that moment: a large array usually stays where it is, a small one moves with every GC.
 - It does not place memory. For the heap the reliable way is the whole JVM on one node, `numactl --membind=1`
   (any JVM). Without it a page goes where the thread touching it first runs: the GC threads with
   `-XX:+AlwaysPreTouch`, and reused regions stay on the node they were first touched from. `-XX:+UseNUMA` with
   G1 spreads a large array over the nodes, 50/50 on two (JEP 345 leaves humongous regions out).
-- A `MigrationService` allocator touches the new arrays first, so pin it to the node of the table's thread:
-  `allocatorThreadInit(() -> CpuAffinity.acquireCoreOnNode(1))`.
+- The arrays of a `LongLongLL2Hashtable` are first touched by different threads: the table's thread creates the
+  first one and any the service is too late with, the worker of its `MigrationService` the new ones up to 4 MB, the
+  allocator the larger ones. A table
+  stays on a node only if all of them run there - `threadInit` and `allocatorThreadInit` with
+  `CpuAffinity.acquireCoreOnNode(1)` - so tables on several nodes need a service per node. Even then reused heap
+  regions stay on their old node: verify with `nodesOf`.
 
 ---
 

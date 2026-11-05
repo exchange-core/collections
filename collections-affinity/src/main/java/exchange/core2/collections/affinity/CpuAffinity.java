@@ -2,8 +2,12 @@ package exchange.core2.collections.affinity;
 
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.List;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 /**
  * Pins the calling thread to one CPU and reserves the whole physical core (all its hyper-threading siblings) for
@@ -25,7 +29,14 @@ import java.util.List;
  *     <li>otherwise Linux's isolated CPUs ({@code /sys/devices/system/cpu/isolated}, set by isolcpus);
  *     none on Windows.</li>
  * </ul>
+ * {@code -Daffinity.spare=<hex mask>} adds CPUs outside the reserved ones, taken on each node after its reserved ones:
+ * where only one socket is isolated, the CPUs of the other one for the threads that do not fit or do not belong there.
+ * None by default, so nothing lands on a CPU that serves interrupts unless allowed to.
+ * {@code -Daffinity.firstNode=<node>} is the node {@link #acquireCore()} starts on, by default that of the highest
+ * reserved CPU.
  * Lock files go to {@code -Daffinity.lockDir} (default: java.io.tmpdir).
+ * <p>
+ * The first thread on the node filled first logs what stands in the way of its memory, see {@link ProcessPlacement}.
  * <p>
  * Threads created by a pinned thread inherit its single-CPU mask: create helper threads before pinning, or pin
  * them to cores of their own.
@@ -36,17 +47,27 @@ public final class CpuAffinity implements AutoCloseable {
 
     private static final AffinityPlatform PLATFORM = AffinityPlatform.detect(LOG);
     private static final BitSet RESERVED = reserved();
+    private static final BitSet SPARE = spare();
+    private static final int FIRST_NODE = firstNode();
     /**
-     * The order of {@link #acquireCore()}: nearest to the highest reserved CPU, so that threads stay on one NUMA node
-     * as long as it has cores, even where the OS numbers the CPUs of the sockets in turn.
+     * The order of {@link #acquireCore()}: threads stay on one NUMA node as long as it has cores, even where the OS
+     * numbers the CPUs of the sockets in turn.
      */
-    private static final int[] RESERVED_ORDER = NumaTopology.current().nearestFirst(RESERVED.length() - 1, RESERVED);
+    private static final int[] FILL_ORDER = NumaTopology.current().fillOrder(FIRST_NODE, RESERVED, SPARE);
     private static final CpuLockFiles LOCK_FILES = new CpuLockFiles(
             Path.of(System.getProperty("affinity.lockDir", System.getProperty("java.io.tmpdir"))));
     /**
      * Logical CPUs held by the handles of this process. Guards the acquisition.
      */
     private static final BitSet TAKEN = new BitSet();
+    /**
+     * The nodes {@link #warnIfOnOtherNode} has warned about. Guarded by TAKEN.
+     */
+    static final BitSet WARNED_NODES = new BitSet();
+    /**
+     * The nodes {@link #warnAboutMemory} has looked at. Guarded by TAKEN.
+     */
+    static final BitSet MEMORY_CHECKED = new BitSet();
 
     private final int cpu;
     private final BitSet held;
@@ -66,19 +87,21 @@ public final class CpuAffinity implements AutoCloseable {
     }
 
     /**
-     * Pins the calling thread to the first reserved CPU whose core is free - the highest CPU first, one NUMA node
-     * before the next. Never throws: if no core is free, no CPU is reserved or the platform is not supported, the
-     * handle is not pinned ({@link #isPinned()}).
+     * Pins the calling thread to the first free core: on the first node (see the class comment) its reserved CPUs, the
+     * highest first, then its spare ones, then the same on the other nodes by distance. The first landing on another
+     * node is logged as a warning. Never throws: if no core is free, no CPU is reserved or the platform is not
+     * supported, the handle is not pinned ({@link #isPinned()}).
      */
     public static CpuAffinity acquireCore() {
         if (PLATFORM == null) return notPinned("thread affinity not supported here");
-        final CpuAffinity affinity = firstFree(RESERVED_ORDER);
-        return affinity != null ? affinity : noReservedCore();
+        final CpuAffinity affinity = firstFree(FILL_ORDER);
+        return affinity != null ? warnIfOnOtherNode(FIRST_NODE, affinity) : noFreeCore();
     }
 
     /**
-     * Pins the calling thread to the highest reserved CPU of this NUMA node whose core is free. Never throws for that:
-     * if there is none or the platform is not supported, the handle is not pinned ({@link #isPinned()}).
+     * Pins the calling thread to a free core of this NUMA node: its reserved CPUs, the highest first, then its spare
+     * ones. Never throws for that: if there is none or the platform is not supported, the handle is not pinned
+     * ({@link #isPinned()}).
      *
      * @throws IllegalArgumentException if the node is negative
      */
@@ -86,39 +109,94 @@ public final class CpuAffinity implements AutoCloseable {
         if (node < 0) throw new IllegalArgumentException("node " + node);
         if (PLATFORM == null) return notPinned("thread affinity not supported here");
         final NumaTopology topology = NumaTopology.current();
-        final BitSet cpus = topology.cpusOf(node);
-        cpus.and(RESERVED);
-        final CpuAffinity affinity = firstFree(topology.nearestFirst(cpus.length() - 1, cpus));
-        return affinity != null
-                ? affinity
-                : notPinned("no free reserved core on node " + node + ", reserved: " + CpuSets.toList(RESERVED));
+        final int[] cpus = Arrays.stream(topology.fillOrder(node, RESERVED, SPARE))
+                .filter(cpu -> topology.nodeOfCpu(cpu) == node)
+                .toArray();
+        final CpuAffinity affinity = firstFree(cpus);
+        return affinity != null ? affinity : notPinned("no free core on node " + node + ", " + allowedCpus());
     }
 
     /**
-     * Pins the calling thread to the free reserved core nearest to this handle's: sharing its last-level cache, then
-     * on its NUMA node, then on the other nodes by distance - {@link #node()} tells where it landed. If that handle is
-     * not pinned, as {@link #acquireCore()}. Never throws: if no core is free, the handle is not pinned.
+     * Pins the calling thread to the free core nearest to this handle's: sharing its last-level cache, then on its NUMA
+     * node, then on the other nodes by distance, on each node its reserved CPUs before the spare ones - {@link #node()}
+     * tells where it landed, and the first landing on another node is logged as a warning. If that handle is not
+     * pinned, as {@link #acquireCore()}. Never throws: if no core is free, the handle is not pinned.
      */
     public static CpuAffinity acquireCoreNear(CpuAffinity other) {
         if (!other.isPinned()) return acquireCore();
-        final CpuAffinity affinity = firstFree(NumaTopology.current().nearestFirst(other.cpu, RESERVED));
-        return affinity != null ? affinity : noReservedCore();
+        final CpuAffinity affinity = firstFree(NumaTopology.current().nearestFirst(other.cpu, RESERVED, SPARE));
+        return affinity != null ? warnIfOnOtherNode(other.node(), affinity) : noFreeCore();
     }
 
-    private static CpuAffinity firstFree(int[] cpus) {
+    /**
+     * Threads that pin themselves as {@link #acquireCore()} when they start and release the core when they end. Named
+     * {@code name-0}, {@code name-1}, ... A thread that can not be pinned still runs, on the mask of the thread that
+     * created it: see {@link #isPinned()}, the reason is logged as a warning.
+     */
+    public static ThreadFactory threadFactory(String name) {
+        return threadFactory(name, CpuAffinity::acquireCore);
+    }
+
+    /**
+     * As {@link #threadFactory(String)}, pinned as {@link #acquireCoreOnNode(int)}: a group of threads that belongs on
+     * this node, whatever {@link #acquireCore()} is doing elsewhere.
+     *
+     * @throws IllegalArgumentException if the node is negative
+     */
+    public static ThreadFactory threadFactory(String name, int node) {
+        if (node < 0) throw new IllegalArgumentException("node " + node);
+        return threadFactory(name, () -> acquireCoreOnNode(node));
+    }
+
+    private static ThreadFactory threadFactory(String name, Supplier<CpuAffinity> acquire) {
+        final AtomicInteger number = new AtomicInteger();
+        return task -> new Thread(() -> {
+            try (CpuAffinity ignore = acquire.get()) {
+                task.run();
+            }
+        }, name + "-" + number.getAndIncrement());
+    }
+
+    /**
+     * A thread away from the others pays for every cache line it shares with them, and it does not show unless told.
+     * Once for each node: the threads after it land there as well.
+     */
+    static CpuAffinity warnIfOnOtherNode(int node, CpuAffinity affinity) {
+        final int landed = affinity.node();
+        if (landed < 0 || landed == node) return affinity;
+        synchronized (TAKEN) {
+            if (WARNED_NODES.get(landed)) return affinity;
+            WARNED_NODES.set(landed);
+        }
+        LOG.log(System.Logger.Level.WARNING, "{0} pinned to cpu {1} on node {2}: no free core on node {3}, {4}",
+                Thread.currentThread().getName(), affinity.cpu, landed, node, allowedCpus());
+        return affinity;
+    }
+
+    /**
+     * The first of these CPUs whose core is free and which can be pinned to (a cpuset can forbid one). Null if all are
+     * taken, a not pinned handle saying why if pinning failed and nothing else was free.
+     */
+    static CpuAffinity firstFree(int[] cpus) {
+        CpuAffinity failed = null;
         synchronized (TAKEN) {
             for (int cpu : cpus) {
                 final CpuAffinity affinity = tryAcquire(cpu, PLATFORM.coreOf(cpu));
-                if (affinity != null) return affinity;
+                if (affinity != null && affinity.isPinned()) return affinity;
+                if (affinity != null) failed = affinity;
             }
         }
-        return null;
+        return failed;
     }
 
-    private static CpuAffinity noReservedCore() {
-        return notPinned(RESERVED.isEmpty()
+    private static CpuAffinity noFreeCore() {
+        return notPinned(RESERVED.isEmpty() && SPARE.isEmpty()
                 ? "no reserved CPUs (isolcpus or -Daffinity.reserved)"
-                : "all reserved cores are taken: " + CpuSets.toList(RESERVED));
+                : "all these cores are taken: " + allowedCpus());
+    }
+
+    private static String allowedCpus() {
+        return "reserved: " + CpuSets.toList(RESERVED) + ", spare: " + CpuSets.toList(SPARE);
     }
 
     /**
@@ -163,6 +241,7 @@ public final class CpuAffinity implements AutoCloseable {
         if (cpus.intersects(TAKEN)) return null;
         final List<FileChannel> locks = LOCK_FILES.tryLock(cpus, Thread.currentThread().getName());
         if (locks == null) return null;
+        warnAboutMemory(NumaTopology.current().nodeOfCpu(cpu));
         final BitSet previous = PLATFORM.pin(cpu);
         if (previous == null) {
             CpuLockFiles.release(locks);
@@ -174,6 +253,22 @@ public final class CpuAffinity implements AutoCloseable {
         return new CpuAffinity(cpu, cpus, previous, locks, null);
     }
 
+    /**
+     * Holding TAKEN, once for each node, before pinning: it can take a while, see {@link ProcessPlacement}, and that is
+     * better spent off an isolated core. The node filled first, or without one the first node pinned on, is where the
+     * memory of the process is expected: the others hold threads sent there on purpose and hear only if they have no
+     * memory at all.
+     */
+    static void warnAboutMemory(int node) {
+        if (node < 0 || MEMORY_CHECKED.get(node)) return;
+        final boolean expected = FIRST_NODE >= 0 ? node == FIRST_NODE : MEMORY_CHECKED.isEmpty();
+        MEMORY_CHECKED.set(node);
+        final List<String> warnings = expected
+                ? ProcessPlacement.current().warningsFor(node)
+                : ProcessPlacement.ownMemoryWarnings(node, NumaTopology.current());
+        warnings.forEach(warning -> LOG.log(System.Logger.Level.WARNING, warning));
+    }
+
     private static CpuAffinity notPinned(String reason) {
         LOG.log(System.Logger.Level.WARNING, "{0} not pinned: {1}", Thread.currentThread().getName(), reason);
         return new CpuAffinity(-1, new BitSet(), null, List.of(), reason);
@@ -183,6 +278,21 @@ public final class CpuAffinity implements AutoCloseable {
         final String mask = System.getProperty("affinity.reserved");
         if (mask != null) return CpuSets.parseHexMask(mask);
         return PLATFORM != null ? PLATFORM.isolatedCpus() : new BitSet();
+    }
+
+    private static BitSet spare() {
+        final BitSet spare = CpuSets.parseHexMask(System.getProperty("affinity.spare", ""));
+        spare.andNot(RESERVED);
+        return spare;
+    }
+
+    /**
+     * -Daffinity.firstNode, otherwise the node of the highest reserved CPU, or spare CPU if none is reserved.
+     */
+    private static int firstNode() {
+        final String node = System.getProperty("affinity.firstNode");
+        if (node != null) return Integer.parseInt(node.trim());
+        return NumaTopology.current().nodeOfCpu((RESERVED.isEmpty() ? SPARE : RESERVED).length() - 1);
     }
 
     /**
@@ -212,10 +322,17 @@ public final class CpuAffinity implements AutoCloseable {
     }
 
     /**
-     * The CPUs {@link #acquireCore()} chooses from.
+     * The CPUs {@link #acquireCore()} chooses from first.
      */
     public static BitSet reservedCpus() {
         return (BitSet) RESERVED.clone();
+    }
+
+    /**
+     * The CPUs outside {@link #reservedCpus()} it can also take: -Daffinity.spare.
+     */
+    public static BitSet spareCpus() {
+        return (BitSet) SPARE.clone();
     }
 
     /**
