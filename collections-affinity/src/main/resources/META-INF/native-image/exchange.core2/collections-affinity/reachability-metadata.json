@@ -20,7 +20,7 @@
       {
         "returnType": "jlong",
         "parameterTypes": ["jlong", "jlong", "jlong", "jlong", "jlong", "jlong", "jlong"],
-        "options": {"firstVariadicArg": 1}
+        "options": {"firstVariadicArg": 1, "captureCallState": true}
       },
       {
         "returnType": "jlong",

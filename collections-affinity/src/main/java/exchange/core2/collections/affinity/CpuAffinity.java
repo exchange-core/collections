@@ -105,14 +105,20 @@ public final class CpuAffinity implements AutoCloseable {
         return affinity != null ? affinity : noReservedCore();
     }
 
-    private static CpuAffinity firstFree(int[] cpus) {
+    /**
+     * The first of these CPUs whose core is free and which can be pinned to (a cpuset can forbid one). Null if all are
+     * taken, a not pinned handle saying why if pinning failed and nothing else was free.
+     */
+    static CpuAffinity firstFree(int[] cpus) {
+        CpuAffinity failed = null;
         synchronized (TAKEN) {
             for (int cpu : cpus) {
                 final CpuAffinity affinity = tryAcquire(cpu, PLATFORM.coreOf(cpu));
-                if (affinity != null) return affinity;
+                if (affinity != null && affinity.isPinned()) return affinity;
+                if (affinity != null) failed = affinity;
             }
         }
-        return null;
+        return failed;
     }
 
     private static CpuAffinity noReservedCore() {

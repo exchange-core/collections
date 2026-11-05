@@ -149,6 +149,33 @@ public class CpuAffinityTest {
     }
 
     /**
+     * CPU 5000 can not be pinned to anywhere.
+     */
+    @Test
+    public void aFailedPinMovesOnToTheNextCpu() {
+        try (CpuAffinity affinity = CpuAffinity.firstFree(new int[]{5000, 0})) {
+            assertTrue(affinity.toString(), affinity.isPinned());
+            assertEquals(0, affinity.cpu());
+        }
+    }
+
+    @Test
+    public void onlyFailedPinsLeaveTheReason() {
+        try (CpuAffinity affinity = CpuAffinity.firstFree(new int[]{5000})) {
+            assertFalse(affinity.isPinned());
+            assertTrue(affinity.toString(), affinity.toString().contains("cpu 5000"));
+        }
+    }
+
+    @Test
+    public void takenCpusAreNotAFailure() throws InterruptedException {
+        try (CpuAffinity ignore = CpuAffinity.acquireCore(0)) {
+            final Throwable error = inOtherThread(() -> assertNull(CpuAffinity.firstFree(new int[]{0})));
+            assertNull(String.valueOf(error), error);
+        }
+    }
+
+    /**
      * The tests below need reserved CPUs: isolcpus or -Daffinity.reserved.
      */
     @Test

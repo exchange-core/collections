@@ -8,6 +8,9 @@ import java.lang.foreign.Linker;
 import java.lang.foreign.MemorySegment;
 import java.lang.invoke.MethodHandle;
 import java.util.Arrays;
+import java.util.SplittableRandom;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.LongSupplier;
 
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
@@ -15,6 +18,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
@@ -26,25 +30,51 @@ public class NumaMemoryTest {
     private static final long MB = 1 << 20;
     private static final long PAGE = 4096;
 
+    private static long[] sample(long address, long bytes) {
+        return NumaMemory.samplePages(address, bytes, new SplittableRandom(1));
+    }
+
     @Test
     public void samplesEveryPageOfASmallRange() {
-        assertArrayEquals(new long[]{0x10000, 0x11000, 0x12000}, NumaMemory.samplePages(0x10000, 3 * PAGE));
+        assertArrayEquals(new long[]{0x10000, 0x11000, 0x12000}, sample(0x10000, 3 * PAGE));
     }
 
     @Test
     public void samplesThePagesARangeTouches() {
-        assertArrayEquals(new long[]{0x10000}, NumaMemory.samplePages(0x10010, 16));
-        assertArrayEquals(new long[]{0x10000, 0x11000}, NumaMemory.samplePages(0x10ff8, 16));
-        assertArrayEquals(new long[]{0x10000}, NumaMemory.samplePages(0x10000, PAGE));
+        assertArrayEquals(new long[]{0x10000}, sample(0x10010, 16));
+        assertArrayEquals(new long[]{0x10000, 0x11000}, sample(0x10ff8, 16));
+        assertArrayEquals(new long[]{0x10000}, sample(0x10000, PAGE));
     }
 
     @Test
-    public void samplesALargeRangeEvenly() {
-        final long[] pages = NumaMemory.samplePages(0, 8 * 4096 * PAGE);
+    public void samplesOnePageFromEachPartOfALargeRange() {
+        final long[] pages = sample(0, 8 * 4096 * PAGE);
         assertEquals(4096, pages.length);
-        assertEquals(0, pages[0]);
-        assertEquals(8 * PAGE, pages[1]);
-        assertEquals(8 * 4095 * PAGE, pages[4095]);
+        for (int i = 0; i < pages.length; i++) {
+            assertEquals(0, pages[i] % PAGE);
+            assertEquals(i, pages[i] / (8 * PAGE));
+        }
+    }
+
+    @Test
+    public void samplesOtherPagesEachTime() {
+        final long bytes = 8 * 4096 * PAGE;
+        assertNotEquals(Arrays.toString(NumaMemory.samplePages(0, bytes, new SplittableRandom(1))),
+                Arrays.toString(NumaMemory.samplePages(0, bytes, new SplittableRandom(2))));
+    }
+
+    /**
+     * 16 GB, sampled every 4 MB on average: a regular step would see only one node of 2 MB stripes.
+     */
+    @Test
+    public void stripesDoNotHideANode() {
+        for (long stripe : new long[]{2 * MB, 4 * MB, 8 * MB, 32 * MB}) {
+            final int[] nodes = Arrays.stream(sample(0, 16L << 30)).mapToInt(page -> (int) (page / stripe % 2)).toArray();
+            final NumaMemory.Placement placement = new NumaMemory.Placement(nodes);
+            assertFalse(placement.toString(), placement.isOnlyOn(0));
+            assertTrue(placement.toString(), placement.pagesOn(0) > 4096 * 2 / 5);
+            assertTrue(placement.toString(), placement.pagesOn(1) > 4096 * 2 / 5);
+        }
     }
 
     @Test
@@ -57,7 +87,7 @@ public class NumaMemoryTest {
         assertEquals(0, placement.pagesOn(2));
         assertEquals(0, placement.pagesOn(-1));
         assertFalse(placement.isOnlyOn(1));
-        assertEquals("node 0 25%, node 1 50%, absent 25% of 8 pages", placement.toString());
+        assertEquals("node 0 25%, node 1 50%, absent 25% of 8 sampled pages", placement.toString());
     }
 
     @Test
@@ -66,7 +96,7 @@ public class NumaMemoryTest {
         assertEquals(2, placement.sampledPages());
         assertEquals(2, placement.absentPages());
         assertFalse(placement.isOnlyOn(0));
-        assertEquals("absent 100% of 2 pages", placement.toString());
+        assertEquals("absent 100% of 2 sampled pages", placement.toString());
     }
 
     @Test
@@ -84,15 +114,104 @@ public class NumaMemoryTest {
         assertEquals("unknown", placement.toString());
     }
 
+    /**
+     * The addresses a query sees, one after the other, the last one from then on.
+     */
+    private static LongSupplier addresses(long... values) {
+        final AtomicInteger next = new AtomicInteger();
+        return () -> values[Math.min(next.getAndIncrement(), values.length - 1)];
+    }
+
+    @Test
+    public void memoryInPlaceIsAskedOnce() {
+        final AtomicInteger queries = new AtomicInteger();
+        final NumaMemory.Placement placement = NumaMemory.query(addresses(PAGE), PAGE, pages -> {
+            queries.incrementAndGet();
+            assertArrayEquals(new long[]{PAGE}, pages);
+            return new int[]{1};
+        });
+        assertEquals(1, queries.get());
+        assertTrue(placement.toString(), placement.isOnlyOn(1));
+    }
+
+    @Test
+    public void arrayMovedDuringTheQueryIsAskedAgainAtItsNewAddress() {
+        final AtomicInteger queries = new AtomicInteger();
+        final NumaMemory.Placement placement = NumaMemory.query(addresses(PAGE, 2 * PAGE), PAGE, pages -> {
+            // the answer about the old address must not be the result
+            final boolean atNewAddress = queries.incrementAndGet() > 1;
+            assertArrayEquals(new long[]{atNewAddress ? 2 * PAGE : PAGE}, pages);
+            return new int[]{atNewAddress ? 1 : 0};
+        });
+        assertEquals(2, queries.get());
+        assertTrue(placement.toString(), placement.isOnlyOn(1));
+    }
+
+    @Test
+    public void arrayThatKeepsMovingIsUnknown() {
+        final AtomicInteger address = new AtomicInteger();
+        final AtomicInteger queries = new AtomicInteger();
+        final NumaMemory.Placement placement = NumaMemory.query(() -> address.incrementAndGet() * PAGE, PAGE, pages -> {
+            queries.incrementAndGet();
+            return new int[]{1};
+        });
+        assertEquals(0, placement.sampledPages());
+        assertEquals(3, queries.get());
+    }
+
+    @Test
+    public void failedCallIsUnknown() {
+        final AtomicInteger queries = new AtomicInteger();
+        final NumaMemory.Placement placement = NumaMemory.query(addresses(PAGE), PAGE, pages -> {
+            queries.incrementAndGet();
+            return null;
+        });
+        assertEquals(0, placement.sampledPages());
+        assertEquals(1, queries.get());
+    }
+
+    @Test
+    public void unknownAddressIsUnknown() {
+        final NumaMemory.Placement placement = NumaMemory.query(addresses(0), PAGE, pages -> {
+            throw new AssertionError("no query without an address");
+        });
+        assertEquals(0, placement.sampledPages());
+    }
+
     @Test
     public void emptySegmentHasNoPages() {
         assertEquals(0, NumaMemory.nodesOf(MemorySegment.ofArray(new long[0])).sampledPages());
     }
 
     @Test
+    public void closedSegmentHasNoPages() {
+        final MemorySegment closed;
+        try (Arena arena = Arena.ofConfined()) {
+            closed = arena.allocate(MB);
+        }
+        assertEquals(0, NumaMemory.nodesOf(closed).sampledPages());
+    }
+
+    @Test
     public void whereNotSupportedNothingIsKnown() {
         assumeTrue("placement can be read here", !NumaMemory.isSupported());
         assertEquals(0, NumaMemory.nodesOf(MemorySegment.ofArray(new long[1024])).sampledPages());
+    }
+
+    /**
+     * The numbers of the two architectures, on the architecture of the machine.
+     */
+    @Test
+    public void probeTellsTheErrnoOfARefusedCall() throws Throwable {
+        assumeTrue("placement can not be read here", NumaMemory.isSupported());
+        assertEquals(0, new LinuxPages(LinuxPages.movePagesNumber(System.getProperty("os.arch"))).probe());
+        assertEquals("ENOSYS", 38, new LinuxPages(999_999).probe());
+    }
+
+    @Test
+    public void refusedCallIsNoAnswer() {
+        assumeTrue("placement can not be read here", NumaMemory.isSupported());
+        assertEquals(null, new LinuxPages(999_999).nodesOf(new long[]{PAGE}));
     }
 
     @Test
