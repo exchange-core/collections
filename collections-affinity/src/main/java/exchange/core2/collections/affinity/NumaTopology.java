@@ -6,6 +6,7 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Comparator;
+import java.util.List;
 
 /**
  * The NUMA nodes of this machine: their CPUs, how far apart they are, which node a device is attached to. Only reads
@@ -216,10 +217,46 @@ public final class NumaTopology {
         final int node = nodeOfCpu(cpu);
         return set.stream().boxed()
                 .sorted(Comparator.<Integer>comparingInt(other -> cache.get(other) ? 0 : rank(node, nodeOfCpu(other)))
+                        .thenComparing(other -> nodeOfCpu(other) != node)
                         .thenComparing(this::nodeOfCpu, Comparator.reverseOrder())
                         .thenComparing(Comparator.reverseOrder()))
                 .mapToInt(Integer::intValue)
                 .toArray();
+    }
+
+    /**
+     * As {@link #nearestFirst(int, BitSet)} for both sets, and on each node the CPUs of the first set before the others.
+     */
+    int[] nearestFirst(int cpu, BitSet first, BitSet then) {
+        final BitSet all = (BitSet) first.clone();
+        all.or(then);
+        final int[] nearest = nearestFirst(cpu, all);
+        final List<Integer> nodesInOrder = Arrays.stream(nearest).map(this::nodeOfCpu).distinct().boxed().toList();
+        return Arrays.stream(nearest).boxed()
+                .sorted(Comparator.<Integer>comparingInt(other -> nodesInOrder.indexOf(nodeOfCpu(other)))
+                        .thenComparing(other -> !first.get(other)))
+                .mapToInt(Integer::intValue)
+                .toArray();
+    }
+
+    /**
+     * The order threads fill the machine in: the reserved CPUs of this node, then its spare ones, then the same on the
+     * other nodes by distance.
+     */
+    int[] fillOrder(int node, BitSet reserved, BitSet spare) {
+        return nearestFirst(highestCpu(node, reserved, spare), reserved, spare);
+    }
+
+    /**
+     * The highest CPU of this node in the first set, or else in the second, or else at all. -1 if it has no CPUs.
+     */
+    private int highestCpu(int node, BitSet first, BitSet second) {
+        for (BitSet set : new BitSet[]{first, second}) {
+            final BitSet onNode = cpusOf(node);
+            onNode.and(set);
+            if (!onNode.isEmpty()) return onNode.length() - 1;
+        }
+        return cpusOf(node).length() - 1;
     }
 
     /**

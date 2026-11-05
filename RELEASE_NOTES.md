@@ -28,6 +28,10 @@ The API changes since 0.6.0, hence 0.7.0 - each is described below, in short:
   `acquireCoreNear(handle)` and `node()`. `NumaMemory.nodesOf(segment)` reports the nodes of the pages of native
   memory or of an array, it moves nothing. `acquireCore()` now stays on one node while it has free reserved cores:
   where the OS numbers the CPUs of the sockets in turn, it used to alternate between them.
+- **`collections-affinity`: filling the nodes.** `-Daffinity.spare=<hex mask>` allows CPUs outside the reserved ones,
+  taken on each node after its reserved ones, for machines with one socket isolated. `-Daffinity.firstNode=<node>` is
+  where `acquireCore()` starts. The first landing on a node other than wanted is logged as a warning.
+  `CpuAffinity.threadFactory(name)` and `threadFactory(name, node)` give threads that pin themselves.
 - **`LongLongHashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`.** The README documented
   them, but all four threw `UnsupportedOperationException`. `forEach` does not allocate.
 - **`LongLongLL2Hashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`** - they threw

@@ -202,4 +202,84 @@ public class NumaTopologyTest {
     public void nearestFirstOfNothing() throws IOException {
         assertArrayEquals(new int[0], twoSockets().nearestFirst(-1, new BitSet()));
     }
+
+    /**
+     * The reserved CPUs on one socket, as isolcpus usually are: the spare ones of the other socket come last.
+     */
+    @Test
+    public void fillsTheReservedCpusThenTheSpareOnesOfTheOtherNode() throws IOException {
+        assertArrayEquals(new int[]{15, 13, 11, 12, 10, 8},
+                twoSockets().fillOrder(1, bits(11, 13, 15), bits(8, 10, 12)));
+    }
+
+    @Test
+    public void startsOnTheNodeAskedFor() throws IOException {
+        assertArrayEquals(new int[]{12, 10, 8, 15, 13, 11},
+                twoSockets().fillOrder(0, bits(11, 13, 15), bits(8, 10, 12)));
+    }
+
+    @Test
+    public void onANodeTheReservedCpusBeforeTheSpareOnes() throws IOException {
+        assertArrayEquals(new int[]{13, 11, 15, 12, 14, 10},
+                twoSockets().fillOrder(1, bits(11, 12, 13), bits(10, 14, 15)));
+    }
+
+    @Test
+    public void aNodeOfNoAllowedCpusIsSkipped() throws IOException {
+        assertArrayEquals(new int[]{15, 13}, twoSockets().fillOrder(0, bits(13, 15), new BitSet()));
+    }
+
+    @Test
+    public void anUnknownNodeStillGivesAllTheCpus() throws IOException {
+        assertArrayEquals(new int[]{15, 13, 12}, twoSockets().fillOrder(7, bits(13, 15), bits(12)));
+        assertArrayEquals(new int[]{15, 13, 12}, twoSockets().fillOrder(-1, bits(13, 15), bits(12)));
+    }
+
+    @Test
+    public void nothingToFill() throws IOException {
+        assertArrayEquals(new int[0], twoSockets().fillOrder(0, new BitSet(), new BitSet()));
+    }
+
+    /**
+     * A spare CPU sharing the last-level cache does not come before a reserved one of the node.
+     */
+    @Test
+    public void reservedCpusBeforeASpareOneInTheCache() throws IOException {
+        write("devices/system/node/online", "0\n");
+        node(0, "0-7", "10");
+        cache(7, 0, 3, "4-7");
+        assertArrayEquals(new int[]{7, 6, 3, 2, 5, 1, 0},
+                NumaTopology.read(sys()).fillOrder(0, bits(2, 3, 6, 7), bits(0, 1, 5)));
+    }
+
+    /**
+     * The last-level cache that counts is that of the highest reserved CPU, not of a spare one.
+     */
+    @Test
+    public void startsAtTheHighestReservedCpu() throws IOException {
+        write("devices/system/node/online", "0\n");
+        node(0, "0-7", "10");
+        cache(3, 0, 3, "0-3");
+        cache(5, 0, 3, "4-7");
+        assertArrayEquals(new int[]{5, 2, 1, 3},
+                NumaTopology.read(sys()).fillOrder(0, bits(1, 2, 5), bits(3)));
+    }
+
+    /**
+     * Two clusters of a socket sharing their last-level cache: still one node at a time.
+     */
+    @Test
+    public void oneNodeAtATimeWhenACacheSpansNodes() throws IOException {
+        write("devices/system/node/online", "0-1\n");
+        node(0, "0,2,4", "10 11");
+        node(1, "1,3,5", "11 10");
+        cache(4, 0, 3, "2-5");
+        assertArrayEquals(new int[]{4, 2, 0, 5, 3, 1},
+                NumaTopology.read(sys()).nearestFirst(4, bits(0, 1, 2, 3, 4, 5), new BitSet()));
+    }
+
+    @Test
+    public void nearASpareCpuTheCpusOfItsNodeFirst() throws IOException {
+        assertArrayEquals(new int[]{12, 8, 13, 11}, twoSockets().nearestFirst(10, bits(11, 13), bits(8, 12)));
+    }
 }

@@ -910,6 +910,20 @@ try (CpuAffinity hot = CpuAffinity.acquireCoreOnNode(1)) {    // a reserved core
 
 - `acquireCoreOnNode` and `acquireCoreNear` never throw for lack of a core, the handle is then not pinned;
   `node()` tells where a handle landed. Without NUMA, or off Linux, the machine is one node 0.
+- Where only one socket is isolated, `-Daffinity.spare=<hex mask>` allows CPUs of the other one, which are not
+  taken otherwise: they may serve interrupts. Each node gives its reserved CPUs before its spare ones.
+  `acquireCore()` fills one node and goes on to the next by distance. It starts on `-Daffinity.firstNode=<node>`, by
+  default the node of the highest reserved CPU, and the first landing on another node is logged as a warning.
+  A group of threads can go to its node from the start, without taking the cores of the first one:
+
+  ```java
+  // -Daffinity.spare=5554: on top of isolcpus 5-15 (odd), the CPUs 2,4,..,14 of node 0
+  try (CpuAffinity hot = CpuAffinity.acquireCore()) { /* node 1 while it has cores, then node 0 */ }
+  ExecutorService background = Executors.newFixedThreadPool(2, CpuAffinity.threadFactory("bg", 0));   // bg-0, bg-1
+  ```
+
+  A factory's thread pins itself when it starts and releases the core when it ends. The cores of a group are not set
+  aside: threads overflowing from node 1 can take them, so start the group first if they may run short.
 - `NumaMemory.nodesOf` only reports, it moves nothing, and it is an estimate: up to 4096 random pages, one from
   each equal part of the segment, a few milliseconds, not for a hot path. Native memory and arrays, Linux on
   x86-64 and AArch64. `isSupported()` tried the system call: the default seccomp profile of Docker refuses it.
