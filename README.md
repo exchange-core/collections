@@ -951,6 +951,14 @@ try (CpuAffinity hot = CpuAffinity.acquireCoreOnNode(1)) {    // a reserved core
   (any JVM). Without it a page goes where the thread touching it first runs: the GC threads with
   `-XX:+AlwaysPreTouch`, and reused regions stay on the node they were first touched from. `-XX:+UseNUMA` with
   G1 spreads a large array over the nodes, 50/50 on two (JEP 345 leaves humongous regions out).
+- Where the JVM itself starts is a trade-off for a thread whose data is in the L3. On the machine above (JDK 27, G1,
+  the heap on node 1, two GC threads, a thread on node 1 chasing 16 MB), with the JVM on node 1 (`taskset -c 1,3`)
+  a pause copying objects scattered over the heap took 247 ms instead of 316 ms on node 0 (`2,4`), but it pushed the
+  thread's data out of the L3, and for 60 ms after it the thread ran at DRAM speed. With the JVM on node 0 no slowdown
+  was seen after a pause. Copying objects in order the node made no difference; pauses with little to copy took
+  0.5 ms on node 1, 0.8 ms on node 0. So keep the JVM off that L3 and bind only its memory:
+  `numactl --membind=1 taskset -c 2,4`. On CPUs 1,3, `nohz_full` there, the two GC threads at times ran one after
+  the other, and those pauses were twice as long: `-Xlog:gc+cpu` shows `User` close to `Real`.
 - The arrays of a `LongLongLL2Hashtable` are first touched by different threads: the table's thread creates the
   first one and any the service is too late with, the worker of its `MigrationService` the new ones up to 4 MB, the
   allocator the larger ones. A table
