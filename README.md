@@ -860,7 +860,7 @@ dead by the caller.
 ## Thread affinity
 
 `collections-affinity` pins a thread to one CPU and reserves its whole physical core (hyper-threading
-siblings included) — within the process and, through lock files, across processes on the same machine.
+siblings included) — within the process and, through lock files, across the processes that share the lock directory.
 Linux (`sched_setaffinity`) and Windows (`SetThreadAffinityMask`, processor group 0); elsewhere the handle
 reports that nothing was pinned. It calls the OS through the Foreign Function and Memory API: Java 22+, no
 native library, and it also works in a GraalVM native image.
@@ -876,14 +876,18 @@ try (CpuAffinity affinity = CpuAffinity.acquireCore()) {   // or acquireCore(cpu
 - `acquireCore()` takes a free core from the reserved CPUs: `-Daffinity.reserved=<hex mask>`
   (e.g. `AAAA` = CPUs 1,3,…,15), otherwise the kernel's isolated CPUs (`isolcpus`). The highest CPU first, one
   NUMA node before the next. If none is free it returns a handle that is not pinned (`isPinned()`), it never
-  throws.
+  throws. A malformed value of an `-Daffinity.*` property is logged as a warning and ignored, as if it was not set:
+  a list such as `5,7,9` where a mask belongs among them.
 - `acquireCore(int cpu)` pins to that CPU and throws `IllegalStateException` if its core is held.
 - `acquireCpu(int cpu)` pins to that logical CPU and reserves only it, so that two threads can share a core
   (e.g. `acquireCpu(5)` and `acquireCpu(21)`). It throws `IllegalStateException` if the CPU is held;
   `acquireCore` does not take a core while one of its CPUs is held.
 - `close()` restores the thread's previous mask and releases what it reserved — call it from the pinned thread.
 - Run with `--enable-native-access=ALL-UNNAMED` to avoid the JDK's restricted-method warning.
-- Lock files: `exchange-core2-cpu-<n>.lock` in `-Daffinity.lockDir` (default `java.io.tmpdir`).
+- Lock files: `exchange-core2-cpu-<n>.lock` in `-Daffinity.lockDir` (default `java.io.tmpdir`). Only processes
+  with the same directory see each other's cores: a systemd service with `PrivateTmp` has a `/tmp` of its own, and on
+  Windows each user has a temp directory of their own. A lock file that is a symbolic link is not followed: that CPU
+  is then reserved only within the process.
 - Threads started by a pinned thread inherit its single-CPU mask: start helper threads before pinning, or
   let them pin themselves - e.g. `MigrationService.builder().threadInit(() -> CpuAffinity.acquireCore(5))`.
 

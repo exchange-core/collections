@@ -31,11 +31,23 @@ final class CpuSets {
 
     /**
      * Hex mask, most significant digit first: "AAAA" (as OpenHFT's affinity.reserved) or the kernel's bitmap
-     * format of comma-separated 32-bit words "00000100,00000000". An optional "0x" prefix is ignored.
+     * format of comma-separated 32-bit words "00000100,00000000". An optional "0x" prefix is ignored. Blank means
+     * empty.
+     *
+     * @throws NumberFormatException for anything else - a list such as "5,7,9" among them, which would read as 0x579
      */
     static BitSet parseHexMask(String mask) {
-        String hex = mask.trim().replace(",", "");
+        String hex = mask.trim();
         if (hex.startsWith("0x") || hex.startsWith("0X")) hex = hex.substring(2);
+        final String[] words = hex.split(",", -1);
+        for (int i = 0; i < words.length; i++) {
+            final String word = words[i];
+            final boolean sized = words.length == 1 || (i == 0 ? !word.isEmpty() && word.length() <= 8 : word.length() == 8);
+            if (!sized || !word.chars().allMatch(c -> Character.digit(c, 16) >= 0)) {
+                throw new NumberFormatException("not a hex mask: " + mask);
+            }
+        }
+        hex = String.join("", words);
         final BitSet cpus = new BitSet();
         if (hex.isEmpty()) return cpus;
         final BigInteger bits = new BigInteger(hex, 16);

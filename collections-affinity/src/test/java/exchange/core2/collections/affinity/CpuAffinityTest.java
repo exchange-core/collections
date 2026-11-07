@@ -482,13 +482,50 @@ public class CpuAffinityTest {
         }
     }
 
+    @Test
+    public void malformedMaskIsIgnored() {
+        final String name = "affinity.test.mask";
+        try {
+            assertNull(CpuAffinity.maskProperty(name));
+            System.setProperty(name, "AAAA");
+            assertEquals(CpuSetsTest.bits(1, 3, 5, 7, 9, 11, 13, 15), CpuAffinity.maskProperty(name));
+            for (String malformed : new String[]{"5,7,9", "0xZZ"}) {
+                System.setProperty(name, malformed);
+                final List<String> warnings = warningsDuring(() -> assertNull(CpuAffinity.maskProperty(name)));
+                assertEquals(List.of("-D" + name + "=" + malformed + " is not a hex mask such as AAAA: ignored"), warnings);
+            }
+        } finally {
+            System.clearProperty(name);
+        }
+    }
+
+    @Test
+    public void firstNodeMustBeANode() {
+        final NumaTopology topology = NumaTopology.current();
+        final BitSet cpu0 = CpuSetsTest.bits(0);
+        assertEquals(List.of(), warningsDuring(() -> {
+            assertEquals(0, CpuAffinity.firstNode(" 0 ", topology, new BitSet(), new BitSet()));
+            assertEquals(topology.nodeOfCpu(0), CpuAffinity.firstNode(null, topology, cpu0, new BitSet()));
+            assertEquals(topology.nodeOfCpu(0), CpuAffinity.firstNode(null, topology, new BitSet(), cpu0));
+            assertEquals(-1, CpuAffinity.firstNode(null, topology, new BitSet(), new BitSet()));
+        }));
+        for (String malformed : new String[]{"one", "-1", "4096"}) {
+            final List<String> warnings = warningsDuring(() ->
+                    assertEquals(topology.nodeOfCpu(0), CpuAffinity.firstNode(malformed, topology, cpu0, new BitSet())));
+            assertEquals(List.of("-Daffinity.firstNode=" + malformed + " is not a node of this machine ("
+                    + CpuSets.toList(topology.nodes()) + "): ignored"), warnings);
+        }
+    }
+
     /**
      * The node acquireCore() starts on, -1 if nothing is allowed and no node asked for.
      */
     private static int firstNode() {
         final BitSet reserved = CpuAffinity.reservedCpus();
         final BitSet highestFrom = reserved.isEmpty() ? CpuAffinity.spareCpus() : reserved;
-        return Integer.getInteger("affinity.firstNode", NumaTopology.current().nodeOfCpu(highestFrom.length() - 1));
+        final Integer asked = Integer.getInteger("affinity.firstNode");
+        return asked != null && asked >= 0 && NumaTopology.current().nodes().get(asked)
+                ? asked : NumaTopology.current().nodeOfCpu(highestFrom.length() - 1);
     }
 
     private static boolean nothingAllowed() {

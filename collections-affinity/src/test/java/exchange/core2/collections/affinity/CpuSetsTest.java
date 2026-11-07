@@ -5,6 +5,7 @@ import org.junit.Test;
 import java.util.BitSet;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 public class CpuSetsTest {
@@ -22,7 +23,21 @@ public class CpuSetsTest {
         assertEquals(bits(0, 4), CpuSets.parseHexMask("0x11"));
         // kernel bitmap format: 32-bit words, most significant first
         assertEquals(bits(40), CpuSets.parseHexMask("00000100,00000000"));
+        assertEquals(bits(40), CpuSets.parseHexMask("100,00000000"));
+        assertEquals(bits(40), CpuSets.parseHexMask("10000000000"));
         assertTrue(CpuSets.parseHexMask("0").isEmpty());
+        assertTrue(CpuSets.parseHexMask(" ").isEmpty());
+    }
+
+    @Test
+    public void rejectsWhatIsNotAHexMask() {
+        // a list where a mask belongs: "5,7,9" would read as 0x579, CPUs 0,3-6,8,10
+        for (String list : new String[]{"5,7,9", "5-15", "000000001,00000000", ",00000000", "AAAA,"}) {
+            assertThrows(list, NumberFormatException.class, () -> CpuSets.parseHexMask(list));
+        }
+        for (String other : new String[]{"0xZZ", "-1", "+A", "0x-1", "A A"}) {
+            assertThrows(other, NumberFormatException.class, () -> CpuSets.parseHexMask(other));
+        }
     }
 
     @Test

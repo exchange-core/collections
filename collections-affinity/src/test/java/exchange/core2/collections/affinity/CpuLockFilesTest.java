@@ -5,6 +5,7 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -17,6 +18,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeNoException;
 
 public class CpuLockFilesTest {
 
@@ -41,6 +43,21 @@ public class CpuLockFilesTest {
         assertNotNull(again);
         CpuLockFiles.release(again);
         CpuLockFiles.release(four);
+    }
+
+    @Test
+    public void doesNotFollowALink() throws Exception {
+        final Path dir = tmp.getRoot().toPath();
+        final Path other = Files.writeString(dir.resolve("other"), "keep");
+        final CpuLockFiles files = new CpuLockFiles(dir);
+        try {
+            Files.createSymbolicLink(files.file(7), other);
+        } catch (IOException | UnsupportedOperationException e) {
+            assumeNoException("no symbolic links here", e);
+        }
+        // not reserved across processes, not refused either
+        assertEquals(List.of(), files.tryLock(bits(7), "test"));
+        assertEquals("keep", Files.readString(other));
     }
 
     @Test

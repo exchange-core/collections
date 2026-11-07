@@ -8,6 +8,7 @@ import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermissions;
@@ -17,7 +18,9 @@ import java.util.List;
 
 /**
  * Reserves CPUs across processes: one lock file per logical CPU, locked while a {@link CpuAffinity} holds it.
- * The lock is the OS file lock, so it is released when the process dies; the files themselves stay.
+ * The lock is the OS file lock, so it is released when the process dies; the files themselves stay. Only processes
+ * with the same directory see each other. A file is opened without following a symbolic link: in a directory others
+ * can write to, a link would point the truncation at a file of their choosing.
  */
 final class CpuLockFiles {
 
@@ -45,7 +48,7 @@ final class CpuLockFiles {
             final FileChannel channel;
             try {
                 createSharedFile(file);
-                channel = FileChannel.open(file, StandardOpenOption.WRITE);
+                channel = FileChannel.open(file, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
             } catch (IOException e) {
                 // e.g. a file created by another user: it can not coordinate anything, so it must not block the CPU
                 LOG.log(System.Logger.Level.WARNING, "cpu {0} is not reserved across processes: {1}", cpu, e.toString());

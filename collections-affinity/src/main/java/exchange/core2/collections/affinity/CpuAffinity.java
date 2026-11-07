@@ -11,8 +11,9 @@ import java.util.function.Supplier;
 
 /**
  * Pins the calling thread to one CPU and reserves the whole physical core (all its hyper-threading siblings) for
- * it, within this process and - through lock files - across processes. Linux and Windows; elsewhere, or without
- * native access, nothing is pinned and the returned handle says so. Uses the Foreign Function and Memory API:
+ * it, within this process and - through lock files - across the processes that share the lock directory. Linux and
+ * Windows; elsewhere, or without native access, nothing is pinned and the returned handle says so. Uses the Foreign
+ * Function and Memory API:
  * Java 22+, run with {@code --enable-native-access=ALL-UNNAMED} (or this module's name) to avoid the JDK's
  * restricted-method warning. Works in a GraalVM native image (the jar carries its reachability metadata).
  * {@link #acquireCpu(int)} reserves only the logical CPU, for threads that are meant to share a core.
@@ -34,7 +35,8 @@ import java.util.function.Supplier;
  * None by default, so nothing lands on a CPU that serves interrupts unless allowed to.
  * {@code -Daffinity.firstNode=<node>} is the node {@link #acquireCore()} starts on, by default that of the highest
  * reserved CPU.
- * Lock files go to {@code -Daffinity.lockDir} (default: java.io.tmpdir).
+ * Lock files go to {@code -Daffinity.lockDir} (default: java.io.tmpdir). A malformed value of these properties is
+ * logged as a warning and ignored, as if it was not set.
  * <p>
  * The first thread on the node filled first logs what stands in the way of its memory, see {@link ProcessPlacement}.
  * <p>
@@ -48,7 +50,8 @@ public final class CpuAffinity implements AutoCloseable {
     private static final AffinityPlatform PLATFORM = AffinityPlatform.detect(LOG);
     private static final BitSet RESERVED = reserved();
     private static final BitSet SPARE = spare();
-    private static final int FIRST_NODE = firstNode();
+    private static final int FIRST_NODE =
+            firstNode(System.getProperty("affinity.firstNode"), NumaTopology.current(), RESERVED, SPARE);
     /**
      * The order of {@link #acquireCore()}: threads stay on one NUMA node as long as it has cores, even where the OS
      * numbers the CPUs of the sockets in turn.
@@ -275,24 +278,49 @@ public final class CpuAffinity implements AutoCloseable {
     }
 
     private static BitSet reserved() {
-        final String mask = System.getProperty("affinity.reserved");
-        if (mask != null) return CpuSets.parseHexMask(mask);
+        final BitSet mask = maskProperty("affinity.reserved");
+        if (mask != null) return mask;
         return PLATFORM != null ? PLATFORM.isolatedCpus() : new BitSet();
     }
 
     private static BitSet spare() {
-        final BitSet spare = CpuSets.parseHexMask(System.getProperty("affinity.spare", ""));
+        final BitSet mask = maskProperty("affinity.spare");
+        final BitSet spare = mask != null ? mask : new BitSet();
         spare.andNot(RESERVED);
         return spare;
     }
 
     /**
-     * -Daffinity.firstNode, otherwise the node of the highest reserved CPU, or spare CPU if none is reserved.
+     * The hex mask of this system property, null if it is not set or not a mask: that is logged, the class must load
+     * anyway - acquireCore() never throws.
      */
-    private static int firstNode() {
-        final String node = System.getProperty("affinity.firstNode");
-        if (node != null) return Integer.parseInt(node.trim());
-        return NumaTopology.current().nodeOfCpu((RESERVED.isEmpty() ? SPARE : RESERVED).length() - 1);
+    static BitSet maskProperty(String name) {
+        final String value = System.getProperty(name);
+        if (value == null) return null;
+        try {
+            return CpuSets.parseHexMask(value);
+        } catch (NumberFormatException e) {
+            LOG.log(System.Logger.Level.WARNING, "-D{0}={1} is not a hex mask such as AAAA: ignored", name, value);
+            return null;
+        }
+    }
+
+    /**
+     * -Daffinity.firstNode if it is a node of this machine - otherwise that is logged - else the node of the highest
+     * reserved CPU, or spare CPU if none is reserved.
+     */
+    static int firstNode(String value, NumaTopology topology, BitSet reserved, BitSet spare) {
+        if (value != null) {
+            try {
+                final int node = Integer.parseInt(value.trim());
+                if (node >= 0 && topology.nodes().get(node)) return node;
+            } catch (NumberFormatException e) {
+                // logged below
+            }
+            LOG.log(System.Logger.Level.WARNING, "-Daffinity.firstNode={0} is not a node of this machine ({1}): ignored",
+                    value, CpuSets.toList(topology.nodes()));
+        }
+        return topology.nodeOfCpu((reserved.isEmpty() ? spare : reserved).length() - 1);
     }
 
     /**
