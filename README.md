@@ -20,9 +20,9 @@ and designed for low-latency, single-threaded hot paths.
 
 ### Requirements
 
-- **To use the published artifacts:** Java 26+ (0.6.0). The next release, 0.7.0, drops the published
-  bytecode level to Java 21; `collections-affinity` (new) needs Java 22+, as it uses the Foreign
-  Function and Memory API.
+- **To use the published artifacts:** `collections-core` and `collections-orderbook` 0.6.0 need Java 26+;
+  their next release, 0.8.0, drops the published bytecode level to Java 21. `collections-affinity` (0.7.0)
+  needs Java 22+, as it uses the Foreign Function and Memory API.
 - **To build from source:** JDK 26 and Maven 3.9+ — the benchmark and stress modules use newer
   language APIs than the published ones.
 
@@ -48,7 +48,18 @@ And, if you need the order book:
 </dependency>
 ```
 
-The balances (`collections-ledger`) come with the next release.
+For pinning threads to cores (Java 22+, no dependencies, see [Thread affinity](#thread-affinity)):
+
+```xml
+<dependency>
+    <groupId>exchange.core2</groupId>
+    <artifactId>collections-affinity</artifactId>
+    <version>0.7.0</version>
+</dependency>
+```
+
+The modules share one version line, but 0.7.0 is `collections-affinity` alone: there is no `collections-core`
+0.7.0. The balances (`collections-ledger`) come with 0.8.0.
 
 To build from source and install into the local repository:
 

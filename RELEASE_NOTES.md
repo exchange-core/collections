@@ -1,8 +1,9 @@
 # Release notes
 
-## 0.7.0 (unreleased)
+## 0.8.0 (unreleased)
 
-The API changes since 0.6.0, hence 0.7.0 - each is described below, in short:
+The first release of `collections-core` and `collections-orderbook` since 0.6.0 (0.7.0 was `collections-affinity`
+alone), with `collections-ledger` new. The API changes since 0.6.0 - each is described below, in short:
 
 - `LongAdaptiveRadixTreeMap`: `put` / `remove` return the previous / removed value (recompile);
   `getHigherValue` / `getLowerValue` are `higherValue` / `lowerValue`; `size(limit)` is gone -
@@ -16,30 +17,6 @@ The API changes since 0.6.0, hence 0.7.0 - each is described below, in short:
 
 ### Added
 
-- **`collections-affinity`: pinning threads to CPU cores.** `CpuAffinity.acquireCore()` pins the calling
-  thread to a free core of the reserved CPUs (`isolcpus` or `-Daffinity.reserved`), reserving all its
-  hyper-threading siblings, within the process and across the processes sharing a lock directory (lock files; a CPU
-  whose file can not be used, a symbolic link among them, is not taken). A virtual thread is not pinned, its handle
-  says why. A malformed `-Daffinity.*` value is logged and ignored. Linux and Windows,
-  through the Foreign Function and Memory API: Java 22+, no dependencies, no native library, works in a
-  GraalVM native image (reachability metadata included). Replaces OpenHFT Affinity (JNA) in the benchmarks;
-  `net.openhft:affinity` is no longer used anywhere in the build. `CpuAffinity.acquireCpu(cpu)` pins to one
-  logical CPU and leaves its sibling free, for threads that are meant to share a core.
-- **`collections-affinity`: NUMA nodes.** `NumaTopology`: the nodes, their CPUs and distances, the last-level
-  cache of a CPU, the node of a network interface or a PCI device (from sysfs). `CpuAffinity.acquireCoreOnNode(node)`,
-  `acquireCoreNear(handle)` and `node()`. `NumaMemory.nodesOf(segment)` reports the nodes of the pages of native
-  memory or of an array, it moves nothing. `acquireCore()` now stays on one node while it has free reserved cores:
-  where the OS numbers the CPUs of the sockets in turn, it used to alternate between them.
-- **`collections-affinity`: filling the nodes.** `-Daffinity.spare=<hex mask>` allows CPUs outside the reserved ones,
-  taken on each node after its reserved ones, for machines with one socket isolated. `-Daffinity.firstNode=<node>` is
-  where `acquireCore()` starts. The first landing on a node other than wanted is logged as a warning.
-  `CpuAffinity.threadFactory(name)` and `threadFactory(name, node)` give threads that pin themselves.
-- **`collections-affinity`: checking memory.** `ProcessPlacement` reports the memory policy, CPU mask and memory by
-  node of the process, `warningsFor(node)` what stands in the way of threads on that node: no memory there, the policy,
-  the cpuset or the mask of the JVM sending it elsewhere, the heap limit plus `-Daffinity.offHeap` not fitting.
-  `CpuAffinity` logs that once, for the node it fills first. `NumaTopology.memoryOf(node)` reads the node's memory.
-  Resident huge pages and the memfd heap of ZGC are counted; free HugeTLB pools are reported separately from memory
-  available to ordinary allocations.
 - **`LongLongHashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`.** The README documented
   them, but all four threw `UnsupportedOperationException`. `forEach` does not allocate.
 - **`LongLongLL2Hashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`** - they threw
@@ -83,7 +60,7 @@ The API changes since 0.6.0, hence 0.7.0 - each is described below, in short:
 - **`HashtableOpsJmh`** (`tests-perf`, JMH 1.34): average time of the single-key hashtable operations, hits
   and misses, from an L1-resident table to one in DRAM - for A/B runs of `collections-core` builds.
 - **`Automatic-Module-Name`** in the published jars: `exchange.core2.collections`,
-  `exchange.core2.collections.orderbook`, `exchange.core2.collections.affinity`.
+  `exchange.core2.collections.orderbook`, `exchange.core2.collections.ledger`.
 - **`LongAdaptiveRadixTreeMap`: `containsKey`, `putIfAbsent`, `computeIfAbsent`, `putAndGetLowerValue` /
   `putAndGetHigherValue`, `ceilingValue` / `floorValue`, `firstKey` / `lastKey`, `firstValue` /
   `lastValue`, `pollFirstValue` / `pollLastValue`, `size()` and `isEmpty()`.** The fused puts are what an order
@@ -436,6 +413,40 @@ The API changes since 0.6.0, hence 0.7.0 - each is described below, in short:
   runs some 64 thousand tests on `asNavigableMap()` and the views it derives, for keys far apart and next to each
   other; `ArtNavigableMapOracleTest` builds random chains of views on it and on a `TreeMap` and compares every
   result, the bounds at the ends of the long range included.
+
+## 0.7.0 (2026-11-06)
+
+The first release of `collections-affinity`, published alone with the parent POM: `collections-core` and
+`collections-orderbook` stay at 0.6.0, there is no 0.7.0 of them - their changes since 0.6.0 come with 0.8.0,
+above. Java 22+, no dependencies.
+
+### Added
+
+- **`collections-affinity`: pinning threads to CPU cores.** `CpuAffinity.acquireCore()` pins the calling
+  thread to a free core of the reserved CPUs (`isolcpus` or `-Daffinity.reserved`), reserving all its
+  hyper-threading siblings, within the process and across the processes sharing a lock directory (lock files; a CPU
+  whose file can not be used, a symbolic link among them, is not taken). A virtual thread is not pinned, its handle
+  says why. A malformed `-Daffinity.*` value is logged and ignored. Linux and Windows,
+  through the Foreign Function and Memory API: Java 22+, no dependencies, no native library, works in a
+  GraalVM native image (reachability metadata included). Replaces OpenHFT Affinity (JNA) in the benchmarks;
+  `net.openhft:affinity` is no longer used anywhere in the build. `CpuAffinity.acquireCpu(cpu)` pins to one
+  logical CPU and leaves its sibling free, for threads that are meant to share a core.
+- **`collections-affinity`: NUMA nodes.** `NumaTopology`: the nodes, their CPUs and distances, the last-level
+  cache of a CPU, the node of a network interface or a PCI device (from sysfs). `CpuAffinity.acquireCoreOnNode(node)`,
+  `acquireCoreNear(handle)` and `node()`. `NumaMemory.nodesOf(segment)` reports the nodes of the pages of native
+  memory or of an array, it moves nothing. `acquireCore()` now stays on one node while it has free reserved cores:
+  where the OS numbers the CPUs of the sockets in turn, it used to alternate between them.
+- **`collections-affinity`: filling the nodes.** `-Daffinity.spare=<hex mask>` allows CPUs outside the reserved ones,
+  taken on each node after its reserved ones, for machines with one socket isolated. `-Daffinity.firstNode=<node>` is
+  where `acquireCore()` starts. The first landing on a node other than wanted is logged as a warning.
+  `CpuAffinity.threadFactory(name)` and `threadFactory(name, node)` give threads that pin themselves.
+- **`collections-affinity`: checking memory.** `ProcessPlacement` reports the memory policy, CPU mask and memory by
+  node of the process, `warningsFor(node)` what stands in the way of threads on that node: no memory there, the policy,
+  the cpuset or the mask of the JVM sending it elsewhere, the heap limit plus `-Daffinity.offHeap` not fitting.
+  `CpuAffinity` logs that once, for the node it fills first. `NumaTopology.memoryOf(node)` reads the node's memory.
+  Resident huge pages and the memfd heap of ZGC are counted; free HugeTLB pools are reported separately from memory
+  available to ordinary allocations.
+- **`Automatic-Module-Name`** `exchange.core2.collections.affinity` in the jar.
 
 ## 0.6.0
 
