@@ -405,8 +405,8 @@ alone), with `collections-ledger` new. The API changes since 0.6.0 - each is des
 ### Testing
 
 - **API check against the last release**: `mvn -Papi-check -DskipTests verify` compares the published modules with
-  0.6.0 (japicmp) and fails on a binary or source incompatible change not listed in the profile's excludes - the
-  breaks of this release are listed there.
+  their last release (japicmp: 0.6.0, `collections-affinity` 0.7.0) and fails on a binary or source incompatible
+  change not listed in the profile's excludes - the breaks of this release are listed there.
 - **Strict javadoc**: doclint checks everything but missing comments, and a warning fails the build (it found an
   empty `<p>` in `IOrderBook`).
 - **The `java.util` contract of the ART view**: Guava's `NavigableMapTestSuiteBuilder` (`guava-testlib`, test scope)
