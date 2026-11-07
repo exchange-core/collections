@@ -17,6 +17,7 @@ import static exchange.core2.collections.affinity.CpuSetsTest.bits;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeNoException;
 
@@ -55,9 +56,32 @@ public class CpuLockFilesTest {
         } catch (IOException | UnsupportedOperationException e) {
             assumeNoException("no symbolic links here", e);
         }
-        // not reserved across processes, not refused either
-        assertEquals(List.of(), files.tryLock(bits(7), "test"));
+        assertThrows(IOException.class, () -> files.tryLock(bits(7), "test"));
         assertEquals("keep", Files.readString(other));
+    }
+
+    @Test
+    public void createsItsDirectory() throws Exception {
+        final CpuLockFiles files = new CpuLockFiles(tmp.getRoot().toPath().resolve("not/there"));
+        final List<FileChannel> locked = files.tryLock(bits(1), "test");
+        assertNotNull(locked);
+        assertTrue(Files.isRegularFile(files.file(1)));
+        CpuLockFiles.release(locked);
+    }
+
+    @Test
+    public void aFileThatCanNotBeUsedRefusesItsCpu() throws Exception {
+        // nothing would tell another process the CPU is taken
+        final Path notADirectory = tmp.newFile("file").toPath();
+        assertThrows(IOException.class, () -> new CpuLockFiles(notADirectory).tryLock(bits(1), "test"));
+
+        final CpuLockFiles files = new CpuLockFiles(tmp.getRoot().toPath());
+        Files.createDirectory(files.file(4));
+        assertThrows(IOException.class, () -> files.tryLock(bits(3, 4), "test"));
+        // all or nothing: 3 is free again
+        final List<FileChannel> three = files.tryLock(bits(3), "test");
+        assertNotNull(three);
+        CpuLockFiles.release(three);
     }
 
     @Test

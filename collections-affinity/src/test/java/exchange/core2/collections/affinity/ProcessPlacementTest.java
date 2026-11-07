@@ -119,6 +119,15 @@ public class ProcessPlacementTest {
     }
 
     @Test
+    public void countsTheHeapOfZgc() throws IOException {
+        // ZGC maps its heap through a memfd: a file mapping that is the memory of the process
+        final ProcessPlacement placement = process("default", "1",
+                "7f00 interleave:0-1 file=/memfd:java_heap\\040(deleted) dirty=" + PAGES_IN_GIB + " N1=" + PAGES_IN_GIB
+                        + " kernelpagesize_kB=4");
+        assertEquals(GIB + 4096, placement.bytesOn(1));
+    }
+
+    @Test
     public void reportsAllOfItForALog() throws IOException {
         assertEquals("policy bind:1, cpus 1,3, memory allowed on 0-1, node 1 1.0 GiB",
                 process("bind:1", "1,3", anon(0, PAGES_IN_GIB)).toString());
@@ -250,10 +259,20 @@ public class ProcessPlacementTest {
     }
 
     @Test
-    public void reservedHugePagesCountAsFree() throws IOException {
+    public void reservedHugePagesAreNotOrdinaryFreeMemory() throws IOException {
         final NumaTopology topology = twoSockets(5, 0);
         write("sys/devices/system/node/node1/hugepages/hugepages-1048576kB/free_hugepages", "8\n");
-        assertEquals(List.of(), process("default", "1").warningsFor(1, topology, 10 * GIB));
+        final List<String> warnings = process("default", "1").warningsFor(1, topology, 10 * GIB);
+        assertOneWarning(warnings, "node 1 has enough memory only in its reserved huge pages");
+        assertTrue(warnings.get(0), warnings.get(0).contains("5.0 GiB is free and 0.0 GiB reclaimable, 8.0 GiB in free huge pages"));
+        // A huge mapping does not establish the kind or page size of future allocations.
+        final String hugeHeap = "7f02 default file=/anon_hugepage\\040(deleted) huge";
+        assertOneWarning(process("default", "1", hugeHeap).warningsFor(1, topology, 10 * GIB),
+                "reserved huge pages, which require explicit mappings of the matching page size");
+        assertOneWarning(process("default", "1", hugeHeap).warningsFor(1, topology, 14 * GIB), "has not enough memory");
+        // Already resident huge pages count toward the process's need, rather than toward the free pool.
+        final String resident = "7f02 default file=/anon_hugepage\\040(deleted) huge N1=5120 kernelpagesize_kB=2048";
+        assertEquals(List.of(), process("default", "1", resident).warningsFor(1, topology, 10 * GIB));
     }
 
     @Test

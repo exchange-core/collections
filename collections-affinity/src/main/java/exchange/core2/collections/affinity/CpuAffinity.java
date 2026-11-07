@@ -1,6 +1,8 @@
 package exchange.core2.collections.affinity;
 
+import java.io.IOException;
 import java.nio.channels.FileChannel;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.BitSet;
@@ -35,8 +37,12 @@ import java.util.function.Supplier;
  * None by default, so nothing lands on a CPU that serves interrupts unless allowed to.
  * {@code -Daffinity.firstNode=<node>} is the node {@link #acquireCore()} starts on, by default that of the highest
  * reserved CPU.
- * Lock files go to {@code -Daffinity.lockDir} (default: java.io.tmpdir). A malformed value of these properties is
+ * Lock files go to {@code -Daffinity.lockDir} (default: java.io.tmpdir), created if missing. A CPU whose lock file can
+ * not be created or opened is not taken: nothing would tell another process. A malformed value of these properties is
  * logged as a warning and ignored, as if it was not set.
+ * <p>
+ * A virtual thread is not pinned: the OS sees only its carrier, which would keep the mask for the virtual threads it
+ * runs next. Pin a platform thread, such as those of {@link #threadFactory(String)}.
  * <p>
  * The first thread on the node filled first logs what stands in the way of its memory, see {@link ProcessPlacement}.
  * <p>
@@ -57,8 +63,7 @@ public final class CpuAffinity implements AutoCloseable {
      * numbers the CPUs of the sockets in turn.
      */
     private static final int[] FILL_ORDER = NumaTopology.current().fillOrder(FIRST_NODE, RESERVED, SPARE);
-    private static final CpuLockFiles LOCK_FILES = new CpuLockFiles(
-            Path.of(System.getProperty("affinity.lockDir", System.getProperty("java.io.tmpdir"))));
+    private static final CpuLockFiles LOCK_FILES = new CpuLockFiles(lockDir(System.getProperty("affinity.lockDir")));
     /**
      * Logical CPUs held by the handles of this process. Guards the acquisition.
      */
@@ -92,11 +97,12 @@ public final class CpuAffinity implements AutoCloseable {
     /**
      * Pins the calling thread to the first free core: on the first node (see the class comment) its reserved CPUs, the
      * highest first, then its spare ones, then the same on the other nodes by distance. The first landing on another
-     * node is logged as a warning. Never throws: if no core is free, no CPU is reserved or the platform is not
-     * supported, the handle is not pinned ({@link #isPinned()}).
+     * node is logged as a warning. Never throws: if no core is free, no CPU is reserved, the thread is virtual or the
+     * platform is not supported, the handle is not pinned ({@link #isPinned()}).
      */
     public static CpuAffinity acquireCore() {
-        if (PLATFORM == null) return notPinned("thread affinity not supported here");
+        final String cannotPin = cannotPin();
+        if (cannotPin != null) return notPinned(cannotPin);
         final CpuAffinity affinity = firstFree(FILL_ORDER);
         return affinity != null ? warnIfOnOtherNode(FIRST_NODE, affinity) : noFreeCore();
     }
@@ -110,7 +116,8 @@ public final class CpuAffinity implements AutoCloseable {
      */
     public static CpuAffinity acquireCoreOnNode(int node) {
         if (node < 0) throw new IllegalArgumentException("node " + node);
-        if (PLATFORM == null) return notPinned("thread affinity not supported here");
+        final String cannotPin = cannotPin();
+        if (cannotPin != null) return notPinned(cannotPin);
         final NumaTopology topology = NumaTopology.current();
         final int[] cpus = Arrays.stream(topology.fillOrder(node, RESERVED, SPARE))
                 .filter(cpu -> topology.nodeOfCpu(cpu) == node)
@@ -126,6 +133,8 @@ public final class CpuAffinity implements AutoCloseable {
      * pinned, as {@link #acquireCore()}. Never throws: if no core is free, the handle is not pinned.
      */
     public static CpuAffinity acquireCoreNear(CpuAffinity other) {
+        final String cannotPin = cannotPin();
+        if (cannotPin != null) return notPinned(cannotPin);
         if (!other.isPinned()) return acquireCore();
         final CpuAffinity affinity = firstFree(NumaTopology.current().nearestFirst(other.cpu, RESERVED, SPARE));
         return affinity != null ? warnIfOnOtherNode(other.node(), affinity) : noFreeCore();
@@ -192,6 +201,18 @@ public final class CpuAffinity implements AutoCloseable {
         return failed;
     }
 
+    /**
+     * Why the calling thread can not be pinned at all, null if it can. The OS sees only the carrier of a virtual thread:
+     * the mask would stay with the carrier and the virtual threads it runs next, not with this one.
+     */
+    private static String cannotPin() {
+        if (PLATFORM == null) return "thread affinity not supported here";
+        if (Thread.currentThread().isVirtual()) {
+            return "a virtual thread, the mask would go to its carrier: use a platform thread";
+        }
+        return null;
+    }
+
     private static CpuAffinity noFreeCore() {
         return notPinned(RESERVED.isEmpty() && SPARE.isEmpty()
                 ? "no reserved CPUs (isolcpus or -Daffinity.reserved)"
@@ -203,14 +224,15 @@ public final class CpuAffinity implements AutoCloseable {
     }
 
     /**
-     * Pins the calling thread to this CPU (reserved or not) and reserves its core. If pinning fails or the platform
-     * is not supported, the handle is not pinned.
+     * Pins the calling thread to this CPU (reserved or not) and reserves its core. If pinning fails, a lock file can not
+     * be used, the thread is virtual or the platform is not supported, the handle is not pinned.
      *
      * @throws IllegalStateException if the core is held in this or another process
      */
     public static CpuAffinity acquireCore(int cpu) {
         if (cpu < 0) throw new IllegalArgumentException("cpu " + cpu);
-        if (PLATFORM == null) return notPinned("thread affinity not supported here");
+        final String cannotPin = cannotPin();
+        if (cannotPin != null) return notPinned(cannotPin);
         synchronized (TAKEN) {
             final CpuAffinity affinity = tryAcquire(cpu, PLATFORM.coreOf(cpu));
             if (affinity == null) throw new IllegalStateException("core of cpu " + cpu + " is taken");
@@ -220,14 +242,15 @@ public final class CpuAffinity implements AutoCloseable {
 
     /**
      * Pins the calling thread to this logical CPU (reserved or not) and reserves only it: its hyper-threading sibling
-     * stays free for another thread pinned the same way. If pinning fails or the platform is not supported, the
-     * handle is not pinned.
+     * stays free for another thread pinned the same way. If pinning fails, its lock file can not be used, the thread is
+     * virtual or the platform is not supported, the handle is not pinned.
      *
      * @throws IllegalStateException if the CPU is held in this or another process
      */
     public static CpuAffinity acquireCpu(int cpu) {
         if (cpu < 0) throw new IllegalArgumentException("cpu " + cpu);
-        if (PLATFORM == null) return notPinned("thread affinity not supported here");
+        final String cannotPin = cannotPin();
+        if (cannotPin != null) return notPinned(cannotPin);
         final BitSet single = new BitSet();
         single.set(cpu);
         synchronized (TAKEN) {
@@ -238,11 +261,17 @@ public final class CpuAffinity implements AutoCloseable {
     }
 
     /**
-     * Holding TAKEN: null if one of the CPUs is taken, a not pinned handle if pinning failed.
+     * Holding TAKEN: null if one of the CPUs is taken, a not pinned handle if pinning failed or a lock file can not be
+     * used - then nothing would tell another process the CPU is taken.
      */
     private static CpuAffinity tryAcquire(int cpu, BitSet cpus) {
         if (cpus.intersects(TAKEN)) return null;
-        final List<FileChannel> locks = LOCK_FILES.tryLock(cpus, Thread.currentThread().getName());
+        final List<FileChannel> locks;
+        try {
+            locks = LOCK_FILES.tryLock(cpus, Thread.currentThread().getName());
+        } catch (IOException e) {
+            return notPinned("cannot reserve cpu " + cpu + " across processes: " + e);
+        }
         if (locks == null) return null;
         warnAboutMemory(NumaTopology.current().nodeOfCpu(cpu));
         final BitSet previous = PLATFORM.pin(cpu);
@@ -303,6 +332,20 @@ public final class CpuAffinity implements AutoCloseable {
             LOG.log(System.Logger.Level.WARNING, "-D{0}={1} is not a hex mask such as AAAA: ignored", name, value);
             return null;
         }
+    }
+
+    /**
+     * -Daffinity.lockDir if it is a path here - otherwise that is logged - else java.io.tmpdir.
+     */
+    static Path lockDir(String value) {
+        if (value != null) {
+            try {
+                return Path.of(value);
+            } catch (InvalidPathException e) {
+                LOG.log(System.Logger.Level.WARNING, "-Daffinity.lockDir={0} is not a path here: ignored", value);
+            }
+        }
+        return Path.of(System.getProperty("java.io.tmpdir"));
     }
 
     /**

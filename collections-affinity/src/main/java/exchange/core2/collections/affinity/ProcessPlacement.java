@@ -44,6 +44,7 @@ public final class ProcessPlacement {
     private static final Pattern STACK = Pattern.compile(" stack( |$)");
     private static final Pattern PAGES_ON_NODE = Pattern.compile(" N(\\d+)=(\\d+)");
     private static final Pattern PAGE_SIZE = Pattern.compile(" kernelpagesize_kB=(\\d+)");
+    private static final Pattern HUGETLB = Pattern.compile(" huge( |$)");
 
     private final String policy;
     /**
@@ -112,13 +113,13 @@ public final class ProcessPlacement {
     }
 
     /**
-     * Anonymous memory, the huge pages of hugetlbfs included. Not the mapped files: libraries are in the page cache
-     * wherever something first read them, that says nothing about the data.
+     * Anonymous memory, the huge pages of hugetlbfs and memfd mappings included - the heap of ZGC is one. Not the mapped
+     * files: libraries are in the page cache wherever something first read them, that says nothing about the data.
      */
     private static long[] bytesByNode(List<String> maps) {
         long[] bytes = new long[0];
         for (String map : maps) {
-            if (map.contains(" file=") && !map.contains(" huge ")) continue;
+            if (map.contains(" file=") && !HUGETLB.matcher(map).find() && !map.contains(" file=/memfd:")) continue;
             final Matcher size = PAGE_SIZE.matcher(map);
             if (!size.find()) continue;
             final long page = Long.parseLong(size.group(1)) * 1024;
@@ -180,7 +181,8 @@ public final class ProcessPlacement {
     }
 
     /**
-     * Its anonymous memory on this node now, the Java heap and native memory.
+     * Its anonymous memory on this node now, the Java heap and native memory: huge pages and the memfd heap of ZGC
+     * included.
      */
     public long bytesOn(int node) {
         return node >= 0 && node < bytesOnNode.length ? bytesOnNode[node] : 0;
@@ -232,16 +234,21 @@ public final class ProcessPlacement {
 
     /**
      * The hint when the memory goes to another node before the page cache is reclaimed: that is what zone_reclaim_mode 0,
-     * the default, is documented to do unless the process is bound.
+     * the default, is documented to do unless the process is bound. Reserved huge pages are reported separately: even
+     * a process with a huge mapping may need ordinary pages next, or huge pages of a different size.
      */
     private void addFitWarnings(List<String> warnings, int node, NumaTopology.NodeMemory memory, long needed) {
         if (memory.total() < 0) return;
         final long toPlace = needed - bytesOn(node);
-        final long free = memory.free() + memory.freeHugePages();
+        final long free = memory.free();
         final String numbers = "this process may need " + gib(needed) + " with the heap limit and -Daffinity.offHeap and has "
-                + gib(bytesOn(node)) + " there, " + gib(free) + " is free and " + gib(memory.reclaimable()) + " reclaimable";
+                + gib(bytesOn(node)) + " there, " + gib(memory.free()) + " is free and " + gib(memory.reclaimable())
+                + " reclaimable" + (memory.freeHugePages() > 0 ? ", " + gib(memory.freeHugePages()) + " in free huge pages" : "");
         if (toPlace > free + memory.reclaimable()) {
-            warnings.add("node " + node + " has not enough memory: " + numbers);
+            warnings.add(toPlace <= free + memory.reclaimable() + memory.freeHugePages()
+                    ? "node " + node + " has enough memory only in its reserved huge pages, which require explicit mappings"
+                    + " of the matching page size: " + numbers
+                    : "node " + node + " has not enough memory: " + numbers);
         } else if (toPlace > free && !policy.startsWith("bind")) {
             warnings.add("node " + node + " has enough memory only without its page cache, otherwise it can come from "
                     + "another node: " + numbers);

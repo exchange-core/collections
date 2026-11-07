@@ -19,12 +19,10 @@ import java.util.List;
 /**
  * Reserves CPUs across processes: one lock file per logical CPU, locked while a {@link CpuAffinity} holds it.
  * The lock is the OS file lock, so it is released when the process dies; the files themselves stay. Only processes
- * with the same directory see each other. A file is opened without following a symbolic link: in a directory others
- * can write to, a link would point the truncation at a file of their choosing.
+ * with the same directory see each other; it is created if missing. A file is opened without following a symbolic link:
+ * in a directory others can write to, a link would point the truncation at a file of their choosing.
  */
 final class CpuLockFiles {
-
-    private static final System.Logger LOG = System.getLogger(CpuLockFiles.class.getName());
 
     private final Path dir;
 
@@ -40,27 +38,28 @@ final class CpuLockFiles {
      * Locks every CPU of the set or none.
      *
      * @return the open locked files, null if a CPU is locked by another process or by another lock in this one
+     * @throws IOException if a lock file can not be created, opened or locked - a file of another user, a symbolic
+     *                     link: then the CPU must not be used, nothing would tell another process it is taken
      */
-    List<FileChannel> tryLock(BitSet cpus, String owner) {
+    List<FileChannel> tryLock(BitSet cpus, String owner) throws IOException {
         final List<FileChannel> locked = new ArrayList<>();
-        for (int cpu = cpus.nextSetBit(0); cpu >= 0; cpu = cpus.nextSetBit(cpu + 1)) {
-            final Path file = file(cpu);
-            final FileChannel channel;
-            try {
+        try {
+            Files.createDirectories(dir);
+            for (int cpu = cpus.nextSetBit(0); cpu >= 0; cpu = cpus.nextSetBit(cpu + 1)) {
+                final Path file = file(cpu);
                 createSharedFile(file);
-                channel = FileChannel.open(file, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
-            } catch (IOException e) {
-                // e.g. a file created by another user: it can not coordinate anything, so it must not block the CPU
-                LOG.log(System.Logger.Level.WARNING, "cpu {0} is not reserved across processes: {1}", cpu, e.toString());
-                continue;
+                final FileChannel channel = FileChannel.open(file, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+                locked.add(channel);
+                if (!lock(channel, owner)) {
+                    release(locked);
+                    return null;
+                }
             }
-            if (!lock(channel, owner)) {
-                release(locked);
-                return null;
-            }
-            locked.add(channel);
+            return locked;
+        } catch (IOException e) {
+            release(locked);
+            throw e;
         }
-        return locked;
     }
 
     static void release(List<FileChannel> locked) {
@@ -73,24 +72,21 @@ final class CpuLockFiles {
         }
     }
 
-    private static boolean lock(FileChannel channel, String owner) {
+    /**
+     * @return false if another process or another channel of this one holds the lock
+     */
+    private static boolean lock(FileChannel channel, String owner) throws IOException {
+        final FileLock lock;
         try {
-            final FileLock lock = channel.tryLock();
-            if (lock != null) {
-                channel.truncate(0);
-                channel.write(ByteBuffer.wrap(("pid " + ProcessHandle.current().pid() + ", thread " + owner + "\n")
-                        .getBytes(StandardCharsets.UTF_8)));
-                return true;
-            }
-        } catch (OverlappingFileLockException | IOException e) {
-            // held by this JVM (overlapping) or not lockable
+            lock = channel.tryLock();
+        } catch (OverlappingFileLockException e) {
+            return false;
         }
-        try {
-            channel.close();
-        } catch (IOException ignore) {
-            // not locked by us
-        }
-        return false;
+        if (lock == null) return false;
+        channel.truncate(0);
+        channel.write(ByteBuffer.wrap(("pid " + ProcessHandle.current().pid() + ", thread " + owner + "\n")
+                .getBytes(StandardCharsets.UTF_8)));
+        return true;
     }
 
     /**

@@ -884,10 +884,13 @@ try (CpuAffinity affinity = CpuAffinity.acquireCore()) {   // or acquireCore(cpu
   `acquireCore` does not take a core while one of its CPUs is held.
 - `close()` restores the thread's previous mask and releases what it reserved — call it from the pinned thread.
 - Run with `--enable-native-access=ALL-UNNAMED` to avoid the JDK's restricted-method warning.
-- Lock files: `exchange-core2-cpu-<n>.lock` in `-Daffinity.lockDir` (default `java.io.tmpdir`). Only processes
-  with the same directory see each other's cores: a systemd service with `PrivateTmp` has a `/tmp` of its own, and on
-  Windows each user has a temp directory of their own. A lock file that is a symbolic link is not followed: that CPU
-  is then reserved only within the process.
+- Lock files: `exchange-core2-cpu-<n>.lock` in `-Daffinity.lockDir` (default `java.io.tmpdir`, created if
+  missing). Only processes with the same directory see each other's cores: a systemd service with `PrivateTmp` has a
+  `/tmp` of its own, and on Windows each user has a temp directory of their own. A CPU whose lock file can not be
+  used — a symbolic link, which is not followed, or a file another user can not open — is not taken: the warning
+  names the file, and `acquireCore()` goes on to the next core.
+- A virtual thread is not pinned: the OS sees only its carrier, which runs other virtual threads next. Pin a
+  platform thread, such as those of `CpuAffinity.threadFactory`.
 - Threads started by a pinned thread inherit its single-CPU mask: start helper threads before pinning, or
   let them pin themselves - e.g. `MigrationService.builder().threadInit(() -> CpuAffinity.acquireCore(5))`.
 
@@ -943,8 +946,11 @@ try (CpuAffinity hot = CpuAffinity.acquireCoreOnNode(1)) {    // a reserved core
   NumaTopology.current().memoryOf(1).free();                 // bytes, also total(), reclaimable(), freeHugePages()
   ```
 
-  The free memory of a node is an estimate: there is no `MemAvailable` per node. It does not tell the memory channels
-  apart: on the machine above node 0 has 2, node 1 has 6, and only their sizes differ. `ProcessPlacement` walks the page
+  The free memory of a node is an estimate: there is no `MemAvailable` per node. Its reserved huge pages are reported
+  separately: they require explicit mappings of the matching page size and cannot satisfy ordinary allocations,
+  even if the process already has a huge mapping. Resident huge pages and the memfd heap of ZGC count with the
+  process's memory. It does not tell the memory channels apart: on the machine above node 0 has 2, node 1 has 6,
+  and only their sizes differ. `ProcessPlacement` walks the page
   tables, so at start-up or between runs: with a heap of 16 GiB about 2 ms in huge pages, 65 ms in 4 KB pages.
 - `NumaMemory.nodesOf` only reports, it moves nothing, and it is an estimate: up to 4096 random pages, one from
   each equal part of the segment, a few milliseconds, not for a hot path. Native memory and arrays, Linux on

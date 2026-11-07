@@ -16,6 +16,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -497,6 +498,33 @@ public class CpuAffinityTest {
         } finally {
             System.clearProperty(name);
         }
+    }
+
+    @Test
+    public void malformedLockDirIsIgnored() {
+        final Path tmp = Path.of(System.getProperty("java.io.tmpdir"));
+        assertEquals(tmp, CpuAffinity.lockDir(null));
+        assertEquals(Path.of("locks"), CpuAffinity.lockDir("locks"));
+        final List<String> warnings = warningsDuring(() -> assertEquals(tmp, CpuAffinity.lockDir("bad\0path")));
+        assertEquals(List.of("-Daffinity.lockDir=bad\0path is not a path here: ignored"), warnings);
+    }
+
+    @Test
+    public void aVirtualThreadIsNotPinned() throws InterruptedException {
+        final List<String> results = new CopyOnWriteArrayList<>();
+        try (CpuAffinity platform = CpuAffinity.acquireCore(0)) {
+            final List<Supplier<CpuAffinity>> ways = List.of(CpuAffinity::acquireCore, () -> CpuAffinity.acquireCore(2),
+                    () -> CpuAffinity.acquireCpu(2), () -> CpuAffinity.acquireCoreOnNode(0),
+                    () -> CpuAffinity.acquireCoreNear(platform));
+            Thread.ofVirtual().start(() -> ways.forEach(way -> {
+                try (CpuAffinity affinity = way.get()) {
+                    results.add(affinity.toString());
+                }
+            })).join();
+        }
+        assertEquals(5, results.size());
+        // its carrier would be pinned, and the virtual threads it runs next with it
+        for (String result : results) assertTrue(result, result.startsWith("not pinned: a virtual thread"));
     }
 
     @Test
