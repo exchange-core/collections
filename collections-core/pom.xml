@@ -14,6 +14,10 @@
 
     <properties>
         <maven.compiler.release>${published.compiler.release}</maven.compiler.release>
+        <!-- 0.7.0 publishes collections-affinity and the parent only, this module comes with 0.8.0:
+             remove both flags after the 0.7.0 release -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <skipPublishing>true</skipPublishing>
     </properties>
 
     <!--
