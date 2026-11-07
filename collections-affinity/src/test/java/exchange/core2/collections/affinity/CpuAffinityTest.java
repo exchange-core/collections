@@ -16,6 +16,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -482,13 +483,77 @@ public class CpuAffinityTest {
         }
     }
 
+    @Test
+    public void malformedMaskIsIgnored() {
+        final String name = "affinity.test.mask";
+        try {
+            assertNull(CpuAffinity.maskProperty(name));
+            System.setProperty(name, "AAAA");
+            assertEquals(CpuSetsTest.bits(1, 3, 5, 7, 9, 11, 13, 15), CpuAffinity.maskProperty(name));
+            for (String malformed : new String[]{"5,7,9", "0xZZ"}) {
+                System.setProperty(name, malformed);
+                final List<String> warnings = warningsDuring(() -> assertNull(CpuAffinity.maskProperty(name)));
+                assertEquals(List.of("-D" + name + "=" + malformed + " is not a hex mask such as AAAA: ignored"), warnings);
+            }
+        } finally {
+            System.clearProperty(name);
+        }
+    }
+
+    @Test
+    public void malformedLockDirIsIgnored() {
+        final Path tmp = Path.of(System.getProperty("java.io.tmpdir"));
+        assertEquals(tmp, CpuAffinity.lockDir(null));
+        assertEquals(Path.of("locks"), CpuAffinity.lockDir("locks"));
+        final List<String> warnings = warningsDuring(() -> assertEquals(tmp, CpuAffinity.lockDir("bad\0path")));
+        assertEquals(List.of("-Daffinity.lockDir=bad\0path is not a path here: ignored"), warnings);
+    }
+
+    @Test
+    public void aVirtualThreadIsNotPinned() throws InterruptedException {
+        final List<String> results = new CopyOnWriteArrayList<>();
+        try (CpuAffinity platform = CpuAffinity.acquireCore(0)) {
+            final List<Supplier<CpuAffinity>> ways = List.of(CpuAffinity::acquireCore, () -> CpuAffinity.acquireCore(2),
+                    () -> CpuAffinity.acquireCpu(2), () -> CpuAffinity.acquireCoreOnNode(0),
+                    () -> CpuAffinity.acquireCoreNear(platform));
+            Thread.ofVirtual().start(() -> ways.forEach(way -> {
+                try (CpuAffinity affinity = way.get()) {
+                    results.add(affinity.toString());
+                }
+            })).join();
+        }
+        assertEquals(5, results.size());
+        // its carrier would be pinned, and the virtual threads it runs next with it
+        for (String result : results) assertTrue(result, result.startsWith("not pinned: a virtual thread"));
+    }
+
+    @Test
+    public void firstNodeMustBeANode() {
+        final NumaTopology topology = NumaTopology.current();
+        final BitSet cpu0 = CpuSetsTest.bits(0);
+        assertEquals(List.of(), warningsDuring(() -> {
+            assertEquals(0, CpuAffinity.firstNode(" 0 ", topology, new BitSet(), new BitSet()));
+            assertEquals(topology.nodeOfCpu(0), CpuAffinity.firstNode(null, topology, cpu0, new BitSet()));
+            assertEquals(topology.nodeOfCpu(0), CpuAffinity.firstNode(null, topology, new BitSet(), cpu0));
+            assertEquals(-1, CpuAffinity.firstNode(null, topology, new BitSet(), new BitSet()));
+        }));
+        for (String malformed : new String[]{"one", "-1", "4096"}) {
+            final List<String> warnings = warningsDuring(() ->
+                    assertEquals(topology.nodeOfCpu(0), CpuAffinity.firstNode(malformed, topology, cpu0, new BitSet())));
+            assertEquals(List.of("-Daffinity.firstNode=" + malformed + " is not a node of this machine ("
+                    + CpuSets.toList(topology.nodes()) + "): ignored"), warnings);
+        }
+    }
+
     /**
      * The node acquireCore() starts on, -1 if nothing is allowed and no node asked for.
      */
     private static int firstNode() {
         final BitSet reserved = CpuAffinity.reservedCpus();
         final BitSet highestFrom = reserved.isEmpty() ? CpuAffinity.spareCpus() : reserved;
-        return Integer.getInteger("affinity.firstNode", NumaTopology.current().nodeOfCpu(highestFrom.length() - 1));
+        final Integer asked = Integer.getInteger("affinity.firstNode");
+        return asked != null && asked >= 0 && NumaTopology.current().nodes().get(asked)
+                ? asked : NumaTopology.current().nodeOfCpu(highestFrom.length() - 1);
     }
 
     private static boolean nothingAllowed() {

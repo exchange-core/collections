@@ -18,7 +18,9 @@ The API changes since 0.6.0, hence 0.7.0 - each is described below, in short:
 
 - **`collections-affinity`: pinning threads to CPU cores.** `CpuAffinity.acquireCore()` pins the calling
   thread to a free core of the reserved CPUs (`isolcpus` or `-Daffinity.reserved`), reserving all its
-  hyper-threading siblings, within the process and across processes (lock files). Linux and Windows,
+  hyper-threading siblings, within the process and across the processes sharing a lock directory (lock files; a CPU
+  whose file can not be used, a symbolic link among them, is not taken). A virtual thread is not pinned, its handle
+  says why. A malformed `-Daffinity.*` value is logged and ignored. Linux and Windows,
   through the Foreign Function and Memory API: Java 22+, no dependencies, no native library, works in a
   GraalVM native image (reachability metadata included). Replaces OpenHFT Affinity (JNA) in the benchmarks;
   `net.openhft:affinity` is no longer used anywhere in the build. `CpuAffinity.acquireCpu(cpu)` pins to one
@@ -36,6 +38,8 @@ The API changes since 0.6.0, hence 0.7.0 - each is described below, in short:
   node of the process, `warningsFor(node)` what stands in the way of threads on that node: no memory there, the policy,
   the cpuset or the mask of the JVM sending it elsewhere, the heap limit plus `-Daffinity.offHeap` not fitting.
   `CpuAffinity` logs that once, for the node it fills first. `NumaTopology.memoryOf(node)` reads the node's memory.
+  Resident huge pages and the memfd heap of ZGC are counted; free HugeTLB pools are reported separately from memory
+  available to ordinary allocations.
 - **`LongLongHashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`.** The README documented
   them, but all four threw `UnsupportedOperationException`. `forEach` does not allocate.
 - **`LongLongLL2Hashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`** - they threw
