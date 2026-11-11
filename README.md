@@ -903,6 +903,53 @@ an append that needs more room throws `IllegalStateException` without changing a
 Price ordering (e.g. finding the best bid) is a separate index. The key-to-queue hash index still exists for
 the key API; traversing a retained level by handle bypasses it.
 
+**Queue benchmark setup.** All three queue benchmarks ran on a Xeon Gold 6244 (HT enabled), JDK 27+35,
+JMH 1.34. The JVM started on two housekeeping CPUs of one socket with memory bound to its NUMA node,
+`-XX:+AlwaysPreTouch` and `-XX:+UseTransparentHugePages`. With `-Daffinity.reserved` set to the isolated CPUs,
+each benchmark thread pinned itself to an isolated core of that socket and reserved both of its hyper-threads.
+All runs used `-t 1 -f 2 -wi 3 -w 500ms -i 5 -r 500ms`. Times are means with JMH's 99.9% confidence intervals.
+
+`LongIndexedFifoQueuesJmh.cancelAndAppend` cancels a random live ID and submits a replacement at the same
+price. Both implementations maintain a global ID index. The run used 4,096 levels × 16 orders
+(`-p levels=4096 -prof gc`) and a fixed 256 MiB JVM heap.
+
+| Implementation | ns per cancel + submit | Allocated bytes per pair |
+|---|---:|---:|
+| `LongIndexedFifoQueues` | 167 ± 1 | ≈0 |
+| `LinkedHashMap` per price | 206 ± 13 | 136 |
+
+**Order-book workloads.** `FifoOrderBookJmh` starts with 4,096 price levels and **1M or 10M live orders**.
+Initial orders are interleaved across levels, not laid out consecutively within a level. Both implementations
+keep size, filled quantity and uid on the order. The baseline uses pooled order objects with parent, prev and
+next references, head/tail references per level and an Eclipse Collections primitive ID-to-object hash map.
+It models the linked orders in `OrderBookDirectImpl`; it does not run that matching engine or its ART ID index.
+The test assigns consecutive order IDs. Eclipse Collections 13.0.0 uses the low bits of the ID for the first
+probe, while `LongLongHashtable` mixes the ID before probing. The timing includes this difference in ID indexes.
+
+- **Cancel + submit:** cancel a random live order by ID, submit its replacement at the same price.
+- **Execute heads:** choose an existing level, follow and fully fill 16 orders, count their remaining volume and
+  remove their IDs. Price selection and replenishment are outside the timed region; the unit is one filled order.
+- **Empty/refill:** one hot price with a changing order ID cycles 0 → 1 → 0 against the large background.
+  By key, the price leaves and re-enters the index on every cycle. The retained variant reuses its handle/reference.
+
+`FifoOrderBookJmh` used `-Xms2g -Xmx3g` on the same isolated core. Times are in ns per operation.
+
+| Operation | Records, 1M | Object links, 1M | Records, 10M | Object links, 10M |
+|---|---:|---:|---:|---:|
+| Cancel + submit, per pair | 468 ± 6 | 365 ± 203 | 609 ± 4 | 659 ± 834 |
+| Execute heads, per filled order | 171.42 ± 0.45 | 53 ± 30 | 221 ± 7 | 48 ± 3 |
+| Empty/refill by key, per cycle | 159 ± 1 | 85 ± 18 | 230.3 ± 0.5 | 211 ± 124 |
+| Empty/refill retained, per cycle | 117 ± 5 | 73 ± 18 | 200 ± 3 | 134 ± 132 |
+
+Head execution took 3.2× as long with records at 1M and 4.6× at 10M. A separate laptop JFR profile
+identified the record-header check when writing the next order's `PREV` field and ID-index removal as hot spots.
+Internal slot links are a candidate for a separate benchmark.
+
+For 10M object orders, cancel + submit peaked in the second measurement iteration of **both** forks.
+The five iteration means were 319, 1,647, 490, 464, 328 ns and 318, 1,743, 491, 460, 327 ns.
+An Eclipse Collections ID-index rebuild is one possible cause. The records iteration means ranged from
+605 to 611 ns for the same workload. Measuring per-order tail latency requires a latency distribution.
+
 ---
 
 ### LongIndexedEventQueue
@@ -939,6 +986,26 @@ storage may also resize. A four-way heap keeps time, priority, sequence and reco
 primitive arrays (28 bytes per allocated heap slot). Each indexed record holds a position, ID and header
 (24 bytes per record before page rounding). Comparing children only reads heap arrays. Moving an event
 updates its indexed position by handle. Single-threaded.
+
+`LongIndexedEventQueueJmh` compares cancel-and-schedule, reschedule and draining 64 simultaneous deadlines
+against a `TreeSet` with an ID index. The burst benchmark reports time per removed event.
+
+The event queue ran on the same isolated Xeon core with the FIFO warm-up and measurement settings,
+`-p size=65536,1000000` and a fixed 1 GiB JVM heap. Times are means in ns/op with JMH's 99.9% confidence
+intervals.
+
+| Live events | Operation | Four-way heap | Tree + hash map |
+|---:|---|---:|---:|
+| 65,536 | Drain 64 tied deadlines, per event | 113.8 ± 0.1 | 31.0 ± 0.4 |
+| 1,000,000 | Drain 64 tied deadlines, per event | 130 ± 1 | 35.8 ± 0.5 |
+| 65,536 | Cancel + schedule, per pair | 172.9 ± 0.4 | 721 ± 26 |
+| 1,000,000 | Cancel + schedule, per pair | 501 ± 5 | 2,003 ± 629 |
+| 65,536 | Reschedule | 84.7 ± 0.1 | 709 ± 21 |
+| 1,000,000 | Reschedule | 293 ± 2 | 1,990 ± 662 |
+
+At 1M, the heap was 4.0× faster for cancel + schedule and 6.8× faster for rescheduling. The tree drained
+the burst 3.6× faster. Each invocation inserts the same 64 IDs (−1 through −64) at a single deadline
+ahead of a fixed backlog, outside the timed region.
 
 ---
 
