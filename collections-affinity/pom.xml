@@ -18,7 +18,6 @@
         <maven.compiler.release>22</maven.compiler.release>
     </properties>
 
-    <!-- DELIBERATELY EMPTY at compile scope, like collections-core -->
     <dependencies>
         <dependency>
             <groupId>junit</groupId>
