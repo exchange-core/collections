@@ -11,7 +11,7 @@ and designed for low-latency, single-threaded hot paths.
 
 | Module                  | Artifact                | Contents                                                      |
 |-------------------------|-------------------------|---------------------------------------------------------------|
-| `collections-core`      | `collections-core`      | Adaptive Radix Tree, hashtables (long-long, tuples), record store, objects pool |
+| `collections-core`      | `collections-core`      | Adaptive Radix Tree, hashtables (long-long, tuples), record store, indexed FIFO queues, objects pool |
 | `collections-orderbook` | `collections-orderbook` | Order book implementation built on top of the core collections |
 | `collections-ledger`    | `collections-ledger`    | Balances (available, reserved) with checked postings and batches |
 | `collections-affinity`  | `collections-affinity`  | Pinning threads to CPU cores, NUMA topology and memory placement checks, no dependencies |
@@ -79,6 +79,7 @@ mvn clean install
 | `RecordStore`              | paged records by handle   | handle → `long` fields | new    |
 | `LongRecordTable`          | hashtable index + records | `long` → `long` fields | new    |
 | `LongTupleHashtable`       | open-addressing hashtable | `long`s → `long`s, fixed widths | new |
+| `LongIndexedFifoQueues`    | FIFO queues, one ID index | queue key, entry ID, value: `long` | new |
 | `ObjectsPool`              | object pool               | –                | stable       |
 
 ---
@@ -718,7 +719,7 @@ balances.get(h, AVAILABLE);                      // IllegalArgumentException
 |---|---|
 | `find`, `containsKey`, `getOrCreate` of a present key | one probe of the index |
 | `getOrCreate` of a new key | one probe; may resize the index (a copy of it), may add a page to the store |
-| `remove` | one probe, the backward shift of the rest of the cluster, the record freed |
+| `remove`, `removeAndCopyFields` | one probe, backward shift, record freed. The latter copies a prefix of fields into a caller-supplied buffer before freeing |
 | `get`, `set`, `addAndGet`, `addAndGetExact`, `keyOf`, `isValid` | the record only |
 | `forEach`, `clear` | every record |
 
@@ -838,6 +839,68 @@ such a key gets without a primitive table; keys added in one random order, reach
 - the resize is synchronous, on the calling thread — pre-size the table where that pause matters
 - `forEach` hands out the positions; its consumer must not insert or remove keys
 - not thread-safe
+
+---
+
+### LongIndexedFifoQueues
+
+A family of FIFO queues with a shared entry ID index. Use the price tick as the queue key and the order ID
+as the entry ID. Field 0 is the value. Store a handle to an external order there, or keep application fields
+inline with the links:
+
+```java
+import exchange.core2.collections.queue.LongIndexedFifoQueues;
+
+final int SIZE = 0, FILLED = 1, UID = 2;
+final var bids = LongIndexedFifoQueues.fixedCapacity(1_000, 100_000, 3);
+final long level = bids.getOrCreateQueue(50);   // keep this handle in the price index
+final long e = bids.appendTo(level, 101, 30);   // size 30, other fields initially zero
+bids.setField(e, UID, 42);
+bids.setField(e, FILLED, 5);
+
+final long order = bids.findEntry(101);         // one lookup to inspect the order
+if (order != LongIndexedFifoQueues.NO_HANDLE && bids.getField(order, UID) == 42) {
+    long remaining = bids.getField(order, SIZE) - bids.getField(order, FILLED);
+    bids.removeEntry(order);                   // release the order; apply remaining to the level total
+}
+
+// Execution by cached level: save the successor before invalidating the entry.
+for (long h = bids.first(level); h != LongIndexedFifoQueues.NO_HANDLE; ) {
+    long next = bids.next(h);
+    bids.removeEntry(h);
+    h = next;
+}
+bids.releaseEmptyQueue(level);                  // returns false if orders remain
+```
+
+IDs are unique across the family. A duplicate `append(key, id, value)` returns false; `appendTo` returns
+zero. Neither changes the original order. `valueOf(id)` reads field 0 (throws if absent); `remove(id, ifAbsent)`
+cancels and returns field 0 using **one ID index removal**. It copies the owner, neighbours and value before
+freeing the record. A conditional cancel that first looks up a handle also pays for that lookup.
+
+`first(queueHandle)` and `next(entryHandle)` return zero at the end. `removeFirstByHandle(queueHandle)`
+returns field 0 without a price lookup. `moveToLast(entryHandle, destinationQueueHandle)` relinks an entry
+in the same or another queue, keeping its handle and fields; no entry allocation or ID lookup. A moved
+entry's `next` reflects its new position. Entry removal, queue release and clear invalidate the respective
+handles. Passing a queue handle to an entry method or vice versa throws `IllegalArgumentException`.
+Handles belong to their originating instance. Inline fields share the record (with
+three application fields it is 64 bytes including the header and ID); cache-line alignment is not guaranteed.
+
+Levels created solely through `append(key, ...)` disappear when empty. `findQueue(key)` borrows a handle
+without changing that rule. `getOrCreateQueue(key)` explicitly retains a level (also an existing one), so
+its handle survives empty/refill cycles. Retained empty levels count toward the fixed queue limit.
+If you create a level for a reprice, call `moveToLast(entry, level)` followed by `unretainQueue(level)`
+to recycle the destination when its last order leaves. On an already empty level, `unretainQueue` frees it
+immediately. `releaseEmptyQueue` still returns false while orders remain.
+`firstId`, `firstValue`, `removeFirst` and `removeFirstByHandle` throw
+`NoSuchElementException` for an empty level. Zero is a valid key, ID and value.
+
+Both record tables and their indexes are shared by all levels. An append or removal does a constant number
+of hash operations and link updates. For a growing collection use `new LongIndexedFifoQueues(expectedQueues,
+expectedEntries)`; growth may rehash on the calling thread. With `fixedCapacity` both limits are exact:
+an append that needs more room throws `IllegalStateException` without changing any queue. Single-threaded.
+Price ordering (e.g. finding the best bid) is a separate index. The key-to-queue hash index still exists for
+the key API; traversing a retained level by handle bypasses it.
 
 ---
 

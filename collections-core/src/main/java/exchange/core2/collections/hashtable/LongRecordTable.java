@@ -176,6 +176,23 @@ public final class LongRecordTable {
     }
 
     /**
+     * Removes the record in one index lookup, copying its first dst.length fields into the supplied buffer
+     * before freeing it. Returns false and leaves dst unchanged if absent. No handle escapes removal.
+     */
+    public boolean removeAndCopyFields(long key, long[] dst) {
+        Objects.checkFromIndexSize(0, dst.length, fields);
+        final long h = index.remove(key);
+        if (h == NO_RECORD) {
+            return false;
+        }
+        for (int i = 0; i < dst.length; i++) {
+            dst[i] = store.get(h, i);
+        }
+        store.free(h);
+        return true;
+    }
+
+    /**
      * @return the key of the record
      * @throws IllegalArgumentException if the handle is stale
      */

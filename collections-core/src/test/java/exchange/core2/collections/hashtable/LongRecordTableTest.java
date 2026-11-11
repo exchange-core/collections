@@ -11,6 +11,7 @@ import java.util.Random;
 import java.util.stream.LongStream;
 
 import static exchange.core2.collections.hashtable.LongRecordTable.NO_RECORD;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
@@ -29,6 +30,23 @@ public class LongRecordTableTest {
     private static void check(LongRecordTable table) {
         table.integrityCheck();
         RecordStoreChecks.integrityCheck(table.store());
+    }
+
+    @Test
+    public void removeAndCopyFieldsChecksDestinationBeforeRemoval() {
+        final LongRecordTable t = table(3);
+        long h = t.getOrCreate(0);
+        t.set(h, 0, Long.MIN_VALUE);
+        t.set(h, 1, Long.MAX_VALUE);
+        assertThrows(IndexOutOfBoundsException.class, () -> t.removeAndCopyFields(0, new long[4]));
+        assertThrows(NullPointerException.class, () -> t.removeAndCopyFields(0, null));
+        assertEquals(h, t.find(0));
+        long[] pair = new long[2];
+        assertTrue(t.removeAndCopyFields(0, pair));
+        assertFalse(t.isValid(h));
+        assertFalse(t.removeAndCopyFields(0, pair));
+        assertArrayEquals(new long[]{Long.MIN_VALUE, Long.MAX_VALUE}, pair);
+        check(t);
     }
 
     @Test
