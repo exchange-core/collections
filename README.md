@@ -11,7 +11,7 @@ and designed for low-latency, single-threaded hot paths.
 
 | Module                  | Artifact                | Contents                                                      |
 |-------------------------|-------------------------|---------------------------------------------------------------|
-| `collections-core`      | `collections-core`      | Adaptive Radix Tree, hashtables (long-long, tuples), record store, indexed FIFO queues, objects pool |
+| `collections-core`      | `collections-core`      | Adaptive Radix Tree, hashtables (long-long, tuples), record store, indexed FIFO and event queues, objects pool |
 | `collections-orderbook` | `collections-orderbook` | Order book implementation built on top of the core collections |
 | `collections-ledger`    | `collections-ledger`    | Balances (available, reserved) with checked postings and batches |
 | `collections-affinity`  | `collections-affinity`  | Pinning threads to CPU cores, NUMA topology and memory placement checks, no dependencies |
@@ -80,6 +80,7 @@ mvn clean install
 | `LongRecordTable`          | hashtable index + records | `long` → `long` fields | new    |
 | `LongTupleHashtable`       | open-addressing hashtable | `long`s → `long`s, fixed widths | new |
 | `LongIndexedFifoQueues`    | FIFO queues, one ID index | queue key, entry ID, value: `long` | new |
+| `LongIndexedEventQueue`    | stable four-way min-heap with ID index | event ID, time: `long`; priority: `int` | new |
 | `ObjectsPool`              | object pool               | –                | stable       |
 
 ---
@@ -901,6 +902,43 @@ expectedEntries)`; growth may rehash on the calling thread. With `fixedCapacity`
 an append that needs more room throws `IllegalStateException` without changing any queue. Single-threaded.
 Price ordering (e.g. finding the best bid) is a separate index. The key-to-queue hash index still exists for
 the key API; traversing a retained level by handle bypasses it.
+
+---
+
+### LongIndexedEventQueue
+
+Timers and replay events ordered by time, then priority (smaller first), then insertion order. Time is a
+signed `long` in application-defined units; the queue never reads a clock. Each live event has a unique
+`long` ID. Cancelling by ID frees its slot immediately.
+
+```java
+import exchange.core2.collections.queue.LongIndexedEventQueue;
+
+final var events = LongIndexedEventQueue.fixedCapacity(100_000);
+events.schedule(101, 500, 1);     // ID, time, priority
+events.schedule(102, 500, 1);
+events.reschedule(101, 500, 1);   // 102 is now first among the peers
+events.schedule(103, 500, 0);     // higher priority at the same time
+events.cancel(102);
+
+while (!events.isEmpty() && events.firstTime() <= now) {
+    dispatch(events.removeFirst());    // at now == 500: 103, then 101
+}
+```
+
+Scheduling an existing ID returns `false` without changing it, even at capacity. Cancel and reschedule return
+`false` for an absent ID. A reschedule gets a fresh insertion sequence, even when its deadline and priority
+stay the same. The head accessors (`firstId`, `firstTime`, `firstPriority`) and `removeFirst` throw
+`NoSuchElementException` on an empty queue. The sequence resets when emptied or cleared; exhaustion of the
+signed 64-bit sequence before then refuses a new insertion or reschedule with `IllegalStateException`.
+
+Use `new LongIndexedEventQueue(expectedSize)` for growing storage, or `fixedCapacity(n)` for an exact,
+preallocated limit. At the limit a new ID throws `IllegalStateException` and leaves the queue unchanged.
+Reading the head takes O(1). A mutation does O(log n) heap work plus the hash index operation. Growing
+storage may also resize. A four-way heap keeps time, priority, sequence and record handles in parallel
+primitive arrays (28 bytes per allocated heap slot). Each indexed record holds a position, ID and header
+(24 bytes per record before page rounding). Comparing children only reads heap arrays. Moving an event
+updates its indexed position by handle. Single-threaded.
 
 ---
 

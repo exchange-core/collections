@@ -17,6 +17,9 @@ alone), with `collections-ledger` new. The API changes since 0.6.0 - each is des
 
 ### Added
 
+- **`LongIndexedEventQueue`** (`collections-core`): deterministic scheduling by time, priority and insertion
+  order, immediate cancellation and rescheduling by ID, growing or fixed capacity. Its four-way heap keeps
+  ordering keys in primitive arrays and tracks each event's position by record handle.
 - **`LongIndexedFifoQueues`** (`collections-core`): FIFO by queue key with a shared order ID index, value lookup
   and cancellation, stable handles, inline order fields, first/next traversal and moves without reinsertion.
   Passing a handle of the wrong kind throws. Key-only levels are recycled when empty. Explicitly retained
