@@ -20,11 +20,6 @@
         <skipPublishing>true</skipPublishing>
     </properties>
 
-    <!--
-        DELIBERATELY EMPTY at compile scope.
-        This artifact must stay dependency-free: the agrona helpers it used (Hashing.hash,
-        BitUtil.findNextPositivePowerOfTwo, LongLongConsumer) are inlined, and there is no logging.
-    -->
     <dependencies>
         <dependency>
             <groupId>org.agrona</groupId>

@@ -17,6 +17,15 @@ alone), with `collections-ledger` new. The API changes since 0.6.0 - each is des
 
 ### Added
 
+- **`LongIndexedEventQueue`** (`collections-core`): deterministic scheduling by time, priority and insertion
+  order, immediate cancellation and rescheduling by ID, growing or fixed capacity. Its four-way heap keeps
+  ordering keys in primitive arrays and tracks each event's position by record handle.
+- **`LongIndexedFifoQueues`** (`collections-core`): FIFO by queue key with a shared order ID index, value lookup
+  and cancellation, stable handles, inline order fields, first/next traversal and moves without reinsertion.
+  Passing a handle of the wrong kind throws. Key-only levels are recycled when empty. Explicitly retained
+  levels can be refilled by handle, and `unretainQueue` restores automatic recycling. Fixed limits
+  cover allocated levels and live entries. `LongRecordTable.removeAndCopyFields` copies a prefix of the fields
+  while removing the ID in one lookup.
 - **`LongLongHashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`.** The README documented
   them, but all four threw `UnsupportedOperationException`. `forEach` does not allocate.
 - **`LongLongLL2Hashtable`: `forEach`, `keysStream`, `valuesStream` and `clear`** - they threw
