@@ -353,9 +353,10 @@ alone), with `collections-ledger` new. The API changes since 0.6.0 - each is des
   an LTS; the floor would be 17 (agrona 2.x ships Java 17 class files, `collections-core` has no
   compile-scope dependencies and would go as low as 9), but 17 is not targeted.
 
-  Development still happens on JDK 26: the lower level is applied by the `release-bytecode` profile,
-  activated by `-DperformRelease=true` (which the release plugin already passes). Benchmark and
-  stress modules keep targeting 26 — they use `SequencedCollection` and are not published. To run
+  Development moves from JDK 26 to JDK 25, an LTS (nothing in the build needs 26): the lower level is
+  applied by the `release-bytecode` profile, activated by `-DperformRelease=true` (which the release
+  plugin already passes). Benchmark and stress modules target 25 — they use `SequencedCollection` and
+  are not published. To run
   the release-level compile check on demand:
 
   ```bash

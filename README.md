@@ -23,7 +23,7 @@ and designed for low-latency, single-threaded hot paths.
 - **To use the published artifacts:** `collections-core` and `collections-orderbook` 0.6.0 need Java 26+;
   their next release, 0.8.0, drops the published bytecode level to Java 21. `collections-affinity` (0.7.0)
   needs Java 22+, as it uses the Foreign Function and Memory API.
-- **To build from source:** JDK 26 and Maven 3.9+ — the benchmark and stress modules use newer
+- **To build from source:** JDK 25 or newer and Maven 3.9+ — the benchmark and stress modules use newer
   language APIs than the published ones.
 
 ### Installation
