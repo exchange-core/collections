@@ -228,7 +228,7 @@ During a migration both arrays are alive: three times the memory of the old one.
 
 **Measured** — `CollectionsLatencySamples -Dsamples.groups=ll2-scenarios,ll2-many-tables,ll2-big-allocation,ll2-preempted-worker`:
 1M operations/s, latency from the planned arrival (a stall is charged to every operation queued behind it),
-the measured table growing from 16 to 4M entries; Xeon Gold 6244, application pinned to an isolated core,
+the measured table growing from 16 to 4M entries; [Xeon Gold 6244](benchmarks.md#the-machine), application pinned to an isolated core,
 JDK 27, two runs:
 
 | Configuration | p50 | p99 | p99.9 | max |

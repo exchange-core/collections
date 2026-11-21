@@ -82,7 +82,7 @@ if (h == RecordStore.NO_RECORD) {
 
 **Measured** — `RecordStoreJmh`, balances of two fields against an object per record (the caller holding the
 reference, no check; or a `long` id into an `ArrayList`, checked against a generation in the object) and a flat
-`long[]` (no check, no pages); ns per operation, 10k / 1M / 10M records reached in a random order. Xeon Gold 6244,
+`long[]` (no check, no pages); ns per operation, 10k / 1M / 10M records reached in a random order. [Xeon Gold 6244](benchmarks.md#the-machine),
 JDK 27, the benchmark thread pinned to an isolated core; one fork, 3 × 1 s of warm-up and of measurement:
 
 | Operation | `RecordStore` | object, reference | object, `ArrayList` id | `long[]` |
@@ -114,7 +114,7 @@ JDK 27, the benchmark thread pinned to an isolated core; one fork, 3 × 1 s of w
 
 ## LongRecordTable
 
-`long` keys to records of `long` fields: a `LongLongHashtable` maps every key to the handle of its record in a
+`long` keys to records of `long` fields: a [`LongLongHashtable`](hashtables.md#longlonghashtable) maps every key to the handle of its record in a
 `RecordStore`. A key is one probe; the handle it returns reaches the fields with no probe at all — keep it (in an
 order, say), and the next update of the balance is one cache line.
 
@@ -315,7 +315,7 @@ depends on the JVM's hash seed. One writer; any number of reader threads per sna
 
 `LongSnapshotRecordTableJmh` measures writes with a snapshot every 0, 1,000 or 100,000 writes, the previous one
 closed as the next is taken: the mean, the percentiles (`writeSampled`) and, with `-prof gc`, the bytes allocated
-per write. It ran with the setup of the [queue benchmarks](queues.md#longindexedfifoqueues) (Xeon Gold 6244, the thread on an isolated core,
+per write. It ran with the setup of the [queue benchmarks](benchmarks.md#the-queue-benchmarks) (Xeon Gold 6244, the thread on an isolated core,
 `-t 1 -f 2 -wi 3 -w 500ms -i 5 -r 500ms`), with a 4 GiB heap, four fields per record and random keys. Means in ns
 per write with JMH's 99.9% confidence intervals; the percentiles come from the sampled run, whose timer reads add
 25-70 ns to each write (compare p50 with the mean):

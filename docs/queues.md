@@ -68,11 +68,9 @@ an append that needs more room throws `IllegalStateException` without changing a
 Price ordering (e.g. finding the best bid) is a separate index. The key-to-queue hash index still exists for
 the key API; traversing a retained level by handle bypasses it.
 
-**Queue benchmark setup.** All three queue benchmarks ran on a Xeon Gold 6244 (HT enabled), JDK 27+35,
-JMH 1.34. The JVM started on two housekeeping CPUs of one socket with memory bound to its NUMA node,
-`-XX:+AlwaysPreTouch` and `-XX:+UseTransparentHugePages`. With `-Daffinity.reserved` set to the isolated CPUs,
-each benchmark thread pinned itself to an isolated core of that socket and reserved both of its hyper-threads.
-All runs used `-t 1 -f 2 -wi 3 -w 500ms -i 5 -r 500ms`. Times are means with JMH's 99.9% confidence intervals.
+**Queue benchmark setup.** All three queue benchmarks ran with [the same settings](benchmarks.md#the-queue-benchmarks):
+a Xeon Gold 6244, the thread on an isolated core, `-t 1 -f 2 -wi 3 -w 500ms -i 5 -r 500ms`. Times are means with
+JMH's 99.9% confidence intervals.
 
 `LongIndexedFifoQueuesJmh.cancelAndAppend` cancels a random live ID and submits a replacement at the same
 price. Both implementations maintain a global ID index. The run used 4,096 levels × 16 orders
@@ -89,7 +87,7 @@ keep size, filled quantity and uid on the order. The baseline uses pooled order 
 next references, head/tail references per level and an Eclipse Collections primitive ID-to-object hash map.
 It models the linked orders in `OrderBookDirectImpl`; it does not run that matching engine or its ART ID index.
 The test assigns consecutive order IDs. Eclipse Collections 13.0.0 uses the low bits of the ID for the first
-probe, while `LongLongHashtable` mixes the ID before probing. The timing includes this difference in ID indexes.
+probe, while [`LongLongHashtable`](hashtables.md#longlonghashtable) mixes the ID before probing. The timing includes this difference in ID indexes.
 
 - **Cancel + submit:** cancel a random live order by ID, submit its replacement at the same price.
 - **Execute heads:** choose an existing level, follow and fully fill 16 orders, count their remaining volume and
@@ -155,7 +153,8 @@ updates its indexed position by handle. Single-threaded.
 `LongIndexedEventQueueJmh` compares cancel-and-schedule, reschedule and draining 64 simultaneous deadlines
 against a `TreeSet` with an ID index. The burst benchmark reports time per removed event.
 
-The event queue ran on the same isolated Xeon core with the FIFO warm-up and measurement settings,
+The event queue ran on the same isolated Xeon core with the FIFO
+[warm-up and measurement settings](benchmarks.md#the-queue-benchmarks),
 `-p size=65536,1000000` and a fixed 1 GiB JVM heap. Times are means in ns/op with JMH's 99.9% confidence
 intervals.
 

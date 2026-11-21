@@ -112,7 +112,7 @@ try (CpuAffinity hot = CpuAffinity.acquireCoreOnNode(1)) {    // a reserved core
   0.5 ms on node 1, 0.8 ms on node 0. So keep the JVM off that L3 and bind only its memory:
   `numactl --membind=1 taskset -c 2,4`. On CPUs 1,3, `nohz_full` there, the two GC threads at times ran one after
   the other, and those pauses were twice as long: `-Xlog:gc+cpu` shows `User` close to `Real`.
-- The arrays of a `LongLongLL2Hashtable` are first touched by different threads: the table's thread creates the
+- The arrays of a [`LongLongLL2Hashtable`](hashtables.md#longlongll2hashtable) are first touched by different threads: the table's thread creates the
   first one and any the service is too late with, the worker of its `MigrationService` the new ones up to 4 MB, the
   allocator the larger ones. A table
   stays on a node only if all of them run there - `threadInit` and `allocatorThreadInit` with

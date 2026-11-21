@@ -36,7 +36,7 @@ costs. Single-threaded.
 `LongPriceLadderJmh` compares updates, `priceFromLow` and `costFromLow` with an array of levels walked from the best
 tick: 1,024 levels with volume in a range of 1,024 or 1,048,576 ticks, quantities up to a quarter of the volume (the
 walk passes 128 levels on average). Same machine and settings as the
-[queue benchmarks](queues.md#longindexedfifoqueues), 1 GiB heap, ns/op:
+[queue benchmarks](benchmarks.md#the-queue-benchmarks), 1 GiB heap, ns/op:
 
 | Ticks | Operation | `LongPriceLadder` | `withCosts` | Array walk |
 |---:|---|---:|---:|---:|

@@ -205,7 +205,7 @@ the default capacity, once the map has shrunk by that much.
 
 **Measured** — `CollectionsLatencySamples -Dsamples.groups=art-fill`: one operation at a time on a map of
 1M keys (a new key for `put`, removed after the sample; a present one for `get` and `remove`, put back), ns,
-p50 / p99, the average of the runs; Xeon Gold 6244, the measuring thread on an isolated core, JDK 27; a
+p50 / p99, the average of the runs; [Xeon Gold 6244](benchmarks.md#the-machine), the measuring thread on an isolated core, JDK 27; a
 sample includes the timer read, ~16 ns:
 
 | Operation, keys | ART | `TreeMap` | fastutil RB tree |

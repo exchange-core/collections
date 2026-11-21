@@ -15,7 +15,7 @@ and designed for low-latency, single-threaded hot paths.
 | `collections-orderbook` | `collections-orderbook` | Order book implementation built on top of the core collections | [Order book](docs/orderbook.md) |
 | `collections-ledger`    | `collections-ledger`    | Balances (available, reserved) with checked postings and batches | [Balances](docs/ledger.md) |
 | `collections-affinity`  | `collections-affinity`  | Pinning threads to CPU cores, NUMA topology and memory placement checks, no dependencies | [Thread affinity](docs/affinity.md) |
-| `tests-perf`            | –                       | Latency / throughput benchmarks (not published)                | [Testing](CONTRIBUTING.md#testing) |
+| `tests-perf`            | –                       | Latency / throughput benchmarks (not published)                | [Benchmarks](docs/benchmarks.md) |
 | `tests-stress`          | –                       | Long-running randomized stress tests (not published)           | [Testing](CONTRIBUTING.md#testing) |
 
 ### Requirements
@@ -98,6 +98,7 @@ mvn clean install
 - [Thread affinity](docs/affinity.md) — `collections-affinity`: pinning threads, NUMA
 - [Order book](docs/orderbook.md) — `collections-orderbook`
 - [Balances](docs/ledger.md) — `collections-ledger`
+- [Benchmarks](docs/benchmarks.md) — the machine and the settings behind the numbers, how to run them
 - [Building, testing, contributing](CONTRIBUTING.md)
 - [Release notes](RELEASE_NOTES.md)
 

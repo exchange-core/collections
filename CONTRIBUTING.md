@@ -32,7 +32,8 @@ mvn -Pbenchmarks -pl tests-perf -am test
 ```
 
 Benchmarks are latency-sensitive: run them on an idle machine, ideally with CPU isolation — the
-measuring threads pin themselves to the isolated CPUs through `collections-affinity`.
+measuring threads pin themselves to the isolated CPUs through [`collections-affinity`](docs/affinity.md).
+How the numbers in the docs were measured, and how to run one benchmark or JMH: [benchmarks](docs/benchmarks.md).
 
 The API of the published modules against the last release ([japicmp](https://github.com/siom79/japicmp)):
 a binary or source incompatible change fails the build unless it is listed in the excludes of the

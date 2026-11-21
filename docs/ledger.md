@@ -3,7 +3,7 @@
 [exchange collections](../README.md) › Balances
 
 `collections-ledger` contains `BalanceTable`: balances — an available and a reserved amount — under keys of a
-fixed number of longs, (account, currency) or (user UUID, token, subaccount), in a `LongTupleHashtable`. Neither
+fixed number of longs, (account, currency) or (user UUID, token, subaccount), in a [`LongTupleHashtable`](records.md#longtuplehashtable). Neither
 amount ever goes below 0 and no sum overflows: an operation checks before it writes and returns a status — a
 refusal is not an exception, and nothing allocates.
 
