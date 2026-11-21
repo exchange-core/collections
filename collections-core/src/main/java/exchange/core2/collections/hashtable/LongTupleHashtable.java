@@ -643,6 +643,26 @@ public final class LongTupleHashtable {
     }
 
     /**
+     * For {@link LongSnapshotRecordTable}: makes this table a copy of the source, slot for slot, into its own array
+     * when the capacities match. The source has the same key and value widths and limits.
+     */
+    void copyFrom(LongTupleHashtable source) {
+        final long[] from = source.data;
+        if (data.length != from.length) {
+            data = new long[from.length];
+        }
+        System.arraycopy(from, 0, data, 0, from.length);
+        mask = source.mask;
+        size = source.size;
+        upsizeThreshold = source.upsizeThreshold;
+    }
+
+    /** For {@link LongSnapshotRecordTable}: true if inserting a new key would first resize the table. */
+    boolean growsOnNextInsert() {
+        return size + 1 >= upsizeThreshold;
+    }
+
+    /**
      * @return the number of slots; the table grows when its size reaches 65% of them
      */
     public int capacity() {

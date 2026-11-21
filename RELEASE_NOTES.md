@@ -17,6 +17,18 @@ alone), with `collections-ledger` new. The API changes since 0.6.0 - each is des
 
 ### Added
 
+- **`LongSnapshotRecordTable`** (`collections-core`): records under `long` keys with point-in-time snapshots that
+  other threads read while one writer goes on. Shards split by extendible hashing, so the copy a write makes after
+  a snapshot stays one small shard however the table grows; replaced shards return to a pool once the snapshots
+  that see them are closed or collected, so steady writes do not allocate.
+- **`LongPriceLadder`** (`collections-core`): volume by tick over a dense range in a Fenwick tree: range sums, the
+  tick a quantity reaches and, with `withCosts`, what taking it costs, from either end, in O(log ticks).
+- **`LongSequenceBuffer`** (`collections-core`): a reorder window for a sequenced feed. It refuses duplicates and
+  stale messages, delivers in order with retry on a failed callback, reports the gap to request again and skips
+  ahead after a snapshot recovery.
+- **`LongRollingWindow`** and **`LongTimeSeries`** (`collections-core`, package `time`): an exact count and sum over
+  a sliding time window, with `tryAdd` as a rate limit; an append-only time series with as-of lookups
+  (`floorIndex`, strict `lowerIndex`) and a deterministic merge of several series.
 - **`LongIndexedEventQueue`** (`collections-core`): deterministic scheduling by time, priority and insertion
   order, immediate cancellation and rescheduling by ID, growing or fixed capacity. Its four-way heap keeps
   ordering keys in primitive arrays and tracks each event's position by record handle.

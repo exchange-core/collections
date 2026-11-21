@@ -11,7 +11,7 @@ and designed for low-latency, single-threaded hot paths.
 
 | Module                  | Artifact                | Contents                                                      |
 |-------------------------|-------------------------|---------------------------------------------------------------|
-| `collections-core`      | `collections-core`      | Adaptive Radix Tree, hashtables (long-long, tuples), record store, indexed FIFO and event queues, objects pool |
+| `collections-core`      | `collections-core`      | Adaptive Radix Tree, hashtables (long-long, tuples, snapshots), record store, queues (indexed FIFO, events, reorder window), price ladder, time windows and series, objects pool |
 | `collections-orderbook` | `collections-orderbook` | Order book implementation built on top of the core collections |
 | `collections-ledger`    | `collections-ledger`    | Balances (available, reserved) with checked postings and batches |
 | `collections-affinity`  | `collections-affinity`  | Pinning threads to CPU cores, NUMA topology and memory placement checks, no dependencies |
@@ -79,8 +79,13 @@ mvn clean install
 | `RecordStore`              | paged records by handle   | handle → `long` fields | new    |
 | `LongRecordTable`          | hashtable index + records | `long` → `long` fields | new    |
 | `LongTupleHashtable`       | open-addressing hashtable | `long`s → `long`s, fixed widths | new |
+| `LongSnapshotRecordTable`  | sharded hashtable with snapshots | `long` → `long` fields | new |
 | `LongIndexedFifoQueues`    | FIFO queues, one ID index | queue key, entry ID, value: `long` | new |
 | `LongIndexedEventQueue`    | stable four-way min-heap with ID index | event ID, time: `long`; priority: `int` | new |
+| `LongSequenceBuffer`       | reorder window by sequence | sequence → `long` | new |
+| `LongPriceLadder`          | Fenwick tree over ticks   | tick → volume    | new          |
+| `LongRollingWindow`        | ring of timed deltas      | time, delta: `long` | new       |
+| `LongTimeSeries`           | append-only time series   | time → `long`    | new          |
 | `ObjectsPool`              | object pool               | –                | stable       |
 
 ---
@@ -843,6 +848,67 @@ such a key gets without a primitive table; keys added in one random order, reach
 
 ---
 
+### LongSnapshotRecordTable
+
+Records of fixed width under `long` keys, with point-in-time snapshots that other threads read while the writer
+goes on: balances captured at sequence S and serialized in the background exactly as of S.
+
+```java
+import exchange.core2.collections.hashtable.LongSnapshotRecordTable;
+
+final var balances = LongSnapshotRecordTable.builder().fields(2).expectedSize(1_000_000).build();
+balances.set(account, AVAILABLE, 500);
+
+final var snapshot = balances.snapshot(sequence);   // on the writer thread
+executor.submit(() -> {
+    try (snapshot) {
+        snapshot.forEach(new long[2], (key, row) -> out.write(key, row[AVAILABLE], row[RESERVED]));
+    }
+});
+balances.set(account, AVAILABLE, 400);              // the snapshot still reads 500
+```
+
+The records live in shards: small `LongTupleHashtable`s of 256 slots (`shardCapacity`), reached through a
+directory by the low bits of the key's hash (extendible hashing). A full shard splits in two by the next bit, and
+the directory doubles when it has to, so no shard grows however many keys arrive. `snapshot` copies the directory,
+one reference per entry. The first write to a shard after a snapshot copies that shard (256 × (2 + fields) longs,
+12 KiB with four fields); later writes to it do not. A replaced shard returns to a pool once every snapshot that
+can see it is closed, so writes between snapshots closed in time do not allocate. A snapshot dropped without
+`close` counts as closed once it is garbage collected; until then it holds back every shard replaced after it.
+Reading a closed snapshot throws `IllegalStateException`.
+
+`shardCapacity` trades the copy against the directory: 64-slot shards copy a quarter as much on a first write, and
+make the directory that every snapshot copies four times larger. Keys whose hashes the splits cannot separate stop
+the directory at a bound proportional to the size; their shard grows instead. Iteration goes in hash order, which
+depends on the JVM's hash seed. One writer; any number of reader threads per snapshot, published safely.
+
+`LongSnapshotRecordTableJmh` measures writes with a snapshot every 0, 1,000 or 100,000 writes, the previous one
+closed as the next is taken: the mean, the percentiles (`writeSampled`) and, with `-prof gc`, the bytes allocated
+per write. It ran with the setup of the queue benchmarks below (Xeon Gold 6244, the thread on an isolated core,
+`-t 1 -f 2 -wi 3 -w 500ms -i 5 -r 500ms`), with a 4 GiB heap, four fields per record and random keys. Means in ns
+per write with JMH's 99.9% confidence intervals; the percentiles come from the sampled run, whose timer reads add
+25-70 ns to each write (compare p50 with the mean):
+
+| Keys | Snapshot every | Shard slots | Mean | p50 | p99 | p99.9 | Max |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10,000 | never | 256 | 16.7 ± 0.1 | 43 | 88 | 519 | 1,616 |
+| 10,000 | 1,000 writes | 256 | 93.7 ± 0.0 | 51 | 946 | 1,024 | 10,704 |
+| 1,000,000 | never | 64 | 87.4 ± 4.5 | 155 | 477 | 663 | 3,932 |
+| 1,000,000 | never | 256 | 74.8 ± 0.7 | 140 | 447 | 631 | 1,148 |
+| 1,000,000 | 1,000 writes | 64 | 583.6 ± 0.9 | 580 | 1,028 | 16,704 | 55,296 |
+| 1,000,000 | 1,000 writes | 256 | 1,853.9 ± 1.9 | 1,980 | 2,688 | 4,340 | 12,720 |
+| 1,000,000 | 100,000 writes | 64 | 345.2 ± 5.6 | 299 | 1,224 | 1,512 | 39,296 |
+| 1,000,000 | 100,000 writes | 256 | 277.0 ± 1.8 | 168 | 2,616 | 3,138 | 21,696 |
+
+A write allocated about 0.1 B: the objects of a snapshot, spread over the writes between two. With a snapshot every
+1,000 writes to a million keys, most writes are the first to their shard since the snapshot and copy it - 12 KiB
+with 256 slots, 3 KiB with 64 - which sets the mean and p99. One write in 1,000 takes the snapshot and copies the
+directory, 65,536 entries with 64-slot shards and 8,192 with 256: 16.7 µs at p99.9 against 4.3 µs. The shards
+that closed snapshots release are reused one at a time, as copies need them, so neither the snapshot nor a write
+pays for a whole interval at once.
+
+---
+
 ### LongIndexedFifoQueues
 
 A family of FIFO queues with a shared entry ID index. Use the price tick as the queue key and the order ID
@@ -1006,6 +1072,125 @@ intervals.
 At 1M, the heap was 4.0× faster for cancel + schedule and 6.8× faster for rescheduling. The tree drained
 the burst 3.6× faster. Each invocation inserts the same 64 IDs (−1 through −64) at a single deadline
 ahead of a fixed backlog, outside the timed region.
+
+---
+
+### LongSequenceBuffer
+
+A reorder window for one feed session: messages arrive by sequence number, out of order or twice, and leave in
+order without gaps.
+
+```java
+import exchange.core2.collections.queue.LongSequenceBuffer;
+
+final var feed = new LongSequenceBuffer(1024, 1);   // capacity, first sequence
+feed.offer(2, payload2);                            // ACCEPTED: waits for 1
+feed.offer(2, other);                               // DUPLICATE: the first value stays
+feed.drainContiguous(handler, 64);                  // 0: sequence 1 is missing
+requestAgain(feed.nextExpected(), feed.firstBuffered());   // the gap [1, 2)
+feed.offer(1, payload1);
+feed.drainContiguous(handler, 64);                  // 2: delivers 1, then 2
+```
+
+`offer` answers `ACCEPTED`, `DUPLICATE`, `TOO_OLD` (already delivered) or `TOO_FAR_AHEAD` (past the window); only
+`ACCEPTED` changes the buffer. A pair is consumed once its callback returns: if the callback throws, the pair stays
+for a retry; the callback may not change the buffer. After recovering from a snapshot up to sequence S,
+`skipTo(S + 1)` drops what the snapshot covers and keeps the messages buffered after it; `reset` starts a new
+session. Every signed sequence works; once `Long.MAX_VALUE` is delivered, the session is exhausted. Fixed memory,
+single-threaded.
+
+---
+
+### LongPriceLadder
+
+Aggregated volume of one side of a book over a dense range of integer ticks: how much is available up to a price,
+which tick a quantity reaches, what taking it costs.
+
+```java
+import exchange.core2.collections.price.LongPriceLadder;
+
+final var asks = LongPriceLadder.withCosts(10_000, 4_096);   // ticks 10,000 .. 14,095
+asks.addVolume(10_005, 300);
+asks.addVolume(10_007, 200);
+
+asks.lowestNonEmptyTick();      // 10,005: the best ask
+asks.volumeAtOrBelow(10_006);   // 300
+asks.priceFromLow(400);         // 10,007: a buy of 400 lots reaches it
+asks.costFromLow(400);          // 300 × 10,005 + 100 × 10,007 = 4,002,200
+```
+
+A Fenwick tree over the levels answers range sums and walks by cumulative volume in O(log ticks); a point read is
+O(1). `priceFromHigh`, `costFromHigh`, `highestNonEmptyTick` and `volumeAtOrAbove` serve the bids. A ladder from
+`withCosts` keeps a second tree of `(tick − lowestTick) × volume` interleaved with the first, so an update touches
+the same cache lines; the plain constructor skips it. The levels, their total and that weighted sum must fit a
+non-negative `long`: an update that would break one throws and changes nothing. At most 2^30 ticks, 2^29 with
+costs. Single-threaded.
+
+`LongPriceLadderJmh` compares updates, `priceFromLow` and `costFromLow` with an array of levels walked from the best
+tick: 1,024 levels with volume in a range of 1,024 or 1,048,576 ticks, quantities up to a quarter of the volume (the
+walk passes 128 levels on average). Same machine and settings as above, 1 GiB heap, ns/op:
+
+| Ticks | Operation | `LongPriceLadder` | `withCosts` | Array walk |
+|---:|---|---:|---:|---:|
+| 1,024 | Set a level | 12.9 ± 0.1 | 18.7 ± 0.1 | 2.0 ± 0.0 |
+| 1,048,576 | Set a level | 28.9 ± 0.0 | 33.9 ± 0.0 | 2.0 ± 0.0 |
+| 1,024 | Tick a quantity reaches | 41.3 ± 0.1 | | 99.3 ± 0.0 |
+| 1,048,576 | Tick a quantity reaches | 53.3 ± 0.1 | | 99.3 ± 0.0 |
+| 1,024 | Cost of a quantity | | 41.2 ± 0.2 | 154.2 ± 0.0 |
+| 1,048,576 | Cost of a quantity | | 54.6 ± 0.1 | 154.1 ± 0.0 |
+
+The ladder pays at every update for queries that take O(log ticks) whatever their depth; the walk is cheap to
+update and grows with the levels it passes. Keeping the costs adds 5-6 ns to an update.
+
+---
+
+### LongRollingWindow
+
+The count and exact sum of signed deltas over the last `duration` units of time, `(now − duration, now]`: the
+orders an account sent in the last second, the volume traded in the last 100 ms. The caller supplies the time,
+nondecreasing, so live and replay behave alike.
+
+```java
+import exchange.core2.collections.time.LongRollingWindow;
+
+final var orders = new LongRollingWindow(1_000_000_000L, 100);   // 1 s in ns, at most 100 at a time
+if (!orders.tryAdd(nowNanos, 1)) {
+    reject();                                                    // 100 orders in the last second
+}
+```
+
+A ring of `(time, delta)` pairs, 16 bytes a slot, fixed at construction. `tryAdd` refuses, changing nothing, while
+every slot is still in the window; `add` throws instead. `advanceTo` expires without adding. The sum is kept in 128
+bits, exact even when it leaves the `long` range in between; `sum()` throws only if the current sum does not fit.
+A window keeps every event: for a limit per account over many accounts, a counter per time bucket takes less
+memory. Single-threaded.
+
+---
+
+### LongTimeSeries
+
+Append-only `(time, value)` pairs in nondecreasing time, for backtests and replay: the quote a strategy knew at the
+moment of a decision, then the events after it in one deterministic order.
+
+```java
+import exchange.core2.collections.time.LongTimeSeries;
+
+final var quotes = new LongTimeSeries(1 << 20);
+final var trades = new LongTimeSeries(1 << 20);
+// ... appends in time order
+
+final int known = quotes.lowerIndex(decisionTime);   // strictly before: a quote at decisionTime is not known yet
+final var replay = LongTimeSeries.merge(decisionTime, quotes, trades);
+while (replay.advance()) {
+    handle(replay.source(), replay.time(), replay.value());   // equal times: quotes first, then by insertion
+}
+```
+
+`floorIndex` finds the last observation at or before a time (the last of equal times), `lowerIndex` the last one
+strictly before it; both are binary searches. Indices stay valid as the series grows. `cursor(from)` replays one
+series up to its size at the call; `merge(fromTime, series...)` replays several from `fromTime` in time order, equal
+times in the order of the arguments and then of insertion, in O(number of series) per step. `fixedCapacity(n)`
+refuses appends past `n`; otherwise the arrays double. Single-threaded.
 
 ---
 
