@@ -95,6 +95,22 @@ final class LinearProbing {
     }
 
     /**
+     * {@link #forEach} for int keys ({@link IntLongHashtable}): the array holds them widened to long - the key kept in
+     * fields is the seed, then an int too.
+     */
+    static void forEachInt(boolean hasZeroKey, long zeroKeyValue, long[] data, long seed, IntLongConsumer consumer) {
+        if (hasZeroKey) {
+            consumer.accept((int) seed, zeroKeyValue);
+        }
+        for (int i = 0; i < data.length; i += 2) {
+            final long key = data[i];
+            if (key != NOT_ALLOWED_KEY) {
+                consumer.accept((int) (key ^ seed), data[i + 1]);
+            }
+        }
+    }
+
+    /**
      * Keys in the order of {@link #forEach}; the stream reads the array lazily.
      */
     static LongStream keysStream(boolean hasZeroKey, long[] data, long seed) {

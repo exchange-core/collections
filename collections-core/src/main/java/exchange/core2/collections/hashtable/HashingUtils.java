@@ -118,6 +118,25 @@ final class HashingUtils {
         return (int) (((z ^ (z >>> 28)) * 0xcb24d0a5c88c35b3L) >>> 32);
     }
 
+    /**
+     * Hash of a key of two longs (a UUID): the halves mixed in turn from the seed, h = mix64(mix64(SEED + hi) + lo),
+     * as the tags of {@link LongTupleHashtable}. The seed goes in before the first non-linear step, so keys picked to
+     * collide - mix64(SEED + hi1) - mix64(SEED + hi2) == lo2 - lo1 - can not be found without it. Low 32 bits.
+     */
+    static int hash(final long hi, final long lo) {
+        return (int) mix64(mix64(SEED + hi) + lo);
+    }
+
+    /**
+     * The SplitMix64 finalizer (Stafford's variant 13): a bijection on 64 bits, every bit of the result depends on
+     * every bit of the input.
+     */
+    static long mix64(long z) {
+        z = (z ^ (z >>> 30)) * 0xbf58476d1ce4e5b9L;
+        z = (z ^ (z >>> 27)) * 0x94d049bb133111ebL;
+        return z ^ (z >>> 31);
+    }
+
     static int nextPositivePowerOfTwo(final int value) {
         return 1 << (Integer.SIZE - Integer.numberOfLeadingZeros(value - 1));
     }

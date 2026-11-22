@@ -4,6 +4,10 @@
 
 - [`LongLongHashtable`](#longlonghashtable) — `long` → `long`, open addressing with linear probing
 - [`LongLongLL2Hashtable`](#longlongll2hashtable) — the same contract, resized in the background by a `MigrationService`
+- [`IntLongHashtable`](#intlonghashtable) — `int` → `long`, a `LongLongHashtable` under `int` keys
+- [`LongObjectHashtable`](#longobjecthashtable) — `long` → object, the keys and the values in two arrays
+- [`UuidObjectHashtable`](#uuidobjecthashtable) — UUID → object, the key as two longs or a `java.util.UUID`
+- [Load factors](#load-factors) — of the object tables: a lower one for small tables
 
 Keys of several longs, and records of several fields under a key: [records](records.md).
 
@@ -277,3 +281,190 @@ worker a core of its own.
   interrupts do not end them
 - `-Dexchange.hashtable.verify=true` runs a full integrity check after every migration —
   for debugging migration corruption only, it is expensive
+
+---
+
+## IntLongHashtable
+
+`int` keys to `long` values: a [`LongLongHashtable`](#longlonghashtable) under `int` keys, widened to `long`. The
+same layout — a key and its value side by side, one cache line for a lookup — the same builder, `missingValue`,
+hash seed, maximum capacity and costs; 16 bytes per slot.
+
+```java
+import exchange.core2.collections.hashtable.IntLongHashtable;
+
+final IntLongHashtable bySymbol = IntLongHashtable.builder()
+        .expectedSize(10_000)
+        .missingValue(-1L)
+        .build();
+
+bySymbol.put(42, 1234L);
+bySymbol.get(42);                           // 1234
+bySymbol.get(7);                            // -1
+bySymbol.addAndGet(42, 6L);                 // 1240
+bySymbol.computeIfAbsent(7, s -> s * 10L);  // 70
+bySymbol.forEach((symbol, value) -> ...);   // no allocation
+bySymbol.keysStream();                      // IntStream
+```
+
+**Notes**
+- every call goes to the `LongLongHashtable` inside: one reference more on the way to its array
+- any `int` key, `0` included; the rest as for `LongLongHashtable`
+
+---
+
+## LongObjectHashtable
+
+`long` keys to object values. Open addressing with linear probing over two arrays of the same length: the keys in
+a `long[]`, the value of each in an `Object[]` at the same index; backward-shift removal, no tombstones.
+
+```java
+import exchange.core2.collections.hashtable.LongObjectHashtable;
+
+final LongObjectHashtable<Order> orders = LongObjectHashtable.builder()
+        .expectedSize(1_000_000)
+        .build();
+
+orders.put(orderId, order);              // the previous value, or null
+orders.get(orderId);                     // order; null for a missing key
+orders.putIfAbsent(orderId, other);      // order - present, unchanged
+orders.computeIfAbsent(id, Order::new);  // the function runs only for a missing key
+orders.getOrDefault(id, fallback);
+orders.remove(orderId);                  // order
+orders.remove(orderId, order);           // only with an equal value
+orders.forEach((id, o) -> ...);          // no allocation
+orders.put(1L, null);                    // NullPointerException
+```
+
+**Layout.** A reference can not live in a `long[]`, so a key and its value can not share a cache line. They lie at
+the same index of their arrays, so the address of the value is known as soon as the key is hashed: the CPU loads
+both lines at once, and a lookup waits for one miss of the table, then for the object. A probe walks the keys only,
+8 to a line. There are no `null` values, so a free slot holds `null` and `get` reads the value of the slot its probe
+stopped at without comparing the key again. A removal clears the value cell it frees: the table keeps no removed
+object alive.
+
+**Notes**
+- any key, `0` included: the value of the key equal to the seed — stored as 0, the free-slot marker — is kept in
+  a field
+- the builder: `expectedSize`, `maxCapacity`, `fixedCapacity`, `maxLoad` as for `LongLongHashtable`; no
+  `missingValue` — `null` is the missing value. The hash seed of the JVM, as for `LongLongHashtable`
+- 12 bytes per slot (4-byte references, a heap below 32 GB; 16 bytes above)
+- two load factors, see [Load factors](#load-factors): a table grows by doubling at `loadFactor` of its slots
+  (default 0.65), and while it has fewer than `smallTableCapacity` slots (default 2^16) at the lower
+  `smallTableLoadFactor` (default 0.5). A resize copies both arrays on the calling thread — pre-size the table where
+  that pause matters
+- a reference written into the array costs a GC write barrier: in `put`, in `remove` and for each entry a removal
+  shifts back
+- `remove(key, value)` compares with `equals`; `computeIfAbsent` puts nothing if the function returns `null`
+- not thread-safe
+
+**Measured** — `LongObjectHashtableJmh`, against the maps of the same layout, each pre-sized for the keys with its
+own load factor: Eclipse's `LongObjectHashMap` (at most 0.5 full, tombstones; as in exchange-core), agrona's
+`Long2ObjectHashMap` (0.65, compacts the chain on removal) and fastutil's `Long2ObjectOpenHashMap` (0.75,
+backward shift). `LongObjectHashtable` 2× is the table pre-sized for twice the keys: the load of Eclipse's map
+(0.3 here, against 0.61). ns per operation, 10k / 1M / 10M random keys in a random order;
+[Xeon Gold 6244](benchmarks.md#the-machine), JDK 27, the benchmark thread on an isolated core, one fork, 3 × 1 s
+of warm-up and of measurement:
+
+| Operation | `LongObjectHashtable` | the same, 2× | `LongObjectHashMap` | `Long2ObjectHashMap` | `Long2ObjectOpenHashMap` |
+|---|---|---|---|---|---|
+| `chase` — each lookup and the read of its object wait for the one before | 14.6 / 100 / 192 | 11.7 / 119 / 184 | 9.1 / 107 / 185 | 15.6 / 108 / 189 | 15.4 / 99 / 191 |
+| `get` — independent lookups of present keys | 10.7 / 45 / 69 | 6.3 / 47 / 61 | 5.3 / 41 / 55 | 10.7 / 48 / 74 | 11.8 / 42 / 67 |
+| `getMiss` — absent keys | 16.5 / 27 / 70 | 8.3 / 30 / 40 | 7.8 / 18 / 30 | 15.8 / 23 / 67 | 20.3 / 21 / 62 |
+| `replace` — a key removed, a new one added | 54 / 119 / 242 | 30 / 110 / 152 | 59 / 172 / 573 | 56 / 98 / 211 | 54 / 121 / 215 |
+
+- Out of the caches a lookup that reads its object costs the same in all four, ~100 ns at 1M and ~190 at 10M: a
+  miss of the table — the key and the value lines at once — then a miss of the object.
+- In the caches, and for missing keys, the load decides: the shorter the clusters, the fewer probe steps and
+  mispredicted exits. Pre-sized for twice the keys the table matches Eclipse's map (6.3 against 5.3 ns at 10k,
+  8.3 against 7.8 for a miss) — and takes its memory: that map at least 24 bytes per key (12 per slot, at most half
+  of them used), this table at least 18.5 at its own load.
+- Eclipse's removal leaves tombstones until a rehash of the whole table: iterations of `replace` at 132, 251 and
+  132 ns at 1M; 186, 136 and 1395 at 10M. A backward shift, or agrona's compaction, has no such pauses.
+- Measured with one load factor, 0.65, for every size. With the [defaults](#load-factors) a table of 10k keys
+  grows at 0.5: 32768 slots, the table of the 2× column; 1M and 10M as measured.
+
+---
+
+## UuidObjectHashtable
+
+UUID keys to object values: the layout of [`LongObjectHashtable`](#longobjecthashtable) with keys of two longs —
+the most and the least significant bits side by side in a `long[]`, the value in an `Object[]` at the slot index.
+
+```java
+import exchange.core2.collections.hashtable.UuidObjectHashtable;
+
+final UuidObjectHashtable<Account> accounts = new UuidObjectHashtable<>(1_000_000);
+
+accounts.put(hi, lo, account);           // the halves, as decoded from a message
+accounts.get(hi, lo);                    // account
+accounts.get(uuid);                      // the same entry, through a java.util.UUID
+accounts.computeIfAbsent(hi, lo, (h, l) -> new Account(h, l));
+accounts.computeIfAbsent(uuid, Account::new);
+accounts.remove(uuid);
+accounts.forEach((h, l, a) -> ...);      // the key as its halves, no allocation
+accounts.keysStream();                   // Stream<UUID>, a new UUID each
+```
+
+Every operation takes the key in either form: the `UUID` overloads read its halves and call the others. The table
+never keeps or creates `UUID` objects, except in `keysStream`.
+
+**Notes**
+- the hash mixes both halves with the seed of the JVM: mix64(mix64(seed + hi) + lo), SplitMix64's finalizer
+  twice, as the tags of [`LongTupleHashtable`](records.md#longtuplehashtable). Keys picked to collide can not be
+  found without the seed; sequential UUIDs — a prefix and a counter, UUIDv7 of one millisecond — spread like random
+  ones. A removal hashes again each entry it shifts back
+- any key: the nil UUID — two zero longs, the free-slot marker — is kept in a field
+- 20 bytes per slot (4-byte references); a probe walks 4 keys to a cache line
+- no `null` values, the builder, the two [load factors](#load-factors), the resize, `remove(key, value)` and
+  `computeIfAbsent` as for `LongObjectHashtable`
+- not thread-safe
+
+**Measured** — `UuidObjectHashtableJmh`, random UUIDs (v4) arriving as two longs: the table given the halves,
+pre-sized for twice the keys (2×), given a `new UUID(hi, lo)`, and `HashMap<UUID, V>` given one. ns per
+operation, 10k / 1M / 10M keys, the machine and the runs of `LongObjectHashtableJmh`:
+
+| Operation | `UuidObjectHashtable` | the same, 2× | the same, through `UUID` | `HashMap<UUID, V>` |
+|---|---|---|---|---|
+| `chase` — each lookup and the read of its object wait for the one before | 17.8 / 127 / 200 | 15.1 / 139 / 188 | 18.4 / 132 / 200 | 16.9 / 212 / 298 |
+| `get` — independent lookups of present keys | 12.9 / 79 / 108 | 9.3 / 80 / 96 | 15.6 / 79 / 109 | 12.8 / 102 / 145 |
+| `getMiss` — absent keys | 22.9 / 59 / 100 | 13.0 / 54 / 65 | 22.9 / 58 / 101 | 7.4 / 29 / 56 |
+| `replace` — a key removed, a new one added | 77 / 197 / 319 | 44 / 171 / 227 | 80 / 196 / 319 | 47 / 144 / 358 |
+
+- A lookup that reads its object is a third shorter than with `HashMap` out of the caches, 127 against 212 ns at
+  1M and 200 against 298 at 10M: the arrays of keys and values at once, then the object — where `HashMap` reads its
+  table, the node, the `UUID` of the node to compare it, then the object.
+- A missing key is cheaper in `HashMap`: an empty bucket ends its lookup in one read, and the node of a full one
+  holds the hash to compare. A miss here walks to the end of the cluster, ~4 slots at load 0.61 — pre-sized for
+  twice the keys, 13 / 54 / 65 ns.
+- Given a `UUID`, the table costs the same as given the halves, out of the caches; 2.7 ns more at 10k.
+- Measured with one load factor, 0.65, as `LongObjectHashtableJmh`: with the [defaults](#load-factors) the table of
+  10k keys is the one of the 2× column.
+
+---
+
+## Load factors
+
+`LongObjectHashtable` and `UuidObjectHashtable` grow at one of two loads: a small table, below
+`smallTableCapacity` slots, at the lower `smallTableLoadFactor` — sparse while that costs little memory.
+
+```java
+LongObjectHashtable.builder()
+        .loadFactor(0.65)             // from smallTableCapacity slots on: 0.25 to 0.9
+        .smallTableLoadFactor(0.5)    // below: 0.25 to loadFactor; unset - min(0.5, loadFactor)
+        .smallTableCapacity(1 << 16)  // a power of two; 2 - every table at loadFactor
+        .build();
+```
+
+- A table doubles when its size reaches the load factor of its slots: its load runs from half the load factor to
+  the load factor. `expectedSize` and `ensureCapacity` follow the same thresholds; `maxLoad` must be at least the
+  load factor the table grows at near its maximum capacity.
+- The load sets the probe: linear probing walks ~(1 + 1/(1 − α))/2 slots for a present key and
+  ~(1 + 1/(1 − α)²)/2 for a missing one — 1.5 and 2.5 at 0.5, 1.9 and 4.6 at 0.65, 3.8 and 23 at 0.85. In the caches
+  each slot is work and a mispredicted exit; out of them a probe within one cache line costs one miss — 8 keys to a
+  line here, 4 in the UUID table.
+- Memory: 12 / α bytes a key (20 / α for UUIDs) — at 0.65 18.5 just before the table grows and 37 after; a small
+  table at 0.5 takes 24 to 48. 2^16 slots are 768 KB, 1.25 MB with UUID keys.
+- The defaults are a first choice; `HashtableLoadSweepJmh` measures each operation against the capacity (2^10 to
+  2^24 slots) and the load (0.25 to 0.85) to set them.
+- `LongLongHashtable` and `IntLongHashtable` grow at 0.65.

@@ -11,7 +11,7 @@ and designed for low-latency, single-threaded hot paths.
 
 | Module                  | Artifact                | Contents                                                      | Docs |
 |-------------------------|-------------------------|---------------------------------------------------------------|------|
-| `collections-core`      | `collections-core`      | Adaptive Radix Tree, hashtables (long-long, tuples, snapshots), record store, queues (indexed FIFO, events, reorder window), price ladder, time windows and series, objects pool | [Collections](#collections) |
+| `collections-core`      | `collections-core`      | Adaptive Radix Tree, hashtables (long-long, int-long, long-object, UUID-object, tuples, snapshots), record store, queues (indexed FIFO, events, reorder window), price ladder, time windows and series, objects pool | [Collections](#collections) |
 | `collections-orderbook` | `collections-orderbook` | Order book implementation built on top of the core collections | [Order book](docs/orderbook.md) |
 | `collections-ledger`    | `collections-ledger`    | Balances (available, reserved) with checked postings and batches | [Balances](docs/ledger.md) |
 | `collections-affinity`  | `collections-affinity`  | Pinning threads to CPU cores, NUMA topology and memory placement checks, no dependencies | [Thread affinity](docs/affinity.md) |
@@ -76,6 +76,9 @@ mvn clean install
 | [`LongAdaptiveRadixTreeMap`](docs/art.md#longadaptiveradixtreemap) | a sorted map: price levels, stop orders, top-N walks | Adaptive Radix Tree (ART) | `long` → object | stable |
 | [`LongLongHashtable`](docs/hashtables.md#longlonghashtable) | `long` → `long` lookups: ids, handles, counters | open-addressing hashtable | `long` → `long` | stable |
 | [`LongLongLL2Hashtable`](docs/hashtables.md#longlongll2hashtable) | the same, where a resize must not pause the thread | hashtable, async resizing | `long` → `long` | stable |
+| [`IntLongHashtable`](docs/hashtables.md#intlonghashtable) | `int` keys: symbols, currencies | `LongLongHashtable` under `int` keys | `int` → `long` | new |
+| [`LongObjectHashtable`](docs/hashtables.md#longobjecthashtable) | objects by `long` id: orders, accounts | open-addressing hashtable, keys and values in two arrays | `long` → object | new |
+| [`UuidObjectHashtable`](docs/hashtables.md#uuidobjecthashtable) | objects by UUID, as two longs or a `UUID` | open-addressing hashtable, keys and values in two arrays | UUID → object | new |
 | [`RecordStore`](docs/records.md#recordstore) | several fields of one thing, reached by a handle kept elsewhere | paged records by handle | handle → `long` fields | new |
 | [`LongRecordTable`](docs/records.md#longrecordtable) | records under keys, handles that stay valid | hashtable index + records | `long` → `long` fields | new |
 | [`LongTupleHashtable`](docs/records.md#longtuplehashtable) | keys of several longs: (account, currency), a UUID | open-addressing hashtable | `long`s → `long`s, fixed widths | new |
@@ -91,7 +94,8 @@ mvn clean install
 ## Documentation
 
 - [Adaptive Radix Tree](docs/art.md) — `LongAdaptiveRadixTreeMap`, `ObjectsPool`
-- [Hashtables](docs/hashtables.md) — `LongLongHashtable`, `LongLongLL2Hashtable` and its `MigrationService`
+- [Hashtables](docs/hashtables.md) — `LongLongHashtable`, `LongLongLL2Hashtable` and its `MigrationService`,
+  `IntLongHashtable`, `LongObjectHashtable`, `UuidObjectHashtable`
 - [Records](docs/records.md) — `RecordStore`, `LongRecordTable`, `LongTupleHashtable`, `LongSnapshotRecordTable`
 - [Queues](docs/queues.md) — `LongIndexedFifoQueues`, `LongIndexedEventQueue`, `LongSequenceBuffer`
 - [Price ladder and time windows](docs/price-and-time.md) — `LongPriceLadder`, `LongRollingWindow`, `LongTimeSeries`
