@@ -23,7 +23,7 @@ alone), with `collections-ledger` new. The API changes since 0.6.0 - each is des
   `null`, so a lookup reads the value without comparing the key again. Builders as for `LongLongHashtable`
   (`expectedSize`, `maxCapacity`, `fixedCapacity`, `maxLoad`), the hash seed of the JVM. Two load factors:
   `loadFactor` and, below `smallTableCapacity` slots, the lower `smallTableLoadFactor` - a small table is sparse for
-  little memory.
+  little memory. Defaults 0.65, and 0.5 below 2^16 slots, from a sweep of capacity and load (`HashtableLoadSweepJmh`).
 - **`IntLongHashtable`** (`collections-core`): `int` keys to `long` values - a `LongLongHashtable` under `int` keys,
   with its builder, `missingValue` and costs.
 - **`LongSnapshotRecordTable`** (`collections-core`): records under `long` keys with point-in-time snapshots that

@@ -460,11 +460,54 @@ LongObjectHashtable.builder()
   the load factor. `expectedSize` and `ensureCapacity` follow the same thresholds; `maxLoad` must be at least the
   load factor the table grows at near its maximum capacity.
 - The load sets the probe: linear probing walks ~(1 + 1/(1 − α))/2 slots for a present key and
-  ~(1 + 1/(1 − α)²)/2 for a missing one — 1.5 and 2.5 at 0.5, 1.9 and 4.6 at 0.65, 3.8 and 23 at 0.85. In the caches
-  each slot is work and a mispredicted exit; out of them a probe within one cache line costs one miss — 8 keys to a
-  line here, 4 in the UUID table.
+  ~(1 + 1/(1 − α)²)/2 for a missing one — 1.5 and 2.5 at 0.5, 1.9 and 4.6 at 0.65, 3.8 and 23 at 0.85. Each slot is
+  work and its exit a mispredicted branch; a removal shifts back the rest of the cluster, a put walks to its end.
 - Memory: 12 / α bytes a key (20 / α for UUIDs) — at 0.65 18.5 just before the table grows and 37 after; a small
   table at 0.5 takes 24 to 48. 2^16 slots are 768 KB, 1.25 MB with UUID keys.
-- The defaults are a first choice; `HashtableLoadSweepJmh` measures each operation against the capacity (2^10 to
-  2^24 slots) and the load (0.25 to 0.85) to set them.
 - `LongLongHashtable` and `IntLongHashtable` grow at 0.65.
+- Many small tables — a map per user — take up to twice the memory at 0.5: 16 keys need 64 slots, not 32. For them
+  `smallTableLoadFactor(0.65)`, or `smallTableCapacity(2)`.
+
+**Measured** — `HashtableLoadSweepJmh`: a table of exactly 2^n slots at a load, random keys, the value an object;
+`chase` — each lookup and the read of its object wait for the one before, `getMiss` — independent lookups of absent
+keys, `replace` — a key removed and a new one put. ns per operation; AWS m8azn.xlarge (AMD EPYC 9R05, Zen 5, 5 GHz;
+L2 1 MB a core, L3 20 MB), JDK 27, the benchmark thread pinned, one fork, 2 × 0.5 s of warm-up, 3 × 0.5 s of
+measurement. At one capacity a higher load is also more keys and more objects to read.
+
+`LongObjectHashtable`:
+
+| Operation, slots (table) | 0.25 | 0.35 | 0.45 | 0.55 | 0.65 | 0.75 | 0.85 |
+|---|---|---|---|---|---|---|---|
+| `chase`, 2^12 (48 KB) | 5.8 | 6.4 | 6.6 | 6.9 | 7.1 | 7.4 | 8.0 |
+| `chase`, 2^18 (3 MB) | 19.0 | 20.7 | 22.1 | 23.5 | 24.7 | 26.8 | 28.6 |
+| `chase`, 2^24 (192 MB) | 249 | 252 | 258 | 259 | 271 | 292 | 307 |
+| `getMiss`, 2^12 | 2.0 | 2.1 | 2.4 | 2.8 | 3.4 | 5.0 | 11.1 |
+| `getMiss`, 2^18 | 6.3 | 9.2 | 12.9 | 15.9 | 18.7 | 23.7 | 35.3 |
+| `getMiss`, 2^24 | 29 | 33 | 40 | 56 | 85 | 105 | 125 |
+| `replace`, 2^12 | 19.1 | 26.7 | 33.2 | 39.9 | 46.3 | 62.5 | 107 |
+| `replace`, 2^18 | 23.2 | 32.9 | 42.3 | 50.0 | 57.8 | 73.9 | 120 |
+| `replace`, 2^24 | 117 | 141 | 176 | 221 | 280 | 340 | 471 |
+
+`UuidObjectHashtable`:
+
+| Operation, slots (table) | 0.25 | 0.35 | 0.45 | 0.55 | 0.65 | 0.75 | 0.85 |
+|---|---|---|---|---|---|---|---|
+| `chase`, 2^12 (80 KB) | 9.0 | 9.4 | 9.5 | 9.9 | 10.2 | 10.6 | 11.7 |
+| `chase`, 2^18 (5 MB) | 21.7 | 23.8 | 25.6 | 26.9 | 28.4 | 30.8 | 33.6 |
+| `chase`, 2^24 (320 MB) | 253 | 262 | 263 | 267 | 279 | 299 | 324 |
+| `getMiss`, 2^12 | 4.2 | 4.5 | 4.9 | 5.6 | 6.9 | 9.8 | 18.2 |
+| `getMiss`, 2^18 | 9.5 | 12.7 | 16.5 | 21.1 | 23.5 | 26.2 | 34.8 |
+| `getMiss`, 2^24 | 48 | 54 | 65 | 92 | 122 | 140 | 172 |
+| `replace`, 2^12 | 27.5 | 36.3 | 44.2 | 51.4 | 63.0 | 86.3 | 153 |
+| `replace`, 2^18 | 33.8 | 44.2 | 53.5 | 64.5 | 78.4 | 103 | 174 |
+| `replace`, 2^24 | 186 | 220 | 267 | 323 | 381 | 462 | 597 |
+
+- A lower load is faster at every size: `replace` and `getMiss` the most, `chase` hardly in the caches. Out of the
+  caches too — a longer probe is more work between the misses, and the misses of independent lookups overlap less.
+  So the load factor is a choice of memory.
+- Taken as a policy — a table grown at 0.5 instead of 0.65, averaged over sizes: in L1 and L2 `replace` −20%
+  (−18% with UUID keys), `getMiss` −11% (−9%), `chase` +4% (+5%); out of the caches `replace` −22% (−18%),
+  `getMiss` −26% (−24%), `chase` −2%. The table takes 35 bytes a key instead of 27 (58 instead of 44).
+- The defaults: 0.5 below 2^16 slots, where the sparser table is at most 384 KB (640 KB with UUID keys) and stays in
+  a core's L2; 0.65 from there on, as `LongLongHashtable`. A table sparse enough to outgrow the L3 loses: at 0.65,
+  `chase` goes from 27 ns at 2^20 slots (12 MB) to 216 at 2^22 (48 MB).
