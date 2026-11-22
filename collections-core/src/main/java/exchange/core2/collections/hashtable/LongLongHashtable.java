@@ -1,6 +1,7 @@
 package exchange.core2.collections.hashtable;
 
 
+import java.util.function.IntToLongFunction;
 import java.util.function.LongUnaryOperator;
 import java.util.stream.LongStream;
 
@@ -212,6 +213,27 @@ public final class LongLongHashtable implements ILongLongHashtable {
         }
         final long value = mappingFunction.applyAsLong(key);
         // probe again rather than insert at the offset found before: the function may have changed the table
+        put(key, value);
+        return value;
+    }
+
+    /**
+     * {@link #computeIfAbsent} of {@link IntLongHashtable}: the function takes the int key, no lambda around it.
+     */
+    long computeIfAbsentInt(int key, IntToLongFunction mappingFunction) {
+
+        final long k = key ^ SEED;
+        if (k == NOT_ALLOWED_KEY) {
+            if (hasZeroKey) {
+                return zeroKeyValue;
+            }
+        } else {
+            final int offset = HashingUtils.findFreeOffset(k, data, mask);
+            if (data[offset] == k) {
+                return data[offset + 1];
+            }
+        }
+        final long value = mappingFunction.applyAsLong(key);
         put(key, value);
         return value;
     }
@@ -434,6 +456,13 @@ public final class LongLongHashtable implements ILongLongHashtable {
     @Override
     public void forEach(LongLongConsumer consumer) {
         LinearProbing.forEach(hasZeroKey, zeroKeyValue, data, SEED, consumer);
+    }
+
+    /**
+     * {@link #forEach} of {@link IntLongHashtable}, whose keys are all ints.
+     */
+    void forEachInt(IntLongConsumer consumer) {
+        LinearProbing.forEachInt(hasZeroKey, zeroKeyValue, data, SEED, consumer);
     }
 
     @Override

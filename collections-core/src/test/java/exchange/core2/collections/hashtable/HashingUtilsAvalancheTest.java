@@ -93,14 +93,56 @@ public class HashingUtilsAvalancheTest {
     }
 
     /**
+     * {@link HashingUtils#hash(long, long)} of the UUID tables: every bit of either half flips each bit of the hash
+     * with p ~ 0.5, the other half random.
+     */
+    @Test
+    public void hash128_shouldSatisfyStrictAvalancheCriterion() {
+        final Random other = new Random(777L);
+        final long[] fixed = new long[1];
+        // the hash of (key, other half) and (other half, key): the same other half for a key and its flipped bits
+        final double hiBias = worstAvalancheBias(v -> HashingUtils.hash(v, fixed[0]), () -> fixed[0] = other.nextLong());
+        final double loBias = worstAvalancheBias(v -> HashingUtils.hash(fixed[0], v), () -> fixed[0] = other.nextLong());
+        assertTrue("hash(hi, lo) is biased in hi: " + hiBias, hiBias < MAX_ACCEPTABLE_BIAS);
+        assertTrue("hash(hi, lo) is biased in lo: " + loBias, loBias < MAX_ACCEPTABLE_BIAS);
+    }
+
+    /**
+     * Sequential UUIDs - one prefix and a counter, or a counter in the high half - spread across buckets.
+     */
+    @Test
+    public void hash128_shouldSpreadSequentialKeysAcrossBuckets() {
+        final int buckets = 1024;
+        final int keys = buckets * 1024;
+        final int[] low = new int[buckets];
+        final int[] high = new int[buckets];
+        for (long key = 1; key <= keys; key++) {
+            low[HashingUtils.hash(0x0190_0000_0000_7000L, key) & (buckets - 1)]++;
+            high[HashingUtils.hash(key, 0L) & (buckets - 1)]++;
+        }
+        final int expected = keys / buckets;
+        for (int i = 0; i < buckets; i++) {
+            assertTrue("counter in lo: bucket " + i + " got " + low[i], Math.abs(low[i] - expected) <= expected / 4);
+            assertTrue("counter in hi: bucket " + i + " got " + high[i], Math.abs(high[i] - expected) <= expected / 4);
+        }
+    }
+
+    private static double worstAvalancheBias(LongToIntFunction mixer) {
+        return worstAvalancheBias(mixer, () -> {
+        });
+    }
+
+    /**
+     * @param perSample runs before each sampled key - to change what else the mixer hashes
      * @return the largest deviation from 0.5 over all 64x32 (input bit, output bit) pairs
      */
-    private static double worstAvalancheBias(LongToIntFunction mixer) {
+    private static double worstAvalancheBias(LongToIntFunction mixer, Runnable perSample) {
 
         final int[][] flips = new int[Long.SIZE][Integer.SIZE];
         final Random rand = new Random(12345L);
 
         for (int s = 0; s < AVALANCHE_SAMPLES; s++) {
+            perSample.run();
             final long key = rand.nextLong();
             final int base = mixer.applyAsInt(key);
 

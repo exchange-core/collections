@@ -17,6 +17,15 @@ alone), with `collections-ledger` new. The API changes since 0.6.0 - each is des
 
 ### Added
 
+- **`LongObjectHashtable`** and **`UuidObjectHashtable`** (`collections-core`): `long` keys and UUID keys - two
+  longs or a `java.util.UUID`, the same entry - to object values. Open addressing with linear probing, the keys in a
+  `long[]` and the values in an `Object[]` beside it, backward-shift removal. No `null` values: a free slot holds
+  `null`, so a lookup reads the value without comparing the key again. Builders as for `LongLongHashtable`
+  (`expectedSize`, `maxCapacity`, `fixedCapacity`, `maxLoad`), the hash seed of the JVM. Two load factors:
+  `loadFactor` and, below `smallTableCapacity` slots, the lower `smallTableLoadFactor` - a small table is sparse for
+  little memory.
+- **`IntLongHashtable`** (`collections-core`): `int` keys to `long` values - a `LongLongHashtable` under `int` keys,
+  with its builder, `missingValue` and costs.
 - **`LongSnapshotRecordTable`** (`collections-core`): records under `long` keys with point-in-time snapshots that
   other threads read while one writer goes on. Shards split by extendible hashing, so the copy a write makes after
   a snapshot stays one small shard however the table grows; replaced shards return to a pool once the snapshots
