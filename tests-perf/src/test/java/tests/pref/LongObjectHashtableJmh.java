@@ -32,14 +32,17 @@ import java.util.concurrent.TimeUnit;
  *     <li>{@code Long2ObjectHashMap} - agrona: load 0.65, a null value marks a free slot, removal compacts the chain;</li>
  *     <li>{@code Long2ObjectOpenHashMap} - fastutil: load 0.75, backward-shift removal.</li>
  * </ul>
- * Each with the default load factor, pre-sized for the keys. The keys are random, reached in a random order through a
- * shuffled array read in sequence: the lookups are independent and their misses overlap - except in {@code chase},
- * which follows a cycle through the keys (a value holds the next key), each lookup and the read of the object waiting
- * for the one before: the latency of a lookup. From L2 (10k) to DRAM (10M):
+ * Each pre-sized for the keys, the others with their default load factor, {@code LongObjectHashtable} with
+ * {@link #loadFactor}. The keys are random, reached in a random order through a shuffled array read in sequence: the
+ * lookups are independent and their misses overlap - except in {@code chase}, which follows a cycle through the keys
+ * (a value holds the next key), each lookup and the read of the object waiting for the one before: the latency of a
+ * lookup. From L2 (10k) to DRAM (10M):
  * <pre>
  * java -cp test-classes:lib/* org.openjdk.jmh.Main LongObjectHashtableJmh -rf json -rff out.json
+ * java -cp test-classes:lib/* org.openjdk.jmh.Main LongObjectHashtableJmh -p loadFactor=default ...
  * </pre>
- * With -Daffinity.reserved (isolated CPUs) the benchmark thread pins itself to one of them.
+ * The setup prints the capacity the table got. With -Daffinity.reserved (isolated CPUs) the benchmark thread pins
+ * itself to one of them.
  */
 @State(Scope.Thread)
 @BenchmarkMode(Mode.AverageTime)
@@ -55,6 +58,14 @@ public class LongObjectHashtableJmh {
 
     @Param({"10000", "1000000", "10000000"})
     public int size;
+
+    /**
+     * The load {@code LongObjectHashtable} grows at: a number - one load factor for every size, as
+     * {@code loadFactor(x).smallTableLoadFactor(x)}; 0.65 is the load of the results in docs/hashtables.md - or
+     * {@code default}, the defaults of the builder (0.5 below 2^16 slots, 0.65 from there on).
+     */
+    @Param({"0.65"})
+    public String loadFactor;
 
     private static final int OURS = 0;
     private static final int ECLIPSE = 1;
@@ -95,11 +106,11 @@ public class LongObjectHashtableJmh {
         switch (impl) {
             case "LongObjectHashtable" -> {
                 kind = OURS;
-                ours = new LongObjectHashtable<>(size);
+                ours = newTable(size);
             }
             case "LongObjectHashtable-2x" -> {
                 kind = OURS;
-                ours = new LongObjectHashtable<>(2 * size);
+                ours = newTable(2 * size);
             }
             case "LongObjectHashMap" -> {
                 kind = ECLIPSE;
@@ -151,6 +162,19 @@ public class LongObjectHashtableJmh {
         }
         current = keys[cycle[0]];
         shuffle(keys, rand);
+        if (kind == OURS) {
+            System.out.printf("%s, load factor %s: %d keys in %d slots (load %.2f)%n",
+                    impl, loadFactor, size, ours.capacity(), (double) size / ours.capacity());
+        }
+    }
+
+    private LongObjectHashtable<Value> newTable(int expectedSize) {
+        final LongObjectHashtable.Builder builder = LongObjectHashtable.builder().expectedSize(expectedSize);
+        if (!loadFactor.equals("default")) {
+            final double load = Double.parseDouble(loadFactor);
+            builder.loadFactor(load).smallTableLoadFactor(load);
+        }
+        return builder.build();
     }
 
     private static void shuffle(long[] a, SplittableRandom rand) {

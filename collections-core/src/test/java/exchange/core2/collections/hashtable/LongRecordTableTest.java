@@ -267,16 +267,24 @@ public class LongRecordTableTest {
         check(table);
     }
 
-    /** the fixed index (16 slots, 14 keys) is full before the store (a page of 1024) - no record is left behind */
+    /**
+     * The fixed index (16 slots, 14 keys in the array) is full before the store (a page of 1024) - no record is left
+     * behind. The key equal to the seed, kept outside the array, still fits.
+     */
     @Test
     public void fixedCapacityFullIndex() {
         final LongRecordTable table = LongRecordTable.builder().fields(1).expectedSize(9).fixedCapacity().build();
-        for (long key = 0; key < 14; key++) {
+        final long seedKey = new LongLongHashtable().seed();
+        for (long key = 1; key <= 14; key++) {
             table.getOrCreate(key);
         }
-        assertThrows(IllegalStateException.class, () -> table.getOrCreate(14L));
+        assertThrows(IllegalStateException.class, () -> table.getOrCreate(15L));
         assertEquals(14, table.size());
         assertEquals(14, table.store().size());
+        table.getOrCreate(seedKey);
+        assertEquals(15, table.size());
+        assertThrows(IllegalStateException.class, () -> table.getOrCreate(15L));
+        assertEquals(15, table.store().size());
         check(table);
     }
 

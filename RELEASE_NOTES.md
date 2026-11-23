@@ -74,7 +74,10 @@ alone), with `collections-ledger` new. The API changes since 0.6.0 - each is des
 - **Hashtables: `maxCapacity(int)`, `fixedCapacity()` and `maxLoad(double)` in the builders** - a table that
   grows only up to a given capacity, or never resizes at all (the capacity for the expected size). There it
   takes new keys up to `maxLoad` (from 0.65 to below 1, default 0.95, two slots always free), then `put` of a
-  new key throws `IllegalStateException` and changes nothing. The javadoc and the README give the probe
+  new key throws `IllegalStateException` and changes nothing; a removal makes room for one again. The limit is of
+  the keys in the array: the key kept in fields (equal to the seed, the nil UUID) is not counted, whenever it
+  comes. `expectedSize` and `ensureCapacity` take up to the same limit at the maximum capacity, and
+  `ensureCapacity(size())` changes nothing. The javadoc and the README give the probe
   lengths: at 0.95 an insert or a miss probes ~200 slots on average, at 0.99 ~5000. A `LongLongLL2Hashtable`
   of fixed capacity never migrates: no background task, no wait, no second array.
 - **Hashtables: `getOrDefault(key, defaultValue)`** - presence and value in one probe, where `get` can not tell

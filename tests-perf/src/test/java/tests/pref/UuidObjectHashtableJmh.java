@@ -35,7 +35,9 @@ import java.util.concurrent.TimeUnit;
  * the next key - the latency of a lookup and of the read of its object. See {@link LongObjectHashtableJmh}.
  * <pre>
  * java -cp test-classes:lib/* org.openjdk.jmh.Main UuidObjectHashtableJmh -rf json -rff out.json
+ * java -cp test-classes:lib/* org.openjdk.jmh.Main UuidObjectHashtableJmh -p loadFactor=default ...
  * </pre>
+ * The table grows at {@link #loadFactor}; the setup prints the capacity it got.
  */
 @State(Scope.Thread)
 @BenchmarkMode(Mode.AverageTime)
@@ -50,6 +52,14 @@ public class UuidObjectHashtableJmh {
 
     @Param({"10000", "1000000", "10000000"})
     public int size;
+
+    /**
+     * The load {@code UuidObjectHashtable} grows at: a number - one load factor for every size; 0.65 is the load of
+     * the results in docs/hashtables.md - or {@code default}, the defaults of the builder. See
+     * {@link LongObjectHashtableJmh#loadFactor}.
+     */
+    @Param({"0.65"})
+    public String loadFactor;
 
     private static final int HALVES = 0;
     private static final int UUIDS = 1;
@@ -95,7 +105,13 @@ public class UuidObjectHashtableJmh {
         if (kind == HASH_MAP) {
             map = new HashMap<>((int) (size / 0.75f) + 1);
         } else {
-            table = new UuidObjectHashtable<>(impl.endsWith("-2x") ? 2 * size : size);
+            final UuidObjectHashtable.Builder builder = UuidObjectHashtable.builder()
+                    .expectedSize(impl.endsWith("-2x") ? 2 * size : size);
+            if (!loadFactor.equals("default")) {
+                final double load = Double.parseDouble(loadFactor);
+                builder.loadFactor(load).smallTableLoadFactor(load);
+            }
+            table = builder.build();
         }
         keys = new long[size * 2];
         final Value[] values = new Value[size];
@@ -148,6 +164,10 @@ public class UuidObjectHashtableJmh {
             keys[2 * k + 1] = keys[2 * j + 1];
             keys[2 * j] = hi;
             keys[2 * j + 1] = lo;
+        }
+        if (table != null) {
+            System.out.printf("%s, load factor %s: %d keys in %d slots (load %.2f)%n",
+                    impl, loadFactor, size, table.capacity(), (double) size / table.capacity());
         }
     }
 

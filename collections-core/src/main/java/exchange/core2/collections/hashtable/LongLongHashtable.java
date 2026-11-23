@@ -41,11 +41,12 @@ public final class LongLongHashtable implements ILongLongHashtable {
     private final long missingValue;
 
     private long[] data;
-    private long size = 0;
+    /** keys in the array - what the load factor and maxLoad limit; the key in the fields is not one of them */
+    private long occupied = 0;
     private int mask;
     private long upsizeThreshold;
 
-    // the entry stored as key 0 - the gap marker - is kept here (counted in size): the key equal to the seed
+    // the entry stored as key 0 - the gap marker - is kept here, outside the array: the key equal to the seed
     private boolean hasZeroKey;
     private long zeroKeyValue;
 
@@ -64,7 +65,8 @@ public final class LongLongHashtable implements ILongLongHashtable {
 
         this.upsizeThresholdPerc = 0.65f;
         this.missingValue = builder.missingValue;
-        final int arraySize = HashingUtils.capacityFor(builder.expectedSize, upsizeThresholdPerc, builder.maxCapacity);
+        final int arraySize = HashingUtils.capacityFor(builder.expectedSize, upsizeThresholdPerc, builder.maxCapacity,
+                builder.maxLoad);
         this.maxCapacity = builder.fixedCapacity ? arraySize : builder.maxCapacity;
         this.maxLoad = builder.maxLoad;
 
@@ -92,7 +94,8 @@ public final class LongLongHashtable implements ILongLongHashtable {
         }
 
         /**
-         * Entries that fit without a resize (default {@value LongLongHashtable#DEFAULT_ARRAY_SIZE}).
+         * Entries that fit without a resize (default {@value LongLongHashtable#DEFAULT_ARRAY_SIZE}). More than the
+         * maximum capacity takes below its growth threshold are fine up to {@link #maxLoad}.
          */
         public Builder expectedSize(int expectedSize) {
             this.expectedSize = expectedSize;
@@ -133,6 +136,9 @@ public final class LongLongHashtable implements ILongLongHashtable {
          * the operations on missing keys - inserts of new keys, lookups and removals of absent ones - with random
          * keys ~(1 + 1/(1-load)^2)/2 slots on average: 50 at 0.9, 200 at 0.95, 5000 at 0.99. Lookups of present keys
          * ~(1 + 1/(1-load))/2: 5.5, 10.5, 50.5. A removal also shifts back the rest of its cluster.
+         * <p>
+         * The load is of the keys in the array: the key equal to the seed is kept outside it, never counted and never
+         * refused, whether it comes first or last. A removal makes room for one new key.
          */
         public Builder maxLoad(double maxLoad) {
             this.maxLoad = HashingUtils.checkMaxLoad(maxLoad);
@@ -259,14 +265,14 @@ public final class LongLongHashtable implements ILongLongHashtable {
         if (data[offset] == k) {
             return data[offset + 1];
         }
-        if (size + 1 >= upsizeThreshold) {
+        if (occupied + 1 >= upsizeThreshold) {
             makeRoomForOneMore();
             offset = HashingUtils.findFreeOffset(k, data, mask);
         }
         final long value = newValue.applyAsLong(key);
         data[offset] = k;
         data[offset + 1] = value;
-        size++;
+        occupied++;
         return value;
     }
 
@@ -277,12 +283,12 @@ public final class LongLongHashtable implements ILongLongHashtable {
     private void makeRoomForOneMore() {
         if (mask + 1 >= maxCapacity) {
             final long limit = HashingUtils.maxEntries(mask + 1, maxLoad);
-            if (size + 1 <= limit) {
+            if (occupied + 1 <= limit) {
                 upsizeThreshold = limit + 1;
                 return;
             }
-            throw new IllegalStateException("table is full: " + size + " entries at the maximum capacity of "
-                    + (mask + 1) + " slots");
+            throw new IllegalStateException("table is full: " + occupied + " keys in the array at the maximum"
+                    + " capacity of " + (mask + 1) + " slots");
         }
         switchToNewArray(new HashtableResizer(data, missingValue).resizeSync());
     }
@@ -293,7 +299,7 @@ public final class LongLongHashtable implements ILongLongHashtable {
     private void insertAt(int offset, long k, long value) {
         data[offset] = k;
         data[offset + 1] = value;
-        if (++size >= upsizeThreshold) {
+        if (++occupied >= upsizeThreshold) {
             resize(offset);
         }
     }
@@ -335,16 +341,13 @@ public final class LongLongHashtable implements ILongLongHashtable {
         }
         final long value = data[offset + 1];
         LinearProbing.deleteAt(data, offset, missingValue);
-        size--;
+        occupied--;
         return value;
     }
 
     private long putZeroKey(long value) {
         final long prev = hasZeroKey ? zeroKeyValue : missingValue;
-        if (!hasZeroKey) {
-            hasZeroKey = true;
-            size++;
-        }
+        hasZeroKey = true;
         zeroKeyValue = value;
         return prev;
     }
@@ -354,7 +357,6 @@ public final class LongLongHashtable implements ILongLongHashtable {
             return missingValue;
         }
         hasZeroKey = false;
-        size--;
         return zeroKeyValue;
     }
 
@@ -373,7 +375,7 @@ public final class LongLongHashtable implements ILongLongHashtable {
             return false;
         }
         LinearProbing.deleteAt(data, offset, missingValue);
-        size--;
+        occupied--;
         return true;
     }
 
@@ -389,14 +391,14 @@ public final class LongLongHashtable implements ILongLongHashtable {
             // can not grow any more: take new keys up to maxLoad, then refuse them - beyond that the probes, and
             // with them every operation, get longer and longer
             final long limit = HashingUtils.maxEntries(mask + 1, maxLoad);
-            if (size <= limit) {
+            if (occupied <= limit) {
                 upsizeThreshold = limit + 1;
                 return;
             }
             LinearProbing.deleteAt(data, insertedOffset, missingValue);
-            size--;
-            throw new IllegalStateException("table is full: " + size + " entries at the maximum capacity of "
-                    + (mask + 1) + " slots");
+            occupied--;
+            throw new IllegalStateException("table is full: " + occupied + " keys in the array at the maximum"
+                    + " capacity of " + (mask + 1) + " slots");
         }
 
         switchToNewArray(new HashtableResizer(data, missingValue).resizeSync());
@@ -415,7 +417,8 @@ public final class LongLongHashtable implements ILongLongHashtable {
 
     @Override
     public void ensureCapacity(int expectedSize) {
-        final int capacity = HashingUtils.capacityFor(expectedSize, upsizeThresholdPerc, maxCapacity);
+        final int capacity = HashingUtils.capacityFor(HashingUtils.keysInArray(expectedSize, hasZeroKey),
+                upsizeThresholdPerc, maxCapacity, maxLoad);
         if (capacity > mask + 1) {
             switchToNewArray(HashtableResizer.rehash(data, capacity, missingValue));
         }
@@ -427,7 +430,7 @@ public final class LongLongHashtable implements ILongLongHashtable {
     @Override
     public void clear() {
         LinearProbing.clear(data, missingValue);
-        size = 0;
+        occupied = 0;
         hasZeroKey = false;
         zeroKeyValue = 0L;
     }
@@ -467,7 +470,7 @@ public final class LongLongHashtable implements ILongLongHashtable {
 
     @Override
     public long size() {
-        return size;
+        return hasZeroKey ? occupied + 1 : occupied;
     }
 
     @Override
@@ -493,11 +496,11 @@ public final class LongLongHashtable implements ILongLongHashtable {
 
     /**
      * Verifies the linear-probing invariants: every (seeded) key is found by probing from its home (no gap in its way,
-     * no duplicate before it), free slots hold missingValue (what get returns for a missing key), size matches the
-     * occupied slots plus the entry kept in fields, and at least one slot is free. For tests - scans the whole array.
+     * no duplicate before it), free slots hold missingValue (what get returns for a missing key), the count of keys
+     * in the array matches, and at least one slot is free. For tests - scans the whole array.
      */
     void integrityCheck() {
-        long occupied = 0;
+        long found = 0;
         for (int i = 0; i < data.length; i += 2) {
             final long key = data[i];
             if (key == NOT_ALLOWED_KEY) {
@@ -506,7 +509,7 @@ public final class LongLongHashtable implements ILongLongHashtable {
                 }
                 continue;
             }
-            occupied++;
+            found++;
             final int reachableAt = HashingUtils.findFreeOffset(key, data, mask);
             if (reachableAt != i) {
                 throw new IllegalStateException("integrityCheck: key=" + key + " stored at " + i
@@ -514,11 +517,11 @@ public final class LongLongHashtable implements ILongLongHashtable {
                         + " (" + (data[reachableAt] == key ? "duplicate" : "unreachable") + ")");
             }
         }
-        if (occupied + (hasZeroKey ? 1 : 0) != size) {
-            throw new IllegalStateException("integrityCheck: size=" + size + " but " + occupied + " occupied slots"
-                    + (hasZeroKey ? " and the key in fields" : ""));
+        if (found != occupied) {
+            throw new IllegalStateException("integrityCheck: " + occupied + " keys counted in the array but "
+                    + found + " found");
         }
-        if (occupied > mask) {
+        if (found > mask) {
             throw new IllegalStateException("integrityCheck: no free slot left, capacity=" + (mask + 1));
         }
     }

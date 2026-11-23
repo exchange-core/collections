@@ -190,6 +190,143 @@ public class UuidObjectHashtableTest {
         table.integrityCheck();
     }
 
+    /**
+     * The nil key is kept outside the array and does not count towards the max load: first or last, a full table
+     * holds 12 keys of the array next to it, and after a removal takes a new one again - by any call, either key form.
+     */
+    @Test
+    public void the_nil_key_does_not_count_towards_the_max_load() {
+        for (boolean first : new boolean[]{true, false}) {
+            final String msg = first ? "nil key first" : "nil key last";
+            final UuidObjectHashtable<Long> table = at065(SMALL_SIZE).fixedCapacity().maxLoad(0.75).build();
+            if (first) {
+                table.put(NIL, -1L);
+            }
+            for (long key = 1; key <= 12; key++) {
+                table.put(key, key, key);
+            }
+            if (!first) {
+                table.put(0L, 0L, -1L);
+            }
+            assertThat(msg, table.size(), is(13L));
+            assertThrows(msg, IllegalStateException.class, () -> table.put(100L, 1L, 1L));
+            assertThrows(msg, IllegalStateException.class, () -> table.put(new UUID(100L, 1L), 1L));
+            assertThrows(msg, IllegalStateException.class, () -> table.putIfAbsent(100L, 1L, 1L));
+            assertThrows(msg, IllegalStateException.class, () -> table.computeIfAbsent(100L, 1L, (h, l) -> 1L));
+            assertThrows(msg, IllegalStateException.class, () -> table.computeIfAbsent(new UUID(100L, 1L), k -> 1L));
+            assertThat(msg, table.size(), is(13L));
+            table.ensureCapacity(13); // what it holds
+            assertThrows(msg, IllegalArgumentException.class, () -> table.ensureCapacity(14));
+            table.integrityCheck();
+
+            // a removal makes room for one key, whichever call inserts it
+            assertThat(msg, table.remove(1L, 1L), is(1L));
+            assertNull(msg, table.put(new UUID(101L, 1L), 101L));
+            assertThrows(msg, IllegalStateException.class, () -> table.put(200L, 1L, 1L));
+            assertThat(msg, table.remove(2L, 2L, 2L), is(true));
+            assertNull(msg, table.putIfAbsent(new UUID(102L, 1L), 102L));
+            assertThat(msg, table.remove(new UUID(3L, 3L)), is(3L));
+            assertThat(msg, table.computeIfAbsent(103L, 1L, (h, l) -> h), is(103L));
+            assertThat(msg, table.remove(4L, 4L), is(4L));
+            assertThat(msg, table.computeIfAbsent(new UUID(104L, 1L), k -> 104L), is(104L));
+            assertThrows(msg, IllegalStateException.class, () -> table.computeIfAbsent(200L, 1L, (h, l) -> 1L));
+            assertThat(msg, table.size(), is(13L));
+
+            // the nil key goes and comes back at a full array
+            assertThat(msg, table.remove(NIL), is(-1L));
+            assertThat(msg, table.size(), is(12L));
+            assertThat(msg, table.computeIfAbsent(NIL, k -> -2L), is(-2L));
+            assertThat(msg, table.size(), is(13L));
+            assertThat(msg, table.capacity(), is(SMALL_CAPACITY));
+            table.integrityCheck();
+        }
+    }
+
+    /** at the maximum capacity ensureCapacity takes what the table takes at max load, not only below its threshold */
+    @Test
+    public void ensure_capacity_at_the_maximum_capacity() {
+        final UuidObjectHashtable<Long> table = at065(SMALL_SIZE).fixedCapacity().maxLoad(0.75).build();
+        for (long key = 1; key <= 12; key++) {
+            table.put(key, key, key);
+        }
+        table.ensureCapacity(10);
+        table.ensureCapacity(12);
+        final IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> table.ensureCapacity(13));
+        assertTrue(e.getMessage(), e.getMessage().contains("maximum of 12 entries"));
+        assertThat(table.capacity(), is(SMALL_CAPACITY));
+
+        final UuidObjectHashtable<Long> limited = UuidObjectHashtable.builder().expectedSize(0).maxCapacity(64).build();
+        limited.ensureCapacity(50); // 64 slots grow at 32, take 60 at max load 0.95
+        assertThat(limited.capacity(), is(64));
+        for (long key = 1; key <= 60; key++) {
+            limited.put(key, -key, key);
+        }
+        assertThat(limited.capacity(), is(64));
+        assertThrows(IllegalStateException.class, () -> limited.put(100L, 1L, 1L));
+        assertThrows(IllegalArgumentException.class, () -> limited.ensureCapacity(61));
+        limited.integrityCheck();
+        assertThat(UuidObjectHashtable.builder().expectedSize(60).maxCapacity(64).build().capacity(), is(64));
+        assertThrows(IllegalArgumentException.class,
+                () -> UuidObjectHashtable.builder().expectedSize(61).maxCapacity(64).build());
+    }
+
+    /**
+     * The function of computeIfAbsent may change the table - grow it, clear it, put the same key - and its result
+     * still ends up under the key: both key forms, the nil key too.
+     */
+    @Test
+    public void compute_if_absent_with_a_function_that_changes_the_table() {
+        final UuidObjectHashtable<Long> table = at065(SMALL_SIZE).build();
+        final UUID key = new UUID(1L, 2L);
+
+        // a resize in the function: the probe before it is stale
+        assertThat(table.computeIfAbsent(key.getMostSignificantBits(), key.getLeastSignificantBits(), (h, l) -> {
+            for (long k = 100; k < 200; k++) {
+                table.put(k, -k, k);
+            }
+            return -1L;
+        }), is(-1L));
+        assertThat(table.capacity(), is(256));
+        assertThat(table.get(key), is(-1L));
+        assertThat(table.size(), is(101L));
+        table.integrityCheck();
+
+        for (UUID absent : new UUID[]{new UUID(5L, 6L), NIL}) {
+            // a clear in the function, of the UUID form
+            table.put(7L, 7L, 7L);
+            assertThat(table.computeIfAbsent(absent, k -> {
+                assertSame(absent, k);
+                table.clear();
+                return -2L;
+            }), is(-2L));
+            assertThat(table.get(absent), is(-2L));
+            assertThat(table.size(), is(1L));
+            assertFalse(table.containsKey(7L, 7L));
+            table.integrityCheck();
+
+            // the same key put by the function: its result replaces that value
+            assertThat(table.remove(absent), is(-2L));
+            assertThat(table.computeIfAbsent(absent.getMostSignificantBits(), absent.getLeastSignificantBits(),
+                    (h, l) -> {
+                        assertNull(table.put(h, l, -3L));
+                        return -4L;
+                    }), is(-4L));
+            assertThat(table.get(absent), is(-4L));
+            assertThat(table.size(), is(1L));
+            table.integrityCheck();
+
+            // null from the function puts nothing - even after it put the key itself
+            assertThat(table.remove(absent), is(-4L));
+            assertNull(table.computeIfAbsent(absent, k -> {
+                table.put(k, -5L);
+                return null;
+            }));
+            assertThat(table.get(absent), is(-5L));
+            table.clear();
+        }
+    }
+
     @Test
     public void ensure_capacity_and_clear() {
         final UuidObjectHashtable<Long> table = at065(SMALL_SIZE).build();
