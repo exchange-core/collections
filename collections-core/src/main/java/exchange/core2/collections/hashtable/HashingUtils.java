@@ -79,21 +79,47 @@ final class HashingUtils {
 
     /**
      * Number of slots (a power of two) for a table to hold expectedSize entries without a resize. The tables resize
-     * when the size reaches (int) (capacity * loadFactor), so that has to be above expectedSize.
+     * when the size reaches (int) (capacity * loadFactor), so that has to be above expectedSize - or, if no capacity
+     * up to the maximum is that large, the maximum capacity, where the table takes {@link #maxEntries} at maxLoad.
      *
      * @param maxCapacity the largest capacity the table may have - IllegalArgumentException if more is needed
      */
-    static int capacityFor(final int expectedSize, final float loadFactor, final int maxCapacity) {
-        if (expectedSize < 0) {
-            throw new IllegalArgumentException("expected size must not be negative: " + expectedSize);
-        }
+    static int capacityFor(final int expectedSize, final float loadFactor, final int maxCapacity,
+                           final double maxLoad) {
+        checkExpectedSize(expectedSize);
         // rounding of the division could only matter where the result is an integer - and there it is exact
         final double minCapacity = Math.ceil((expectedSize + 1.0) / loadFactor);
         if (minCapacity > maxCapacity) {
-            throw new IllegalArgumentException("expected size " + expectedSize + " exceeds the maximum of "
-                    + ((int) (maxCapacity * loadFactor) - 1) + " entries (capacity " + maxCapacity + ")");
+            return maxCapacityFor(expectedSize, maxCapacity, maxLoad);
         }
         return nextPositivePowerOfTwo((int) minCapacity);
+    }
+
+    /**
+     * @return the keys of expectedSize entries in total that go into the array: one fewer if the key kept outside it
+     * (equal to the seed, the nil UUID) is present - ensureCapacity(size()) takes what the table holds
+     */
+    static int keysInArray(int expectedSize, boolean keyOutsidePresent) {
+        return keyOutsidePresent && expectedSize > 0 ? expectedSize - 1 : expectedSize;
+    }
+
+    static void checkExpectedSize(int expectedSize) {
+        if (expectedSize < 0) {
+            throw new IllegalArgumentException("expected size must not be negative: " + expectedSize);
+        }
+    }
+
+    /**
+     * @return maxCapacity, for expectedSize entries above its growth threshold: if they fit at maxLoad
+     * @throws IllegalArgumentException if they do not
+     */
+    static int maxCapacityFor(int expectedSize, int maxCapacity, double maxLoad) {
+        final long limit = maxEntries(maxCapacity, maxLoad);
+        if (expectedSize > limit) {
+            throw new IllegalArgumentException("expected size " + expectedSize + " exceeds the maximum of " + limit
+                    + " entries (capacity " + maxCapacity + ", max load " + maxLoad + ")");
+        }
+        return maxCapacity;
     }
 
     /**

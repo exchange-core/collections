@@ -42,9 +42,10 @@ public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
             assertThrows(String.valueOf(invalid), IllegalArgumentException.class,
                     () -> LongLongHashtable.builder().maxCapacity(invalid));
         }
-        // smaller than the expected size needs
+        // smaller than the expected size needs: 128 slots grow at 83 keys, take 121 at max load 0.95
         assertThrows(IllegalArgumentException.class,
-                () -> LongLongHashtable.builder().expectedSize(100).maxCapacity(128).build());
+                () -> LongLongHashtable.builder().expectedSize(122).maxCapacity(128).build());
+        assertThat(LongLongHashtable.builder().expectedSize(121).maxCapacity(128).build().capacity(), is(128));
         assertThat(LongLongHashtable.builder().expectedSize(100).maxCapacity(256).build().capacity(), is(256));
     }
 
@@ -88,7 +89,7 @@ public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
     public void integrityCheck_should_detect_broken_invariants() throws Exception {
 
         final Field dataField = LongLongHashtable.class.getDeclaredField("data");
-        final Field sizeField = LongLongHashtable.class.getDeclaredField("size");
+        final Field sizeField = LongLongHashtable.class.getDeclaredField("occupied");
         dataField.setAccessible(true);
         sizeField.setAccessible(true);
 
@@ -210,6 +211,25 @@ public class LongLongHashtableTest extends LongLongHashtableAbstractTest{
         assertEquals(9, table.size());
         assertFalse(table.containsKey(10L));
         assertFalse(table.containsKey(table.seed()));
+        table.integrityCheck();
+    }
+
+    /** getOrInsert follows the same limit: the key equal to the seed fits next to a full array, a removal makes room */
+    @Test
+    public void getOrInsert_at_the_max_load() {
+        final LongLongHashtable table = LongLongHashtable.builder().expectedSize(9).fixedCapacity().maxLoad(0.75)
+                .build();
+        for (long key = 1; key <= 12; key++) {
+            assertEquals(key, table.getOrInsert(key, k -> k));
+        }
+        assertThrows(IllegalStateException.class, () -> table.getOrInsert(100L, k -> k));
+        assertEquals(-1L, table.getOrInsert(table.seed(), k -> -1L));
+        assertEquals(13, table.size());
+        assertThrows(IllegalStateException.class, () -> table.getOrInsert(100L, k -> k));
+        assertEquals(1L, table.remove(1L));
+        assertEquals(100L, table.getOrInsert(100L, k -> k));
+        assertThrows(IllegalStateException.class, () -> table.getOrInsert(101L, k -> k));
+        assertEquals(13, table.size());
         table.integrityCheck();
     }
 

@@ -55,7 +55,8 @@ public final class LongObjectHashtable<V> {
     /** the value of keys[i] at values[i]; null in a free slot */
     private Object[] values;
     private int mask;
-    private long size;
+    /** keys in the array - what the load factors and maxLoad limit; the key in the field is not one of them */
+    private long occupied;
     private long upsizeThreshold;
 
     /** the value of the key stored as 0 - the gap marker - the key equal to the seed; null if absent */
@@ -75,7 +76,7 @@ public final class LongObjectHashtable<V> {
     private LongObjectHashtable(Builder builder) {
         this.loadFactors = new LoadFactors(builder.smallTableLoadFactor, DEFAULT_SMALL_TABLE_LOAD_FACTOR,
                 builder.smallTableCapacity, builder.loadFactor);
-        final int capacity = loadFactors.capacityFor(builder.expectedSize, builder.maxCapacity);
+        final int capacity = loadFactors.capacityFor(builder.expectedSize, builder.maxCapacity, builder.maxLoad);
         this.maxCapacity = builder.fixedCapacity ? capacity : builder.maxCapacity;
         this.maxLoad = loadFactors.checkMaxLoad(builder.maxLoad, maxCapacity);
         switchTo(new long[capacity], new Object[capacity]);
@@ -262,7 +263,7 @@ public final class LongObjectHashtable<V> {
     private void insertAt(int slot, long k, Object value) {
         keys[slot] = k;
         values[slot] = value;
-        if (++size >= upsizeThreshold) {
+        if (++occupied >= upsizeThreshold) {
             resize(slot);
         }
     }
@@ -307,17 +308,14 @@ public final class LongObjectHashtable<V> {
         final long k = key ^ SEED;
         if (k == NOT_ALLOWED_KEY) {
             final Object prev = zeroKeyValue;
-            if (prev != null) {
-                zeroKeyValue = null;
-                size--;
-            }
+            zeroKeyValue = null;
             return (V) prev;
         }
         final int slot = probe(k, keys, mask);
         final Object prev = values[slot];
         if (prev != null) {
             deleteAt(slot);
-            size--;
+            occupied--;
         }
         return (V) prev;
     }
@@ -335,7 +333,6 @@ public final class LongObjectHashtable<V> {
         if (k == NOT_ALLOWED_KEY) {
             if (value.equals(zeroKeyValue)) {
                 zeroKeyValue = null;
-                size--;
                 return true;
             }
             return false;
@@ -346,16 +343,13 @@ public final class LongObjectHashtable<V> {
             return false;
         }
         deleteAt(slot);
-        size--;
+        occupied--;
         return true;
     }
 
     @SuppressWarnings("unchecked")
     private V putZeroKey(Object value) {
         final Object prev = zeroKeyValue;
-        if (prev == null) {
-            size++;
-        }
         zeroKeyValue = value;
         return (V) prev;
     }
@@ -397,14 +391,14 @@ public final class LongObjectHashtable<V> {
         if (mask + 1 >= maxCapacity) {
             // can not grow any more: take new keys up to maxLoad, then refuse them
             final long limit = HashingUtils.maxEntries(mask + 1, maxLoad);
-            if (size <= limit) {
+            if (occupied <= limit) {
                 upsizeThreshold = limit + 1;
                 return;
             }
             deleteAt(insertedSlot);
-            size--;
-            throw new IllegalStateException("table is full: " + size + " entries at the maximum capacity of "
-                    + (mask + 1) + " slots");
+            occupied--;
+            throw new IllegalStateException("table is full: " + occupied + " keys in the array at the maximum"
+                    + " capacity of " + (mask + 1) + " slots");
         }
         rehash((mask + 1) << 1);
     }
@@ -445,13 +439,16 @@ public final class LongObjectHashtable<V> {
     }
 
     /**
-     * Grows the table, if needed, to take expectedSize entries in total without a resize. One rehash on the calling
-     * thread instead of a series of resizes - for the set-up, not for the latency-critical path.
+     * Grows the table, if needed, to take expectedSize entries in total without a resize - the present ones included:
+     * {@code ensureCapacity(size())} changes nothing. One rehash on the calling thread instead of a series of resizes -
+     * for the set-up, not for the latency-critical path.
      *
-     * @throws IllegalArgumentException if expectedSize is negative or needs more than the maximum capacity
+     * @throws IllegalArgumentException if expectedSize is negative or more than the table takes at its maximum
+     *                                  capacity and {@link Builder#maxLoad}
      */
     public void ensureCapacity(int expectedSize) {
-        final int capacity = loadFactors.capacityFor(expectedSize, maxCapacity);
+        final int capacity = loadFactors.capacityFor(HashingUtils.keysInArray(expectedSize, zeroKeyValue != null),
+                maxCapacity, maxLoad);
         if (capacity > mask + 1) {
             rehash(capacity);
         }
@@ -464,11 +461,11 @@ public final class LongObjectHashtable<V> {
         Arrays.fill(keys, NOT_ALLOWED_KEY);
         Arrays.fill(values, null);
         zeroKeyValue = null;
-        size = 0;
+        occupied = 0;
     }
 
     public long size() {
-        return size;
+        return zeroKeyValue != null ? occupied + 1 : occupied;
     }
 
     /**
@@ -542,10 +539,11 @@ public final class LongObjectHashtable<V> {
 
     /**
      * Verifies the invariants: every (seeded) key is found by probing from its home, an occupied slot holds a value
-     * and a free one null, size matches, at least one slot is free. For tests - scans the whole table.
+     * and a free one null, the count of keys in the array matches, at least one slot is free. For tests - scans the
+     * whole table.
      */
     void integrityCheck() {
-        long occupied = 0;
+        long found = 0;
         for (int i = 0; i < keys.length; i++) {
             final long key = keys[i];
             if (key == NOT_ALLOWED_KEY) {
@@ -557,18 +555,18 @@ public final class LongObjectHashtable<V> {
             if (values[i] == null) {
                 throw new IllegalStateException("integrityCheck: slot " + i + " of key " + key + " holds null");
             }
-            occupied++;
+            found++;
             final int reachableAt = probe(key, keys, mask);
             if (reachableAt != i) {
                 throw new IllegalStateException("integrityCheck: key=" + key + " stored at " + i
                         + " but probing from its home reaches " + reachableAt);
             }
         }
-        if (occupied + (zeroKeyValue != null ? 1 : 0) != size) {
-            throw new IllegalStateException("integrityCheck: size=" + size + " but " + occupied + " occupied slots"
-                    + (zeroKeyValue != null ? " and the key in a field" : ""));
+        if (found != occupied) {
+            throw new IllegalStateException("integrityCheck: " + occupied + " keys counted in the array but "
+                    + found + " found");
         }
-        if (occupied > mask) {
+        if (found > mask) {
             throw new IllegalStateException("integrityCheck: no free slot left, capacity=" + (mask + 1));
         }
     }

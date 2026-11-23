@@ -68,7 +68,7 @@ public final class LongTupleHashtable {
                     + ", the largest for slots of " + stride + " longs");
         }
         final int limit = builder.maxCapacity == 0 ? largest : builder.maxCapacity;
-        final int capacity = HashingUtils.capacityFor(builder.expectedSize, UPSIZE_LOAD, limit);
+        final int capacity = HashingUtils.capacityFor(builder.expectedSize, UPSIZE_LOAD, limit, builder.maxLoad);
         this.maxCapacity = builder.fixedCapacity ? capacity : limit;
         this.maxLoad = builder.maxLoad;
         switchTo(new long[capacity * stride], capacity);
@@ -585,7 +585,7 @@ public final class LongTupleHashtable {
      * @throws IllegalArgumentException if expectedSize is negative or needs more than the maximum capacity
      */
     public void ensureCapacity(int expectedSize) {
-        final int capacity = HashingUtils.capacityFor(expectedSize, UPSIZE_LOAD, maxCapacity);
+        final int capacity = HashingUtils.capacityFor(expectedSize, UPSIZE_LOAD, maxCapacity, maxLoad);
         if (capacity > mask + 1) {
             rehash(capacity);
         }

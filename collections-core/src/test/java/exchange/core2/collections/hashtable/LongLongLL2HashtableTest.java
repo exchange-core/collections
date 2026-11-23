@@ -69,7 +69,7 @@ public class LongLongLL2HashtableTest extends LongLongHashtableAbstractTest {
                     () -> LongLongLL2Hashtable.builder().maxCapacity(invalid));
         }
         assertThrows(IllegalArgumentException.class, () -> LongLongLL2Hashtable.builder().migrationService(SERVICE)
-                .expectedSize(100).maxCapacity(128).build());
+                .expectedSize(122).maxCapacity(128).build());
         assertThrows(IllegalArgumentException.class, () -> LongLongLL2Hashtable.builder().maxLoad(1.0));
         assertThrows(IllegalArgumentException.class, () -> LongLongLL2Hashtable.builder().syncResizeBelow(-1));
         assertThrows(NullPointerException.class, () -> LongLongLL2Hashtable.builder().migrationService(null));

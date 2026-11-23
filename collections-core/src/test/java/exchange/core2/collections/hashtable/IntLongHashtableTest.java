@@ -82,19 +82,69 @@ public class IntLongHashtableTest {
         assertThat(table.missingValue(), is(-1L));
         assertThat(table.get(5), is(-1L));
         assertThat(table.capacity(), is(16));
-        for (int k = 0; k < 12; k++) {
+        // from 1: key 0 is the one kept outside the array with the default seed, it would not count
+        for (int k = 1; k <= 12; k++) {
             table.put(k, k);
         }
         assertThrows(IllegalStateException.class, () -> table.put(100, 1L));
         assertThat(table.capacity(), is(16));
         table.integrityCheck();
+        table.ensureCapacity(12); // what it holds
+        assertThrows(IllegalArgumentException.class, () -> table.ensureCapacity(13));
 
         final IntLongHashtable limited = IntLongHashtable.builder().maxCapacity(32).build();
-        for (int k = 0; k < 30; k++) {
+        for (int k = 1; k <= 30; k++) {
             limited.put(k, k);
         }
         assertThat(limited.capacity(), is(32));
         assertThrows(IllegalStateException.class, () -> limited.put(100, 1L));
+    }
+
+    /**
+     * Key 0 is kept outside the array with the default seed of 0 (in the array with another one): a full table holds
+     * the same whether it comes first or last, and takes a new key after a removal - put or computeIfAbsent.
+     */
+    @Test
+    public void key_zero_first_or_last_holds_the_same() {
+        final boolean zeroOutside = IntLongHashtable.builder().build().seed() == 0;
+        final long full = zeroOutside ? 13 : 12;
+        for (boolean first : new boolean[]{true, false}) {
+            final String msg = first ? "key 0 first" : "key 0 last";
+            final IntLongHashtable table = IntLongHashtable.builder().expectedSize(9).fixedCapacity().maxLoad(0.75)
+                    .build();
+            if (first) {
+                table.put(0, -1L);
+            }
+            fillUntilRefused(table);
+            if (!first) {
+                if (zeroOutside) {
+                    table.put(0, -1L);
+                } else {
+                    assertThrows(msg, IllegalStateException.class, () -> table.put(0, -1L));
+                }
+            }
+            assertThat(msg, table.size(), is(full));
+            assertThrows(msg, IllegalStateException.class, () -> table.put(100, 1L));
+            assertThrows(msg, IllegalStateException.class, () -> table.computeIfAbsent(100, k -> 1L));
+            table.ensureCapacity((int) table.size());
+            assertThat(msg, table.remove(1), is(1L));
+            assertThat(msg, table.computeIfAbsent(101, k -> k), is(101L));
+            assertThrows(msg, IllegalStateException.class, () -> table.put(102, 1L));
+            assertThat(msg, table.size(), is(full));
+            table.integrityCheck();
+        }
+    }
+
+    /** puts the keys 1, 2, ... until the table refuses one */
+    private static void fillUntilRefused(IntLongHashtable table) {
+        for (int k = 1; k < 1000; k++) {
+            try {
+                table.put(k, k);
+            } catch (IllegalStateException e) {
+                return;
+            }
+        }
+        throw new AssertionError("the table took 1000 keys");
     }
 
     @Test

@@ -369,7 +369,7 @@ public abstract class LongLongHashtableAbstractTest {
         assertThrows(IllegalArgumentException.class, () -> create(-1));
         // used to overflow to a zero-length array (AIOOBE on the first put) or to a negative one
         assertThrows(IllegalArgumentException.class, () -> create(Integer.MAX_VALUE));
-        assertThrows(IllegalArgumentException.class, () -> create(400_000_000));
+        assertThrows(IllegalArgumentException.class, () -> create(520_000_000)); // above 2^29 slots at max load 0.95
 
         hashtable = newHashtable(0);
         for (long key = 1; key <= 100; key++) {
@@ -600,11 +600,71 @@ public abstract class LongLongHashtableAbstractTest {
             assertThat(hashtable.get(key), is(key * 10));
         }
 
-        // within the capacity ensureCapacity changes nothing, beyond it it refuses
+        // up to what the table takes at max load ensureCapacity changes nothing - what it holds, too - beyond it refuses
         hashtable.ensureCapacity(SMALL_SIZE);
-        assertThrows(IllegalArgumentException.class, () -> hashtable.ensureCapacity(SMALL_SIZE + 1));
+        hashtable.ensureCapacity(limit);
+        assertThrows(IllegalArgumentException.class, () -> hashtable.ensureCapacity(limit + 1));
         assertThat(hashtable.capacity(), is(SMALL_CAPACITY));
         checkIntegrity(hashtable);
+    }
+
+    /**
+     * The key equal to the seed is kept outside the array: whether it comes first or last, a full table holds the
+     * same keys of the array next to it, and after a removal takes a new one again - by any of the inserting calls.
+     */
+    @Test
+    public void the_key_kept_outside_does_not_count_towards_the_max_load() {
+        final long outside = HashingUtils.SEED;
+        final int limit = (int) HashingUtils.maxEntries(SMALL_CAPACITY, HashingUtils.DEFAULT_MAX_LOAD); // 14
+        for (boolean first : new boolean[]{true, false}) {
+            hashtable = createFixed(SMALL_SIZE);
+            created.add(hashtable);
+            if (first) {
+                hashtable.put(outside, 1L);
+            }
+            for (long key = 1; key <= limit; key++) {
+                hashtable.put(key, key);
+            }
+            if (!first) {
+                hashtable.put(outside, 1L);
+            }
+            final String msg = first ? "outside key first" : "outside key last";
+            assertThat(msg, hashtable.size(), is(limit + 1L));
+            assertThrows(msg, IllegalStateException.class, () -> hashtable.put(100L, 1L));
+            assertThrows(msg, IllegalStateException.class, () -> hashtable.putIfAbsent(100L, 1L));
+            assertThrows(msg, IllegalStateException.class, () -> hashtable.addAndGet(100L, 1L));
+            assertThrows(msg, IllegalStateException.class, () -> hashtable.computeIfAbsent(100L, k -> 1L));
+            assertThat(msg, hashtable.size(), is(limit + 1L));
+            assertFalse(msg, hashtable.containsKey(100L));
+            hashtable.ensureCapacity((int) hashtable.size());
+            assertThrows(msg, IllegalArgumentException.class,
+                    () -> hashtable.ensureCapacity((int) hashtable.size() + 1));
+            checkIntegrity(hashtable);
+
+            // a removal makes room for one key, whichever call inserts it
+            long removed = 1;
+            for (int call = 0; call < 4; call++, removed++) {
+                assertThat(msg, hashtable.remove(removed), is(removed));
+                final long key = 100L + call;
+                switch (call) {
+                    case 0 -> hashtable.put(key, key);
+                    case 1 -> hashtable.putIfAbsent(key, key);
+                    case 2 -> hashtable.addAndGet(key, key);
+                    default -> hashtable.computeIfAbsent(key, k -> k);
+                }
+                assertThat(msg, hashtable.get(key), is(key));
+                assertThrows(msg, IllegalStateException.class, () -> hashtable.put(200L, 1L));
+            }
+            assertThat(msg, hashtable.size(), is(limit + 1L));
+
+            // the key outside goes and comes back at a full array
+            assertThat(msg, hashtable.remove(outside), is(1L));
+            assertThat(msg, hashtable.size(), is((long) limit));
+            assertThat(msg, hashtable.putIfAbsent(outside, 2L), is(0L));
+            assertThat(msg, hashtable.get(outside), is(2L));
+            assertThat(msg, hashtable.capacity(), is(SMALL_CAPACITY));
+            checkIntegrity(hashtable);
+        }
     }
 
     @Test
@@ -805,7 +865,7 @@ public abstract class LongLongHashtableAbstractTest {
         ref.forEach((k, v) -> assertThat(hashtable.get(k), is(v)));
 
         assertThrows(IllegalArgumentException.class, () -> hashtable.ensureCapacity(-1));
-        assertThrows(IllegalArgumentException.class, () -> hashtable.ensureCapacity(400_000_000));
+        assertThrows(IllegalArgumentException.class, () -> hashtable.ensureCapacity(520_000_000));
         assertThat(hashtable.capacity(), is(16384));
         checkIntegrity(hashtable);
     }

@@ -187,17 +187,23 @@ public class LongObjectHashtableTest {
         assertThrows(IllegalArgumentException.class, () -> table.ensureCapacity(-1));
     }
 
-    /** 16 slots, maxLoad 0.75: 12 keys, the 13th refused and the table unchanged */
-    @Test
-    public void fixed_capacity_refuses_new_keys_at_max_load() {
-        final LongObjectHashtable<Long> table = LongObjectHashtable.builder()
+    /** 16 slots, fixed, maxLoad 0.75: 12 keys in the array */
+    private static LongObjectHashtable<Long> fixed16() {
+        return LongObjectHashtable.builder()
                 .expectedSize(SMALL_SIZE)
                 .loadFactor(0.65)
                 .smallTableLoadFactor(0.65)
                 .fixedCapacity()
                 .maxLoad(0.75)
                 .build();
-        for (long key = 0; key < 12; key++) {
+    }
+
+    /** 16 slots, maxLoad 0.75: 12 keys, the 13th refused and the table unchanged */
+    @Test
+    public void fixed_capacity_refuses_new_keys_at_max_load() {
+        final LongObjectHashtable<Long> table = fixed16();
+        // from 1: not the key equal to the seed of 0, kept outside the array
+        for (long key = 1; key <= 12; key++) {
             table.put(key, key);
         }
         final String before = table.toString();
@@ -215,10 +221,91 @@ public class LongObjectHashtableTest {
         table.integrityCheck();
     }
 
+    /**
+     * The key equal to the seed is kept outside the array and does not count towards the max load: first or last, a
+     * full table holds 12 keys of the array next to it, and after a removal takes a new one again - by any call.
+     */
+    @Test
+    public void the_key_equal_to_the_seed_does_not_count_towards_the_max_load() {
+        for (boolean first : new boolean[]{true, false}) {
+            final String msg = first ? "seed key first" : "seed key last";
+            final LongObjectHashtable<Long> table = fixed16();
+            final long seedKey = table.seed();
+            if (first) {
+                table.put(seedKey, -1L);
+            }
+            for (long key = 1; key <= 12; key++) {
+                table.put(key, key);
+            }
+            if (!first) {
+                table.put(seedKey, -1L);
+            }
+            assertThat(msg, table.size(), is(13L));
+            assertThrows(msg, IllegalStateException.class, () -> table.put(100L, 1L));
+            assertThrows(msg, IllegalStateException.class, () -> table.putIfAbsent(100L, 1L));
+            assertThrows(msg, IllegalStateException.class, () -> table.computeIfAbsent(100L, k -> 1L));
+            assertThat(msg, table.size(), is(13L));
+            table.ensureCapacity(13); // what it holds
+            assertThrows(msg, IllegalArgumentException.class, () -> table.ensureCapacity(14));
+            table.integrityCheck();
+
+            // a removal makes room for one key, whichever call inserts it
+            assertThat(msg, table.remove(1L), is(1L));
+            assertNull(msg, table.put(101L, 101L));
+            assertThrows(msg, IllegalStateException.class, () -> table.put(200L, 1L));
+            assertThat(msg, table.remove(2L, 2L), is(true));
+            assertNull(msg, table.putIfAbsent(102L, 102L));
+            assertThrows(msg, IllegalStateException.class, () -> table.putIfAbsent(200L, 1L));
+            assertThat(msg, table.remove(3L), is(3L));
+            assertThat(msg, table.computeIfAbsent(103L, k -> k), is(103L));
+            assertThrows(msg, IllegalStateException.class, () -> table.computeIfAbsent(200L, k -> k));
+            assertThat(msg, table.size(), is(13L));
+
+            // the key outside goes and comes back at a full array
+            assertThat(msg, table.remove(seedKey), is(-1L));
+            assertThat(msg, table.size(), is(12L));
+            assertThat(msg, table.computeIfAbsent(seedKey, k -> -2L), is(-2L));
+            assertThat(msg, table.size(), is(13L));
+            assertThat(msg, table.capacity(), is(SMALL_CAPACITY));
+            table.integrityCheck();
+        }
+    }
+
+    /** at the maximum capacity ensureCapacity takes what the table takes at max load, not only below its threshold */
+    @Test
+    public void ensure_capacity_at_the_maximum_capacity() {
+        final LongObjectHashtable<Long> table = fixed16();
+        for (long key = 1; key <= 12; key++) {
+            table.put(key, key);
+        }
+        table.ensureCapacity(10);
+        table.ensureCapacity(12);
+        final IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> table.ensureCapacity(13));
+        assertTrue(e.getMessage(), e.getMessage().contains("maximum of 12 entries"));
+        assertThat(table.capacity(), is(SMALL_CAPACITY));
+
+        // a growing table limited to 64 slots: rehashed to them, also for more than its growth threshold there
+        final LongObjectHashtable<Long> limited = LongObjectHashtable.builder().expectedSize(0).maxCapacity(64).build();
+        limited.ensureCapacity(50); // 64 slots grow at 32, take 60 at max load 0.95
+        assertThat(limited.capacity(), is(64));
+        for (long key = 1; key <= 60; key++) {
+            limited.put(key, key);
+        }
+        assertThat(limited.capacity(), is(64));
+        assertThrows(IllegalStateException.class, () -> limited.put(100L, 1L));
+        assertThrows(IllegalArgumentException.class, () -> limited.ensureCapacity(61));
+        limited.integrityCheck();
+        // the builder the same
+        assertThat(LongObjectHashtable.builder().expectedSize(60).maxCapacity(64).build().capacity(), is(64));
+        assertThrows(IllegalArgumentException.class,
+                () -> LongObjectHashtable.builder().expectedSize(61).maxCapacity(64).build());
+    }
+
     @Test
     public void max_capacity_stops_the_growth() {
         final LongObjectHashtable<Long> table = LongObjectHashtable.builder().expectedSize(1).maxCapacity(32).build();
-        for (long key = 0; key < 30; key++) {
+        for (long key = 1; key <= 30; key++) {
             table.put(key, key);
         }
         assertThat(table.capacity(), is(32));
@@ -226,8 +313,9 @@ public class LongObjectHashtableTest {
         table.integrityCheck();
         assertThrows(IllegalArgumentException.class, () -> LongObjectHashtable.builder().maxCapacity(100));
         assertThrows(IllegalArgumentException.class, () -> LongObjectHashtable.builder().maxLoad(1.0).build());
+        // 128 slots take 121 keys at max load 0.95
         assertThrows(IllegalArgumentException.class,
-                () -> LongObjectHashtable.builder().expectedSize(100).maxCapacity(128).build());
+                () -> LongObjectHashtable.builder().expectedSize(122).maxCapacity(128).build());
     }
 
     /** small table load factor below the small table capacity, the load factor from there on */
@@ -312,6 +400,21 @@ public class LongObjectHashtableTest {
         assertThat(table.get(1L), is(-1L));
         assertThat(table.size(), is(21L));
         table.integrityCheck();
+
+        // ... clears it, puts the same key: the result replaces that value; the key equal to the seed the same
+        for (long key : new long[]{5L, table.seed()}) {
+            table.put(7L, 7L);
+            assertThat(table.computeIfAbsent(key, k -> {
+                table.clear();
+                table.put(k, -5L);
+                return -6L;
+            }), is(-6L));
+            assertThat(table.get(key), is(-6L));
+            assertThat(table.size(), is(1L));
+            assertFalse(table.containsKey(7L));
+            table.integrityCheck();
+            table.clear();
+        }
     }
 
     @Test

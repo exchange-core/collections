@@ -349,7 +349,7 @@ public class LongTupleHashtableTest {
         assertThrows(IllegalArgumentException.class,
                 () -> LongTupleHashtable.builder().keyLongs(1).valueLongs(999).expectedSize(3_000_000).build());
         assertThrows(IllegalArgumentException.class,
-                () -> LongTupleHashtable.builder().keyLongs(1).valueLongs(1).expectedSize(100).maxCapacity(128)
+                () -> LongTupleHashtable.builder().keyLongs(1).valueLongs(1).expectedSize(122).maxCapacity(128)
                         .build());
     }
 

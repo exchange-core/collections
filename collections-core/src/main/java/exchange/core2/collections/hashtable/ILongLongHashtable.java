@@ -119,11 +119,12 @@ public interface ILongLongHashtable {
     int capacity();
 
     /**
-     * Grows the table, if needed, to take expectedSize entries in total without a resize. One rehash on the calling
-     * thread instead of a series of resizes - for the set-up, not for the latency-critical path.
+     * Grows the table, if needed, to take expectedSize entries in total without a resize - the present ones included:
+     * {@code ensureCapacity((int) size())} changes nothing. One rehash on the calling thread instead of a series of
+     * resizes - for the set-up, not for the latency-critical path.
      *
-     * @throws IllegalArgumentException if expectedSize is negative or needs more than the maximum capacity (with a
-     *                                  fixed capacity: more than the table has)
+     * @throws IllegalArgumentException if expectedSize is negative or more than the table takes at its maximum
+     *                                  capacity and max load (with a fixed capacity: the capacity it has)
      */
     void ensureCapacity(int expectedSize);
 

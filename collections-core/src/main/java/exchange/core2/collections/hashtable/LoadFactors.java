@@ -62,20 +62,18 @@ final class LoadFactors {
     }
 
     /**
-     * @return the least capacity, a power of two, that takes expectedSize entries without growing
-     * @throws IllegalArgumentException if expectedSize is negative or needs more than maxCapacity
+     * @return the least capacity, a power of two, that takes expectedSize entries without growing - or maxCapacity,
+     * if they fit there only above its growth threshold, at maxLoad
+     * @throws IllegalArgumentException if expectedSize is negative or does not fit at maxCapacity and maxLoad
      */
-    int capacityFor(int expectedSize, int maxCapacity) {
-        if (expectedSize < 0) {
-            throw new IllegalArgumentException("expected size must not be negative: " + expectedSize);
-        }
+    int capacityFor(int expectedSize, int maxCapacity, double maxLoad) {
+        HashingUtils.checkExpectedSize(expectedSize);
         for (long capacity = 2; capacity <= maxCapacity; capacity <<= 1) {
             if (threshold((int) capacity) > expectedSize) {
                 return (int) capacity;
             }
         }
-        throw new IllegalArgumentException("expected size " + expectedSize + " exceeds the maximum of "
-                + (threshold(maxCapacity) - 1) + " entries (capacity " + maxCapacity + ")");
+        return HashingUtils.maxCapacityFor(expectedSize, maxCapacity, maxLoad);
     }
 
     /**

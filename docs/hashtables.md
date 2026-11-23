@@ -11,6 +11,12 @@
 
 Keys of several longs, and records of several fields under a key: [records](records.md).
 
+The profile of these tables: fast operations at a capacity given in advance — no allocation per operation, nothing
+done in the background. A resize is a rehash of the whole table on the calling thread (except in
+`LongLongLL2Hashtable`): pre-size the table (`expectedSize`, `ensureCapacity`), or fix its capacity, where that
+pause matters. The numbers below are averages; tails (p99, p99.9, max) are measured only for `LongLongHashtable`
+and `LongLongLL2Hashtable`, in [the LL2 scenarios](#longlongll2hashtable).
+
 ---
 
 ## LongLongHashtable
@@ -56,8 +62,10 @@ final LongLongHashtable fixed = LongLongHashtable.builder()
 
 A table that can not grow takes new keys up to `maxLoad` of its capacity (from 0.65 to below 1, default
 0.95; two slots always stay free), with longer probes past the expected size; then `put` of a new key
-throws `IllegalStateException` and changes nothing — updates and removals go on working. How much longer,
-with linear probing and random keys:
+throws `IllegalStateException` and changes nothing — updates and removals go on working, and a removal makes
+room for a new key. The limit is of the keys in the array: the key equal to the seed is kept outside it and
+always fits. `expectedSize` and `ensureCapacity` take up to the same limit at the maximum capacity —
+`ensureCapacity(size())` changes nothing. How much longer the probes get, with linear probing and random keys:
 
 | Load | lookup of a present key | insert of a new key, lookup / removal of a missing one |
 |---|---|---|
@@ -345,7 +353,7 @@ object alive.
 
 **Notes**
 - any key, `0` included: the value of the key equal to the seed — stored as 0, the free-slot marker — is kept in
-  a field
+  a field, outside the array: the load factors and `maxLoad` do not count it
 - the builder: `expectedSize`, `maxCapacity`, `fixedCapacity`, `maxLoad` as for `LongLongHashtable`; no
   `missingValue` — `null` is the missing value. The hash seed of the JVM, as for `LongLongHashtable`
 - 12 bytes per slot (4-byte references, a heap below 32 GB; 16 bytes above)
@@ -381,8 +389,12 @@ of warm-up and of measurement:
   of them used), this table at least 18.5 at its own load.
 - Eclipse's removal leaves tombstones until a rehash of the whole table: iterations of `replace` at 132, 251 and
   132 ns at 1M; 186, 136 and 1395 at 10M. A backward shift, or agrona's compaction, has no such pauses.
-- Measured with one load factor, 0.65, for every size. With the [defaults](#load-factors) a table of 10k keys
-  grows at 0.5: 32768 slots, the table of the 2× column; 1M and 10M as measured.
+- Measured with one load factor, 0.65, for every size: 16384 / 2^21 / 2^24 slots, 2^15 / 2^22 / 2^25 for 2×.
+  With the [defaults](#load-factors) a table of 10k keys grows at 0.5: 32768 slots, the table of the 2× column;
+  1M and 10M as measured. The benchmark sets the load with `-p loadFactor` — 0.65 by default, `default` for the
+  defaults — and prints the capacity the table got:
+  `java -cp test-classes:lib/* org.openjdk.jmh.Main LongObjectHashtableJmh -rf json -rff out.json`.
+- No allocation per operation: `-prof gc` gives ~0 B/op for the four operations (10k keys, JDK 26).
 
 ---
 
@@ -414,7 +426,8 @@ never keeps or creates `UUID` objects, except in `keysStream`.
   twice, as the tags of [`LongTupleHashtable`](records.md#longtuplehashtable). Keys picked to collide can not be
   found without the seed; sequential UUIDs — a prefix and a counter, UUIDv7 of one millisecond — spread like random
   ones. A removal hashes again each entry it shifts back
-- any key: the nil UUID — two zero longs, the free-slot marker — is kept in a field
+- any key: the nil UUID — two zero longs, the free-slot marker — is kept in a field, outside the array: the load
+  factors and `maxLoad` do not count it
 - 20 bytes per slot (4-byte references); a probe walks 4 keys to a cache line
 - no `null` values, the builder, the two [load factors](#load-factors), the resize, `remove(key, value)` and
   `computeIfAbsent` as for `LongObjectHashtable`
@@ -438,8 +451,10 @@ operation, 10k / 1M / 10M keys, the machine and the runs of `LongObjectHashtable
   holds the hash to compare. A miss here walks to the end of the cluster, ~4 slots at load 0.61 — pre-sized for
   twice the keys, 13 / 54 / 65 ns.
 - Given a `UUID`, the table costs the same as given the halves, out of the caches; 2.7 ns more at 10k.
-- Measured with one load factor, 0.65, as `LongObjectHashtableJmh`: with the [defaults](#load-factors) the table of
-  10k keys is the one of the 2× column.
+- Measured with one load factor, 0.65, as `LongObjectHashtableJmh` (`-p loadFactor`, 0.65 by default): with the
+  [defaults](#load-factors) the table of 10k keys is the one of the 2× column.
+- No allocation per operation given the halves (`-prof gc`, ~0 B/op); given a `UUID`, below 0.5 B/op — the
+  `new UUID` of the caller is scalar-replaced but for a few calls.
 
 ---
 
@@ -457,14 +472,58 @@ LongObjectHashtable.builder()
 ```
 
 - A table doubles when its size reaches the load factor of its slots: its load runs from half the load factor to
-  the load factor. `expectedSize` and `ensureCapacity` follow the same thresholds; `maxLoad` must be at least the
-  load factor the table grows at near its maximum capacity.
+  the load factor. `expectedSize` and `ensureCapacity` follow the same thresholds — at the maximum capacity, up to
+  `maxLoad`; `maxLoad` must be at least the load factor the table grows at near its maximum capacity. The key
+  kept in a field (equal to the seed, the nil UUID) is not in the array and counts for neither.
 - The load sets the probe: linear probing walks ~(1 + 1/(1 − α))/2 slots for a present key and
-  ~(1 + 1/(1 − α)²)/2 for a missing one — 1.5 and 2.5 at 0.5, 1.9 and 4.6 at 0.65, 3.8 and 23 at 0.85. In the caches
-  each slot is work and a mispredicted exit; out of them a probe within one cache line costs one miss — 8 keys to a
-  line here, 4 in the UUID table.
+  ~(1 + 1/(1 − α)²)/2 for a missing one — 1.5 and 2.5 at 0.5, 1.9 and 4.6 at 0.65, 3.8 and 23 at 0.85. Each slot is
+  work and its exit a mispredicted branch; a removal shifts back the rest of the cluster, a put walks to its end.
 - Memory: 12 / α bytes a key (20 / α for UUIDs) — at 0.65 18.5 just before the table grows and 37 after; a small
   table at 0.5 takes 24 to 48. 2^16 slots are 768 KB, 1.25 MB with UUID keys.
-- The defaults are a first choice; `HashtableLoadSweepJmh` measures each operation against the capacity (2^10 to
-  2^24 slots) and the load (0.25 to 0.85) to set them.
 - `LongLongHashtable` and `IntLongHashtable` grow at 0.65.
+- Many small tables — a map per user — take up to twice the memory at 0.5: 16 keys need 64 slots, not 32. For them
+  `smallTableLoadFactor(0.65)`, or `smallTableCapacity(2)`.
+
+**Measured** — `HashtableLoadSweepJmh`: a table of exactly 2^n slots at a load, random keys, the value an object;
+`chase` — each lookup and the read of its object wait for the one before, `getMiss` — independent lookups of absent
+keys, `replace` — a key removed and a new one put. ns per operation; AWS m8azn.xlarge (AMD EPYC 9R05, Zen 5, 5 GHz;
+L2 1 MB a core, L3 20 MB), JDK 27, the benchmark thread pinned, one fork, 2 × 0.5 s of warm-up, 3 × 0.5 s of
+measurement. At one capacity a higher load is also more keys and more objects to read.
+
+`LongObjectHashtable`:
+
+| Operation, slots (table) | 0.25 | 0.35 | 0.45 | 0.55 | 0.65 | 0.75 | 0.85 |
+|---|---|---|---|---|---|---|---|
+| `chase`, 2^12 (48 KB) | 5.8 | 6.4 | 6.6 | 6.9 | 7.1 | 7.4 | 8.0 |
+| `chase`, 2^18 (3 MB) | 19.0 | 20.7 | 22.1 | 23.5 | 24.7 | 26.8 | 28.6 |
+| `chase`, 2^24 (192 MB) | 249 | 252 | 258 | 259 | 271 | 292 | 307 |
+| `getMiss`, 2^12 | 2.0 | 2.1 | 2.4 | 2.8 | 3.4 | 5.0 | 11.1 |
+| `getMiss`, 2^18 | 6.3 | 9.2 | 12.9 | 15.9 | 18.7 | 23.7 | 35.3 |
+| `getMiss`, 2^24 | 29 | 33 | 40 | 56 | 85 | 105 | 125 |
+| `replace`, 2^12 | 19.1 | 26.7 | 33.2 | 39.9 | 46.3 | 62.5 | 107 |
+| `replace`, 2^18 | 23.2 | 32.9 | 42.3 | 50.0 | 57.8 | 73.9 | 120 |
+| `replace`, 2^24 | 117 | 141 | 176 | 221 | 280 | 340 | 471 |
+
+`UuidObjectHashtable`:
+
+| Operation, slots (table) | 0.25 | 0.35 | 0.45 | 0.55 | 0.65 | 0.75 | 0.85 |
+|---|---|---|---|---|---|---|---|
+| `chase`, 2^12 (80 KB) | 9.0 | 9.4 | 9.5 | 9.9 | 10.2 | 10.6 | 11.7 |
+| `chase`, 2^18 (5 MB) | 21.7 | 23.8 | 25.6 | 26.9 | 28.4 | 30.8 | 33.6 |
+| `chase`, 2^24 (320 MB) | 253 | 262 | 263 | 267 | 279 | 299 | 324 |
+| `getMiss`, 2^12 | 4.2 | 4.5 | 4.9 | 5.6 | 6.9 | 9.8 | 18.2 |
+| `getMiss`, 2^18 | 9.5 | 12.7 | 16.5 | 21.1 | 23.5 | 26.2 | 34.8 |
+| `getMiss`, 2^24 | 48 | 54 | 65 | 92 | 122 | 140 | 172 |
+| `replace`, 2^12 | 27.5 | 36.3 | 44.2 | 51.4 | 63.0 | 86.3 | 153 |
+| `replace`, 2^18 | 33.8 | 44.2 | 53.5 | 64.5 | 78.4 | 103 | 174 |
+| `replace`, 2^24 | 186 | 220 | 267 | 323 | 381 | 462 | 597 |
+
+- A lower load is faster at every size: `replace` and `getMiss` the most, `chase` hardly in the caches. Out of the
+  caches too — a longer probe is more work between the misses, and the misses of independent lookups overlap less.
+  So the load factor is a choice of memory.
+- Taken as a policy — a table grown at 0.5 instead of 0.65, averaged over sizes: in L1 and L2 `replace` −20%
+  (−18% with UUID keys), `getMiss` −11% (−9%), `chase` +4% (+5%); out of the caches `replace` −22% (−18%),
+  `getMiss` −26% (−24%), `chase` −2%. The table takes 35 bytes a key instead of 27 (58 instead of 44).
+- The defaults: 0.5 below 2^16 slots, where the sparser table is at most 384 KB (640 KB with UUID keys) and stays in
+  a core's L2; 0.65 from there on, as `LongLongHashtable`. A table sparse enough to outgrow the L3 loses: at 0.65,
+  `chase` goes from 27 ns at 2^20 slots (12 MB) to 216 at 2^22 (48 MB).
