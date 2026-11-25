@@ -1,9 +1,12 @@
 # Release notes
 
+## Unreleased
+
 ## 0.8.0 (2026-11-24)
 
 The first release of `collections-core` and `collections-orderbook` since 0.6.0 (0.7.0 was `collections-affinity`
-alone), with `collections-ledger` new. `collections-affinity` has no changes and stays at 0.7.0. The API changes since 0.6.0 - each is described below, in short:
+alone), with `collections-ledger` new. `collections-affinity` has no changes and stays at 0.7.0. The API changes
+since 0.6.0 - each is described below, in short:
 
 - `LongAdaptiveRadixTreeMap`: `put` / `remove` return the previous / removed value (recompile);
   `getHigherValue` / `getLowerValue` are `higherValue` / `lowerValue`; `size(limit)` is gone -

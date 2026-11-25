@@ -198,9 +198,9 @@
         <maven.jar.plugin.version>3.5.0</maven.jar.plugin.version>
         <maven.gpg.plugin.version>3.2.8</maven.gpg.plugin.version>
         <japicmp.plugin.version>0.23.1</japicmp.plugin.version>
-        <!-- the last release of collections-core and collections-orderbook: api-check compares the
-             published modules with it (collections-affinity has a baseline of its own, 0.7.0) -->
-        <api.baseline.version>0.6.0</api.baseline.version>
+        <!-- the last release: api-check compares the published modules with it (collections-affinity has a
+             baseline of its own, 0.7.0) -->
+        <api.baseline.version>0.8.0</api.baseline.version>
         <maven.deploy.plugin.version>3.1.4</maven.deploy.plugin.version>
     </properties>
 
@@ -517,38 +517,8 @@
                                 <skipPomModules>true</skipPomModules>
                                 <breakBuildOnBinaryIncompatibleModifications>true</breakBuildOnBinaryIncompatibleModifications>
                                 <breakBuildOnSourceIncompatibleModifications>true</breakBuildOnSourceIncompatibleModifications>
-                                <!-- the breaks accepted since 0.6.0, see RELEASE_NOTES "Unreleased" -->
+                                <!-- the breaks accepted since 0.8.0, see RELEASE_NOTES "Unreleased" -->
                                 <excludes>
-                                    <!-- ART: the nodes are internal, IArtNode is gone -->
-                                    <exclude>exchange.core2.collections.art.IArtNode</exclude>
-                                    <exclude>exchange.core2.collections.art.ArtNode4</exclude>
-                                    <exclude>exchange.core2.collections.art.ArtNode16</exclude>
-                                    <exclude>exchange.core2.collections.art.ArtNode48</exclude>
-                                    <exclude>exchange.core2.collections.art.ArtNode256</exclude>
-                                    <!-- ART: put / remove / removeRange return a value; getOrInsert (a stub) is gone -->
-                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#put(long,java.lang.Object)</exclude>
-                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#remove(long)</exclude>
-                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#removeRange(long,long)</exclude>
-                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#getOrInsert(long,java.util.function.Supplier)</exclude>
-                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#getOrInsertFromNode(exchange.core2.collections.art.IArtNode,java.util.function.Supplier)</exclude>
-                                    <!-- ART: the neighbour lookups lose "get", as in NavigableMap; size(limit) is gone -->
-                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#getHigherValue(long)</exclude>
-                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#getLowerValue(long)</exclude>
-                                    <exclude>exchange.core2.collections.art.LongAdaptiveRadixTreeMap#size(int)</exclude>
-                                    <!-- hashtables: the internals hidden or removed, LongLongRadixHashtable removed -->
-                                    <exclude>exchange.core2.collections.hashtable.HashingUtils</exclude>
-                                    <exclude>exchange.core2.collections.hashtable.HashtableAsync2Resizer</exclude>
-                                    <exclude>exchange.core2.collections.hashtable.HashtableAsyncResizer</exclude>
-                                    <exclude>exchange.core2.collections.hashtable.HashtableResizer</exclude>
-                                    <exclude>exchange.core2.collections.hashtable.LongLongRadixHashtable</exclude>
-                                    <!-- hashtables: the tables are final, their constructors replaced by builders - a class-level
-                                         change, so the whole classes stay unchecked until the next release -->
-                                    <exclude>exchange.core2.collections.hashtable.LongLongHashtable</exclude>
-                                    <exclude>exchange.core2.collections.hashtable.LongLongLL2Hashtable</exclude>
-                                    <!-- hashtables: new methods of the interface (an implementation outside has to add them) -->
-                                    <exclude>exchange.core2.collections.hashtable.ILongLongHashtable#capacity()</exclude>
-                                    <exclude>exchange.core2.collections.hashtable.ILongLongHashtable#ensureCapacity(int)</exclude>
-                                    <exclude>exchange.core2.collections.hashtable.ILongLongHashtable#missingValue()</exclude>
                                 </excludes>
                             </parameter>
                         </configuration>
