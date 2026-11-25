@@ -9,7 +9,9 @@ import exchange.core2.collections.art.LongAdaptiveRadixTreeMap;
 import exchange.core2.collections.hashtable.ILongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongHashtable;
 import exchange.core2.collections.hashtable.LongLongLL2Hashtable;
+import exchange.core2.collections.hashtable.LongObjectHashtable;
 import exchange.core2.collections.hashtable.MigrationService;
+import exchange.core2.collections.hashtable.UuidObjectHashtable;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectRBTreeMap;
 import org.HdrHistogram.Histogram;
@@ -36,6 +38,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -53,8 +56,8 @@ import java.util.stream.Collectors;
  *     <li>{@code -Dsamples.batch} - operations per service-time sample (default: 1, or enough to make a coarse
  *     clock tick worth under 1ns per operation - 128 on Windows, where nanoTime ticks every 100ns)</li>
  *     <li>{@code -Dsamples.groups} - comma-separated subset of the groups below; {@code ll2-scenarios},
- *     {@code ll2-many-tables}, {@code ll2-big-allocation}, {@code hashtable-collide} and {@code art-fill} run only
- *     when named</li>
+ *     {@code ll2-many-tables}, {@code ll2-big-allocation}, {@code hashtable-collide}, {@code art-fill} and
+ *     {@code object-tables} run only when named</li>
  *     <li>{@code -Dsamples.art.label} - name of the ART series in {@code art-fill} (default "art"), to put the samples
  *     of two builds of collections-core side by side</li>
  *     <li>{@code -Dsamples.warmup.ms} - warm-up limit per service-time series (default 3000); it ends earlier,
@@ -223,6 +226,7 @@ public class CollectionsLatencySamples {
             if (GROUPS.contains("ll2-many-tables")) ll2ManyTables();
             if (GROUPS.contains("ll2-big-allocation")) ll2BigAllocation();
             if (GROUPS.contains("ll2-preempted-worker")) ll2PreemptedWorker();
+            if (GROUPS.contains("object-tables")) objectTables();
         }
         log.info("done ({})", sink);
     }
@@ -663,6 +667,159 @@ public class CollectionsLatencySamples {
         return keys;
     }
 
+    /** object-tables: a fixed table holds 1M keys at its expected size - 2^21 slots */
+    private static final int CHURN_KEYS = 1_000_000;
+    /** object-tables: the default maxLoad of a table at its maximum capacity */
+    private static final double MAX_LOAD = 0.95;
+
+    /**
+     * LongObjectHashtable and UuidObjectHashtable: the tails the averages of their JMH benchmarks leave out. Every value
+     * is one shared object, so what allocates is the table. The UUID keys are the random long and a mix of it.
+     * <ul>
+     *     <li>{@code *-put-growing} - response time at 1M ops/s, the 4M keys of hashtable-put into an empty table (the
+     *     defaults): each resize copies the table on the calling thread</li>
+     *     <li>{@code *-put-presized} - the same into a table built for the 4M keys: no resize</li>
+     *     <li>{@code *-get} - service time, get of a present key, 1M keys</li>
+     *     <li>{@code *-churn-expected} - service time, a fixed table at its expected size, 1M keys in 2^21 slots
+     *     (load 0.48): one operation removes the oldest key and puts a new one, the size stays</li>
+     *     <li>{@code *-churn-full} - the same table filled up to maxLoad 0.95: 1 992 294 keys</li>
+     *     <li>{@code jdk-hashmap-uuid-*} - {@code HashMap<UUID, V>}, a new UUID per operation, put-growing and get</li>
+     * </ul>
+     * The log gives the bytes the measuring thread allocated per operation.
+     */
+    private void objectTables() throws IOException {
+        final String group = "object-tables";
+        final long[] putKeys = randomKeys(PUT_KEYS, 3);
+        final long[] stored = randomKeys(MAP_SIZE, 1);
+        final long[] hits = sample(stored, 2);
+        // churn: the keys of the table, then the ones that replace them - in a cycle longer than the table
+        final long[] stream = randomKeys(PUT_KEYS, 20);
+        final long[] ops = new long[QUERIES];
+
+        fixedRate(group, "longobject-put-growing", putKeys, () -> {
+            final LongObjectHashtable<Long> m = new LongObjectHashtable<>(INITIAL_CAPACITY);
+            return (k, from, to) -> m.put(k[from], VALUE) == null ? 0 : 1;
+        });
+        fixedRate(group, "longobject-put-presized", putKeys, () -> {
+            final LongObjectHashtable<Long> m = new LongObjectHashtable<>(PUT_KEYS);
+            return (k, from, to) -> m.put(k[from], VALUE) == null ? 0 : 1;
+        });
+        serviceTime(group, "longobject-get", hits, () -> {
+            final LongObjectHashtable<Long> m = new LongObjectHashtable<>(INITIAL_CAPACITY);
+            for (long k : stored) m.put(k, VALUE);
+            return (keys, from, to) -> {
+                long s = 0;
+                for (int i = from; i < to; i++) s += m.get(keys[i]) == null ? 0 : 1;
+                return s;
+            };
+        });
+        serviceTime(group, "longobject-churn-expected", ops, () -> longObjectChurn(stream, false));
+        serviceTime(group, "longobject-churn-full", ops, () -> longObjectChurn(stream, true));
+
+        fixedRate(group, "uuidobject-put-growing", putKeys, () -> {
+            final UuidObjectHashtable<Long> m = new UuidObjectHashtable<>(INITIAL_CAPACITY);
+            return (k, from, to) -> m.put(k[from], uuidLo(k[from]), VALUE) == null ? 0 : 1;
+        });
+        fixedRate(group, "uuidobject-put-presized", putKeys, () -> {
+            final UuidObjectHashtable<Long> m = new UuidObjectHashtable<>(PUT_KEYS);
+            return (k, from, to) -> m.put(k[from], uuidLo(k[from]), VALUE) == null ? 0 : 1;
+        });
+        serviceTime(group, "uuidobject-get", hits, () -> {
+            final UuidObjectHashtable<Long> m = new UuidObjectHashtable<>(INITIAL_CAPACITY);
+            for (long k : stored) m.put(k, uuidLo(k), VALUE);
+            return (keys, from, to) -> {
+                long s = 0;
+                for (int i = from; i < to; i++) s += m.get(keys[i], uuidLo(keys[i])) == null ? 0 : 1;
+                return s;
+            };
+        });
+        serviceTime(group, "uuidobject-churn-expected", ops, () -> uuidObjectChurn(stream, false));
+        serviceTime(group, "uuidobject-churn-full", ops, () -> uuidObjectChurn(stream, true));
+
+        fixedRate(group, "jdk-hashmap-uuid-put-growing", putKeys, () -> {
+            final Map<UUID, Long> m = new HashMap<>(INITIAL_CAPACITY);
+            return (k, from, to) -> m.put(new UUID(k[from], uuidLo(k[from])), VALUE) == null ? 0 : 1;
+        });
+        serviceTime(group, "jdk-hashmap-uuid-get", hits, () -> {
+            final Map<UUID, Long> m = new HashMap<>(INITIAL_CAPACITY);
+            for (long k : stored) m.put(new UUID(k, uuidLo(k)), VALUE);
+            return (keys, from, to) -> {
+                long s = 0;
+                for (int i = from; i < to; i++) s += m.get(new UUID(keys[i], uuidLo(keys[i]))) == null ? 0 : 1;
+                return s;
+            };
+        });
+    }
+
+    /** the least significant half of the UUID of a random key: a bijection of it, so the UUIDs are distinct */
+    private static long uuidLo(long key) {
+        return Long.rotateLeft(key * 0x9E3779B97F4A7C15L, 31);
+    }
+
+    /** the keys a fixed table for CHURN_KEYS holds: CHURN_KEYS, or as many as its maxLoad lets in */
+    private static int churnKeys(int capacity, boolean full) {
+        return full ? (int) Math.min((long) (capacity * MAX_LOAD), capacity - 2L) : CHURN_KEYS;
+    }
+
+    private static void logChurnTable(long size, int capacity) {
+        log.info("churn: {} keys in {} slots, load {}", size, capacity, String.format("%.3f", (double) size / capacity));
+    }
+
+    /**
+     * A fixed LongObjectHashtable for CHURN_KEYS (2^21 slots) holding the first keys of the stream; one run removes the
+     * oldest key and puts the next of the stream (fewer keys than the stream: a key comes back long after its removal).
+     */
+    private static Bench longObjectChurn(long[] stream, boolean full) {
+        final LongObjectHashtable<Long> m = LongObjectHashtable.builder().expectedSize(CHURN_KEYS).fixedCapacity()
+                .build();
+        final int n = churnKeys(m.capacity(), full);
+        for (int i = 0; i < n; i++) m.put(stream[i], VALUE);
+        logChurnTable(m.size(), m.capacity());
+        return new Bench() {
+            private int oldest;
+            private int next = n;
+
+            @Override
+            public long run(long[] keys, int from, int to) {
+                long s = 0;
+                for (int i = from; i < to; i++) {
+                    s += m.remove(stream[oldest]) == null ? 0 : 1;
+                    m.put(stream[next], VALUE);
+                    if (++oldest == stream.length) oldest = 0;
+                    if (++next == stream.length) next = 0;
+                }
+                return s;
+            }
+        };
+    }
+
+    /** {@link #longObjectChurn} of UuidObjectHashtable */
+    private static Bench uuidObjectChurn(long[] stream, boolean full) {
+        final UuidObjectHashtable<Long> m = UuidObjectHashtable.builder().expectedSize(CHURN_KEYS).fixedCapacity()
+                .build();
+        final int n = churnKeys(m.capacity(), full);
+        for (int i = 0; i < n; i++) m.put(stream[i], uuidLo(stream[i]), VALUE);
+        logChurnTable(m.size(), m.capacity());
+        return new Bench() {
+            private int oldest;
+            private int next = n;
+
+            @Override
+            public long run(long[] keys, int from, int to) {
+                long s = 0;
+                for (int i = from; i < to; i++) {
+                    final long out = stream[oldest];
+                    final long in = stream[next];
+                    s += m.remove(out, uuidLo(out)) == null ? 0 : 1;
+                    m.put(in, uuidLo(in), VALUE);
+                    if (++oldest == stream.length) oldest = 0;
+                    if (++next == stream.length) next = 0;
+                }
+                return s;
+            }
+        };
+    }
+
     /** Remove of a present key at load ~0.65, put back outside the measured interval. */
     private void hashtableRemove() throws IOException {
         final String group = "hashtable-remove";
@@ -1072,12 +1229,14 @@ public class CollectionsLatencySamples {
         log.info("{}/{}: preparing...", group, name);
         final long[] samples = new long[SAMPLES];
         final long warmupMs;
+        final String use;
         try (Bench bench = subject.get()) {
             final Random rand = new Random(name.hashCode());
             warmupMs = warmUp(bench, keys, rand);
-            measureServiceTime(bench, keys, samples, rand);
+            final ResourceUse measured = new ResourceUse();
+            use = measured.report(measureServiceTime(bench, keys, samples, rand));
         }
-        log.info("{}/{}: warm-up {}ms", group, name, warmupMs);
+        log.info("{}/{}: warm-up {}ms; {}", group, name, warmupMs, use);
         write(group, name, samples);
     }
 
@@ -1112,14 +1271,16 @@ public class CollectionsLatencySamples {
      * com.sun.management beans).
      */
     private static final class ResourceUse {
-        private final long allocated = allocatedBytes();
         private final long othersCpu = othersCpuNanos();
         private final long gcMs = gcMillis();
+        /** the last: the queries of the beans above allocate */
+        private final long allocated = allocatedBytes();
 
-        @Override
-        public String toString() {
-            return String.format("measuring thread allocated %.1f MB; CPU of the other threads (not spinning) %d ms,"
-                            + " GC %d ms", (allocatedBytes() - allocated) / 1e6,
+        /** since the construction, over ops operations */
+        String report(long ops) {
+            final long bytes = allocatedBytes() - allocated;
+            return String.format("measuring thread allocated %.1f MB (%.2f B/op); CPU of the other threads"
+                            + " (not spinning) %d ms, GC %d ms", bytes / 1e6, (double) bytes / ops,
                     (othersCpuNanos() - othersCpu) / 1_000_000, gcMillis() - gcMs);
         }
 
@@ -1158,7 +1319,9 @@ public class CollectionsLatencySamples {
         return affinity;
     }
 
-    private void measureServiceTime(Bench bench, long[] keys, long[] samples, Random rand) {
+    /** returns the operations run */
+    private long measureServiceTime(Bench bench, long[] keys, long[] samples, Random rand) {
+        long ops = 0;
         int pos = 0;
         for (int s = 0; s < samples.length; s++) {
             final int n = batch == 1 ? 1 : batch + rand.nextInt(batch);
@@ -1170,7 +1333,9 @@ public class CollectionsLatencySamples {
             // exchange-charts takes positive values only; 0 is possible when the whole batch fits in one tick
             samples[s] = Math.max(1, ns * 1000 / n);
             pos += n;
+            ops += n;
         }
+        return ops;
     }
 
     private void fixedRate(String group, String name, long[] keys, Supplier<Bench> subject) throws IOException {
@@ -1202,9 +1367,12 @@ public class CollectionsLatencySamples {
         }
         log.info("{}/{}: measuring {} puts at {} ops/s...", group, name, keys.length, PUT_RATE);
         final long[] samples = new long[SAMPLES];
-        final ResourceUse use = new ResourceUse();
+        final String use;
         try (Bench bench = subject.get()) {
+            // from the first operation: a table pre-sized by the constructor allocates there
+            final ResourceUse measured = new ResourceUse();
             measureResponseTime(bench, keys, samples);
+            use = measured.report((long) keys.length / samples.length * samples.length);
         }
         log.info("{}/{}: {}", group, name, use);
         write(group, name, samples);

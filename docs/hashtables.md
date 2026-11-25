@@ -8,14 +8,17 @@
 - [`LongObjectHashtable`](#longobjecthashtable) — `long` → object, the keys and the values in two arrays
 - [`UuidObjectHashtable`](#uuidobjecthashtable) — UUID → object, the key as two longs or a `java.util.UUID`
 - [Load factors](#load-factors) — of the object tables: a lower one for small tables
+- [Tail latency](#tail-latency) — of the object tables: p99, p99.9 and max of `put`, `get`, and of removals and
+  puts at a fixed capacity
 
 Keys of several longs, and records of several fields under a key: [records](records.md).
 
 The profile of these tables: fast operations at a capacity given in advance — no allocation per operation, nothing
 done in the background. A resize is a rehash of the whole table on the calling thread (except in
 `LongLongLL2Hashtable`): pre-size the table (`expectedSize`, `ensureCapacity`), or fix its capacity, where that
-pause matters. The numbers below are averages; tails (p99, p99.9, max) are measured only for `LongLongHashtable`
-and `LongLongLL2Hashtable`, in [the LL2 scenarios](#longlongll2hashtable).
+pause matters. The numbers below are averages, except the tails (p99, p99.9, max) of `LongLongHashtable` and
+`LongLongLL2Hashtable` in [the LL2 scenarios](#longlongll2hashtable) and of the object tables in
+[Tail latency](#tail-latency).
 
 ---
 
@@ -527,3 +530,54 @@ measurement. At one capacity a higher load is also more keys and more objects to
 - The defaults: 0.5 below 2^16 slots, where the sparser table is at most 384 KB (640 KB with UUID keys) and stays in
   a core's L2; 0.65 from there on, as `LongLongHashtable`. A table sparse enough to outgrow the L3 loses: at 0.65,
   `chase` goes from 27 ns at 2^20 slots (12 MB) to 216 at 2^22 (48 MB).
+
+---
+
+## Tail latency
+
+`LongObjectHashtable` and `UuidObjectHashtable` operation by operation — `CollectionsLatencySamples`, the group
+`object-tables`: 100 000 samples a series, the median of three runs; [Xeon Gold 6244](benchmarks.md#the-machine),
+JDK 27, a 16 GB heap, the measuring thread on an isolated core. Every value is one shared object, so what allocates
+is the table: B/op is what the measuring thread allocated per operation. No GC ran during the measurements.
+
+- `put` — response time at 1M operations a second, 4M new random keys: into a table pre-sized for them (2^23 slots,
+  no resize), and into one growing from the default capacity. The delay counts from the planned start of the
+  operation: a resize delays every operation queued behind it.
+- `get` — service time, a present key of 1M.
+- `remove` + `put` — service time of the pair: a fixed table for 1M keys (2^21 slots) removes its oldest key and
+  puts a new one, its size steady, after 1M to 7M such pairs of warm-up. At 1M keys (load 0.48), and filled up to
+  `maxLoad` 0.95 (1 992 294 keys).
+
+| Series | p50 | p99 | p99.9 | max | B/op |
+|---|---|---|---|---|---|
+| `LongObjectHashtable` `put`, pre-sized | 132 ns | 368 ns | 461 ns | 841 ns | 0 |
+| `UuidObjectHashtable` `put`, pre-sized | 139 ns | 383 ns | 489 ns | 873 ns | 0 |
+| `LongObjectHashtable` `put`, growing | 127 ns | 13.2 ms | 37.6 ms | 41.1 ms | 50 |
+| `UuidObjectHashtable` `put`, growing | 140 ns | 29.1 ms | 58.3 ms | 61.7 ms | 84 |
+| `HashMap<UUID, V>` `put`, growing | 138 ns | 83.6 ms | 114 ms | 117 ms | 65 |
+| `LongObjectHashtable` `get` | 44 ns | 188 ns | 377 ns | 646 ns | 0 |
+| `UuidObjectHashtable` `get` | 65 ns | 245 ns | 421 ns | 642 ns | 0 |
+| `HashMap<UUID, V>` `get` | 149 ns | 453 ns | 590 ns | 3.9 µs | 24 |
+| `LongObjectHashtable` `remove` + `put`, load 0.48 | 120 ns | 338 ns | 478 ns | 1.0 µs | 0 |
+| `UuidObjectHashtable` `remove` + `put`, load 0.48 | 189 ns | 480 ns | 614 ns | 1.1 µs | 0 |
+| `LongObjectHashtable` `remove` + `put`, load 0.95 | 760 ns | 5.1 µs | 8.0 µs | 11.8 µs | 0 |
+| `UuidObjectHashtable` `remove` + `put`, load 0.95 | 1.1 µs | 8.5 µs | 15.4 µs | 21.7 µs | 0 |
+
+- At a capacity given in advance the tails are short and nothing is allocated: a `put` at p99 368–383 ns, at most
+  0.9 µs. These are the tails `LongLongLL2Hashtable` gets by resizing in the background (p99 344 ns, p99.9 499 ns,
+  max 7.5 µs; the same machine, 2026-11-12).
+- Growing, a resize holds the calling thread. The largest, from 2^22 to 2^23 slots at 2.7M keys, takes ~41 ms with
+  long keys and ~62 ms with UUID keys; at 1M operations a second 2.3% and 3.5% of the puts wait behind resizes.
+  `LongLongHashtable` grows the same way (p99 14.5 ms, max 42.8 ms). What growth allocates is the new arrays, 12
+  and 20 bytes a slot.
+- Removals and puts alternating for millions of operations at the expected size stay at p99 338 / 480 ns, max
+  ~1 µs: a backward shift leaves no tombstones, and the slots taken depend only on the keys in the table, not on the
+  order of the operations.
+- `maxLoad` is where a `put` is refused, not a load to run at. At 0.95 a put walks ~200 slots to the end of its
+  cluster on average, and the lengths of the clusters have a long tail. A fixed table sized for its keys with
+  `expectedSize` holds them at 0.33–0.65.
+- `HashMap<UUID, V>` allocates the `UUID` of each lookup (24 bytes with compact object headers); its max is
+  3.5–4 µs in every run.
+- 0 B/op is 0.00–0.01 in the log: about 1 KB over a series. The log of the run gives B/op:
+  `mvn test -Pbenchmarks -pl tests-perf -am -Dsurefire.failIfNoSpecifiedTests=false -Dtest=CollectionsLatencySamples
+  -Dsamples.groups=object-tables`.
