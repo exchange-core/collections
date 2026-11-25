@@ -1,9 +1,9 @@
 # Release notes
 
-## 0.8.0 (unreleased)
+## 0.8.0 (2026-11-24)
 
 The first release of `collections-core` and `collections-orderbook` since 0.6.0 (0.7.0 was `collections-affinity`
-alone), with `collections-ledger` new. The API changes since 0.6.0 - each is described below, in short:
+alone), with `collections-ledger` new. `collections-affinity` has no changes and stays at 0.7.0. The API changes since 0.6.0 - each is described below, in short:
 
 - `LongAdaptiveRadixTreeMap`: `put` / `remove` return the previous / removed value (recompile);
   `getHigherValue` / `getLowerValue` are `higherValue` / `lowerValue`; `size(limit)` is gone -
@@ -438,8 +438,8 @@ alone), with `collections-ledger` new. The API changes since 0.6.0 - each is des
 ### Testing
 
 - **API check against the last release**: `mvn -Papi-check -DskipTests verify` compares the published modules with
-  0.6.0 (japicmp) and fails on a binary or source incompatible change not listed in the profile's excludes - the
-  breaks of this release are listed there.
+  their last release (japicmp: 0.6.0, `collections-affinity` 0.7.0) and fails on a binary or source incompatible
+  change not listed in the profile's excludes - the breaks of this release are listed there.
 - **Strict javadoc**: doclint checks everything but missing comments, and a warning fails the build (it found an
   empty `<p>` in `IOrderBook`).
 - **The `java.util` contract of the ART view**: Guava's `NavigableMapTestSuiteBuilder` (`guava-testlib`, test scope)
