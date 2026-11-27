@@ -4,7 +4,7 @@
 
     <groupId>exchange.core2</groupId>
     <artifactId>collections-parent</artifactId>
-    <version>0.9.0-SNAPSHOT</version>
+    <version>0.8.1</version>
     <packaging>pom</packaging>
 
     <modules>
@@ -33,7 +33,7 @@
         <url>https://github.com/exchange-core/collections.git</url>
         <connection>scm:git:git://github.com/exchange-core/collections.git</connection>
         <developerConnection>scm:git:ssh://git@github.com:exchange-core/collections.git</developerConnection>
-        <tag>HEAD</tag>
+        <tag>collections-0.8.1</tag>
     </scm>
 
     <issueManagement>
@@ -204,7 +204,7 @@
         <!-- the modules a release publishes, given to release:perform: empty - all of them; a list -
              -Drelease.modules="-pl collections-core -am", the parent pom comes with -am. The versions of all
              modules move together in git, a module not published keeps its last release -->
-        <release.modules></release.modules>
+        <release.modules />
         <maven.deploy.plugin.version>3.1.4</maven.deploy.plugin.version>
     </properties>
 
