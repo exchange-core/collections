@@ -43,4 +43,15 @@ a binary or source incompatible change fails the build unless it is listed in th
 mvn -Papi-check -DskipTests verify
 ```
 
+A release publishes only the modules that changed: `release:prepare` moves the versions of all modules and
+tests all of them, `release:perform` deploys the ones named in `release.modules` (all of them if it is empty),
+with the parent pom:
+
+```bash
+mvn release:prepare -DreleaseVersion=0.8.1 -DdevelopmentVersion=0.9.0-SNAPSHOT
+mvn release:perform -Drelease.modules="-pl collections-core -am"
+```
+
+After it, the `api.baseline.version` of each published module is the new release.
+
 The javadoc is strict: a broken reference or bad HTML fails the build.

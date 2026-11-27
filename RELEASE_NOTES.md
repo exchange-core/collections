@@ -4,8 +4,8 @@
 
 ## 0.8.1 (2026-11-26)
 
-All four modules; `collections-affinity`, `collections-orderbook` and `collections-ledger` are unchanged, at the
-version of `collections-core` again. No API changes, one class added.
+`collections-core` alone: `collections-orderbook` and `collections-ledger` have no changes and stay at 0.8.0,
+`collections-affinity` at 0.7.0. No API changes, one class added.
 
 ### Added
 
