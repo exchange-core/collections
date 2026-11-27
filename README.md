@@ -44,14 +44,14 @@ The other structures are in the [catalog](#collections), the map above in [ART](
 | `collections-core`      | 0.8.1   | 21+  | Adaptive Radix Tree, hashtables (long-long, int-long, long-object, int-object, UUID-object, tuples, snapshots), record store, queues (indexed FIFO, events, reorder window), price ladder, time windows and series, objects pool | [Collections](#collections) |
 | `collections-orderbook` | 0.8.1   | 21+  | Order book implementation built on top of the core collections | [Order book](docs/orderbook.md) |
 | `collections-ledger`    | 0.8.1   | 21+  | Balances (available, reserved) with checked postings and batches | [Balances](docs/ledger.md) |
-| `collections-affinity`  | 0.8.1   | 22+  | Pinning threads to CPU cores, NUMA topology and memory placement checks, no dependencies | [Thread affinity](docs/affinity.md) |
+| `collections-affinity`  | 0.7.0   | 22+  | Pinning threads to CPU cores, NUMA topology and memory placement checks, no dependencies | [Thread affinity](docs/affinity.md) |
 | `tests-perf`            | –       | –    | Latency / throughput benchmarks (not published)                | [Benchmarks](docs/benchmarks.md) |
 | `tests-stress`          | –       | –    | Long-running randomized stress tests (not published)           | [Testing](CONTRIBUTING.md#testing) |
 
 ### Requirements
 
 - **To use the published artifacts:** Java 21+ (`collections-core`, `collections-orderbook` and
-  `collections-ledger` 0.8.1); `collections-affinity` (0.8.1) needs Java 22+, as it uses the Foreign
+  `collections-ledger` 0.8.1); `collections-affinity` (0.7.0) needs Java 22+, as it uses the Foreign
   Function and Memory API.
 - **To build from source:** JDK 26 and Maven 3.9+ — the benchmark and stress modules use newer
   language APIs than the published ones.
@@ -84,12 +84,12 @@ For pinning threads to cores (Java 22+, no dependencies, see [Thread affinity](d
 <dependency>
     <groupId>exchange.core2</groupId>
     <artifactId>collections-affinity</artifactId>
-    <version>0.8.1</version>
+    <version>0.7.0</version>
 </dependency>
 ```
 
 The modules share one version line, but not every release has all of them: 0.7.0 was `collections-affinity`
-alone, 0.8.0 the other three - `collections-affinity` had no changes; 0.8.1 has all four.
+alone, 0.8.0 and 0.8.1 the other three - `collections-affinity` had no changes.
 
 To build from source and install into the local repository:
 
