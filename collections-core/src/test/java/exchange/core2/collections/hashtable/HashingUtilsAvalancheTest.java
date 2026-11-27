@@ -127,6 +127,28 @@ public class HashingUtilsAvalancheTest {
         }
     }
 
+    /**
+     * {@link HashingUtils#hashInt} of the int tables: sequential int keys - symbols, small ids - from 0 and below it
+     * spread across buckets, as stored (XOR-ed with the low half of the seed).
+     */
+    @Test
+    public void hashInt_shouldSpreadSequentialKeysAcrossBuckets() {
+        final int buckets = 1024;
+        final int keys = buckets * 1024;
+        final int[] up = new int[buckets];
+        final int[] down = new int[buckets];
+        for (int key = 1; key <= keys; key++) {
+            up[HashingUtils.hashInt(key ^ HashingUtils.INT_SEED) & (buckets - 1)]++;
+            down[HashingUtils.hashInt(-key ^ HashingUtils.INT_SEED) & (buckets - 1)]++;
+        }
+        final int expected = keys / buckets;
+        for (int i = 0; i < buckets; i++) {
+            assertTrue("keys up from 1: bucket " + i + " got " + up[i], Math.abs(up[i] - expected) <= expected / 4);
+            assertTrue("keys down from -1: bucket " + i + " got " + down[i],
+                    Math.abs(down[i] - expected) <= expected / 4);
+        }
+    }
+
     private static double worstAvalancheBias(LongToIntFunction mixer) {
         return worstAvalancheBias(mixer, () -> {
         });

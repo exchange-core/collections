@@ -145,6 +145,24 @@ final class HashingUtils {
     }
 
     /**
+     * The seed of an {@code int} key: the tables of int keys store key ^ INT_SEED, the low half of {@link #SEED}; the
+     * high half goes in by {@link #hashInt}.
+     */
+    static final int INT_SEED = (int) SEED;
+
+    private static final long SEED_HIGH = SEED & 0xFFFF_FFFF_0000_0000L;
+
+    /**
+     * Hash of a stored int key k = key ^ {@link #INT_SEED}: {@link #hash(long)} of the key widened without sign and
+     * XOR-ed with the whole seed - k in the low half, the high half of the seed above it. All 64 bits of the seed go
+     * in, as for a long key; with seed 0 it is the hash of the key widened without sign. A name of its own, not an
+     * overload of hash(long): an int argument would pick it silently.
+     */
+    static int hashInt(final int k) {
+        return hash(Integer.toUnsignedLong(k) | SEED_HIGH);
+    }
+
+    /**
      * Hash of a key of two longs (a UUID): the halves mixed in turn from the seed, h = mix64(mix64(SEED + hi) + lo),
      * as the tags of {@link LongTupleHashtable}. The seed goes in before the first non-linear step, so keys picked to
      * collide - mix64(SEED + hi1) - mix64(SEED + hi2) == lo2 - lo1 - can not be found without it. Low 32 bits.
