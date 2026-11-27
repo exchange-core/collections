@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.8.1 (2026-11-26)
+
+All four modules; `collections-affinity`, `collections-orderbook` and `collections-ledger` are unchanged, at the
+version of `collections-core` again. No API changes, one class added.
+
+### Added
+
+- **`IntObjectHashtable`** (`collections-core`): `int` keys to object values - the layout of `LongObjectHashtable`
+  with the keys in an `int[]`: 8 bytes a slot instead of 12, 16 keys to a cache line instead of 8. The same
+  operations, builder, load factors and limits, no `null` values; the whole 64-bit hash seed of the JVM goes into the
+  hash of an `int` key. `IntObjectConsumer` for its `forEach`.
+
 ## 0.8.0 (2026-11-24)
 
 The first release of `collections-core` and `collections-orderbook` since 0.6.0 (0.7.0 was `collections-affinity`

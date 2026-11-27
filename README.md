@@ -15,7 +15,7 @@ Java 21+, Maven:
 <dependency>
     <groupId>exchange.core2</groupId>
     <artifactId>collections-core</artifactId>
-    <version>0.8.0</version>
+    <version>0.8.1</version>
 </dependency>
 ```
 
@@ -41,17 +41,17 @@ The other structures are in the [catalog](#collections), the map above in [ART](
 
 | Module                  | Release | Java | Contents                                                      | Docs |
 |-------------------------|---------|------|---------------------------------------------------------------|------|
-| `collections-core`      | 0.8.0   | 21+  | Adaptive Radix Tree, hashtables (long-long, int-long, long-object, UUID-object, tuples, snapshots), record store, queues (indexed FIFO, events, reorder window), price ladder, time windows and series, objects pool | [Collections](#collections) |
-| `collections-orderbook` | 0.8.0   | 21+  | Order book implementation built on top of the core collections | [Order book](docs/orderbook.md) |
-| `collections-ledger`    | 0.8.0   | 21+  | Balances (available, reserved) with checked postings and batches | [Balances](docs/ledger.md) |
-| `collections-affinity`  | 0.7.0   | 22+  | Pinning threads to CPU cores, NUMA topology and memory placement checks, no dependencies | [Thread affinity](docs/affinity.md) |
+| `collections-core`      | 0.8.1   | 21+  | Adaptive Radix Tree, hashtables (long-long, int-long, long-object, int-object, UUID-object, tuples, snapshots), record store, queues (indexed FIFO, events, reorder window), price ladder, time windows and series, objects pool | [Collections](#collections) |
+| `collections-orderbook` | 0.8.1   | 21+  | Order book implementation built on top of the core collections | [Order book](docs/orderbook.md) |
+| `collections-ledger`    | 0.8.1   | 21+  | Balances (available, reserved) with checked postings and batches | [Balances](docs/ledger.md) |
+| `collections-affinity`  | 0.8.1   | 22+  | Pinning threads to CPU cores, NUMA topology and memory placement checks, no dependencies | [Thread affinity](docs/affinity.md) |
 | `tests-perf`            | –       | –    | Latency / throughput benchmarks (not published)                | [Benchmarks](docs/benchmarks.md) |
 | `tests-stress`          | –       | –    | Long-running randomized stress tests (not published)           | [Testing](CONTRIBUTING.md#testing) |
 
 ### Requirements
 
 - **To use the published artifacts:** Java 21+ (`collections-core`, `collections-orderbook` and
-  `collections-ledger` 0.8.0); `collections-affinity` (0.7.0) needs Java 22+, as it uses the Foreign
+  `collections-ledger` 0.8.1); `collections-affinity` (0.8.1) needs Java 22+, as it uses the Foreign
   Function and Memory API.
 - **To build from source:** JDK 26 and Maven 3.9+ — the benchmark and stress modules use newer
   language APIs than the published ones.
@@ -64,7 +64,7 @@ The other structures are in the [catalog](#collections), the map above in [ART](
 <dependency>
     <groupId>exchange.core2</groupId>
     <artifactId>collections-orderbook</artifactId>
-    <version>0.8.0</version>
+    <version>0.8.1</version>
 </dependency>
 ```
 
@@ -74,7 +74,7 @@ The balances:
 <dependency>
     <groupId>exchange.core2</groupId>
     <artifactId>collections-ledger</artifactId>
-    <version>0.8.0</version>
+    <version>0.8.1</version>
 </dependency>
 ```
 
@@ -84,12 +84,12 @@ For pinning threads to cores (Java 22+, no dependencies, see [Thread affinity](d
 <dependency>
     <groupId>exchange.core2</groupId>
     <artifactId>collections-affinity</artifactId>
-    <version>0.7.0</version>
+    <version>0.8.1</version>
 </dependency>
 ```
 
 The modules share one version line, but not every release has all of them: 0.7.0 was `collections-affinity`
-alone, 0.8.0 is the other three - `collections-affinity` had no changes.
+alone, 0.8.0 the other three - `collections-affinity` had no changes; 0.8.1 has all four.
 
 To build from source and install into the local repository:
 
@@ -108,6 +108,7 @@ mvn clean install
 | [`LongLongLL2Hashtable`](docs/hashtables.md#longlongll2hashtable) | the same, where a large table must grow without pausing the thread (below 8200 entries, by default, it resizes synchronously) | hashtable, async resizing | `long` → `long` | 0.6.0 |
 | [`IntLongHashtable`](docs/hashtables.md#intlonghashtable) | `int` keys: symbols, currencies | `LongLongHashtable` under `int` keys | `int` → `long` | 0.8.0 |
 | [`LongObjectHashtable`](docs/hashtables.md#longobjecthashtable) | objects by `long` id: orders, accounts | open-addressing hashtable, keys and values in two arrays | `long` → object | 0.8.0 |
+| [`IntObjectHashtable`](docs/hashtables.md#intobjecthashtable) | objects by `int` id: instruments, users | open-addressing hashtable, `int` keys and values in two arrays | `int` → object | 0.8.1 |
 | [`UuidObjectHashtable`](docs/hashtables.md#uuidobjecthashtable) | objects by UUID, as two longs or a `UUID` | open-addressing hashtable, keys and values in two arrays | UUID → object | 0.8.0 |
 | [`RecordStore`](docs/records.md#recordstore) | several fields of one thing, reached by a handle kept elsewhere | paged records by handle | handle → `long` fields | 0.8.0 |
 | [`LongRecordTable`](docs/records.md#longrecordtable) | records under keys, handles that stay valid | hashtable index + records | `long` → `long` fields | 0.8.0 |
@@ -125,7 +126,7 @@ mvn clean install
 
 - [Adaptive Radix Tree](docs/art.md) — `LongAdaptiveRadixTreeMap`, `ObjectsPool`
 - [Hashtables](docs/hashtables.md) — `LongLongHashtable`, `LongLongLL2Hashtable` and its `MigrationService`,
-  `IntLongHashtable`, `LongObjectHashtable`, `UuidObjectHashtable`
+  `IntLongHashtable`, `LongObjectHashtable`, `IntObjectHashtable`, `UuidObjectHashtable`
 - [Records](docs/records.md) — `RecordStore`, `LongRecordTable`, `LongTupleHashtable`, `LongSnapshotRecordTable`
 - [Queues](docs/queues.md) — `LongIndexedFifoQueues`, `LongIndexedEventQueue`, `LongSequenceBuffer`
 - [Price ladder and time windows](docs/price-and-time.md) — `LongPriceLadder`, `LongRollingWindow`, `LongTimeSeries`
